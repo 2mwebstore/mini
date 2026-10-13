@@ -80,3 +80,49 @@ func TestDatabaseFromMySQLVars(t *testing.T) {
 		t.Fatalf("missing MYSQL_USER must be reported, got %v", err)
 	}
 }
+
+// Railway-style variables: PORT, a URL storage endpoint, proxies, built front ends.
+func TestPlatformVars(t *testing.T) {
+	wd, _ := os.Getwd()
+	if err := os.Chdir(t.TempDir()); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { os.Chdir(wd) })
+	t.Setenv("DATABASE_URL", "u:p@tcp(db:3306)/x")
+	t.Setenv("JWT_SECRET", "a-test-secret-that-is-long-enough-123")
+	t.Setenv("HTTP_ADDR", "")
+	t.Setenv("PORT", "5123")
+	t.Setenv("STORAGE_ENDPOINT", "https://t3.storageapi.dev")
+	t.Setenv("STORAGE_USE_SSL", "")
+	t.Setenv("STORAGE_URL_STYLE", "virtual")
+	t.Setenv("TRUSTED_PROXIES", "100.64.0.0/10, 127.0.0.1")
+	web := t.TempDir()
+	t.Setenv("WEB_DIR", web)
+	for _, app := range []string{"admin", "app"} {
+		os.MkdirAll(filepath.Join(web, app), 0o755)
+		os.WriteFile(filepath.Join(web, app, "200.html"), []byte("<html>"), 0o644)
+	}
+	c, err := Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if c.HTTPAddr != ":5123" || c.StorageEndpoint != "t3.storageapi.dev" || !c.StorageUseSSL || c.StorageURLStyle != "virtual" ||
+		strings.Join(c.TrustedProxies, " ") != "100.64.0.0/10 127.0.0.1" || c.WebDir != web {
+		t.Fatalf("unexpected: %+v", c)
+	}
+
+	t.Setenv("HTTP_ADDR", "127.0.0.1:9000") // explicit address wins over PORT
+	t.Setenv("STORAGE_ENDPOINT", "http://127.0.0.1:9090")
+	if c, err = Load(); err != nil || c.HTTPAddr != "127.0.0.1:9000" || c.StorageEndpoint != "127.0.0.1:9090" || c.StorageUseSSL {
+		t.Fatalf("got %+v, %v", c, err)
+	}
+
+	for k, v := range map[string]string{"STORAGE_URL_STYLE": "dns", "TRUSTED_PROXIES": "railway", "STORAGE_ENDPOINT": "ftp://x", "WEB_DIR": t.TempDir()} {
+		t.Run(k, func(t *testing.T) {
+			t.Setenv(k, v)
+			if _, err := Load(); err == nil || !strings.Contains(err.Error(), k) {
+				t.Fatalf("%s=%s must be rejected, got %v", k, v, err)
+			}
+		})
+	}
+}

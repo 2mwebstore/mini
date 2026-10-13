@@ -10,7 +10,9 @@ import (
 	"fmt"
 	"io/fs"
 	"net"
+	"net/url"
 	"os"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -19,7 +21,15 @@ import (
 
 type Config struct {
 	Env      string // development | production
-	HTTPAddr string
+	HTTPAddr string // HTTP_ADDR, else ":$PORT" (Railway, Render…), else ":8080"
+
+	// WebDir, when set, holds the built front ends (admin/, app/) and the API serves
+	// them itself — the single-container image (root Dockerfile). Empty with docker
+	// compose, where nginx serves them.
+	WebDir string
+	// TrustedProxies may set X-Forwarded-For (client IPs for rate limits and the
+	// audit log). Default: private networks (nginx inside docker).
+	TrustedProxies []string
 
 	// Built from MYSQL_HOST, MYSQL_PORT, MYSQL_DATABASE, MYSQL_USER, MYSQL_PASSWORD.
 	// (A full DATABASE_URL DSN, if set, is used as-is instead.)
@@ -43,6 +53,7 @@ type Config struct {
 	StorageBucket    string
 	StorageRegion    string
 	StorageUseSSL    bool
+	StorageURLStyle  string // auto | path | virtual (bucket as subdomain, e.g. Railway Buckets)
 
 	CORSOrigins []string
 }
@@ -59,7 +70,9 @@ func Load() (*Config, error) {
 	}
 	c := &Config{
 		Env:               get("APP_ENV", "production"),
-		HTTPAddr:          get("HTTP_ADDR", ":8080"),
+		HTTPAddr:          get("HTTP_ADDR", ":"+get("PORT", "8080")),
+		WebDir:            os.Getenv("WEB_DIR"),
+		TrustedProxies:    splitCSV(get("TRUSTED_PROXIES", "10.0.0.0/8,172.16.0.0/12,192.168.0.0/16,127.0.0.1")),
 		DatabaseURL:       os.Getenv("DATABASE_URL"),
 		RedisURL:          get("REDIS_URL", "redis://redis:6379/0"),
 		JWTSecret:         os.Getenv("JWT_SECRET"),
@@ -73,6 +86,7 @@ func Load() (*Config, error) {
 		StorageBucket:     get("STORAGE_BUCKET", "attendance"),
 		StorageRegion:     get("STORAGE_REGION", "us-east-1"),
 		StorageUseSSL:     get("STORAGE_USE_SSL", "false") == "true",
+		StorageURLStyle:   get("STORAGE_URL_STYLE", "auto"),
 		CORSOrigins:       splitCSV(os.Getenv("CORS_ORIGINS")),
 	}
 	var missing []string
@@ -92,6 +106,31 @@ func Load() (*Config, error) {
 	}
 	if len(c.JWTSecret) < 32 {
 		return nil, fmt.Errorf("JWT_SECRET must be at least 32 characters")
+	}
+	// STORAGE_ENDPOINT may be a URL (https://t3.storageapi.dev); the scheme sets SSL.
+	if strings.Contains(c.StorageEndpoint, "://") {
+		u, err := url.Parse(c.StorageEndpoint)
+		if err != nil || u.Host == "" || (u.Scheme != "http" && u.Scheme != "https") {
+			return nil, fmt.Errorf("STORAGE_ENDPOINT: expected host:port or an http(s) URL")
+		}
+		c.StorageEndpoint, c.StorageUseSSL = u.Host, u.Scheme == "https"
+	}
+	switch c.StorageURLStyle {
+	case "auto", "path", "virtual":
+	default:
+		return nil, fmt.Errorf("STORAGE_URL_STYLE must be auto, path or virtual")
+	}
+	if c.WebDir != "" {
+		for _, app := range []string{"admin", "app"} {
+			if _, err := os.Stat(filepath.Join(c.WebDir, app, "200.html")); err != nil {
+				return nil, fmt.Errorf("WEB_DIR: no built front end at %s", filepath.Join(c.WebDir, app))
+			}
+		}
+	}
+	for _, p := range c.TrustedProxies {
+		if _, _, err := net.ParseCIDR(p); err != nil && net.ParseIP(p) == nil {
+			return nil, fmt.Errorf("TRUSTED_PROXIES: %q is not an IP or CIDR", p)
+		}
 	}
 	return c, nil
 }

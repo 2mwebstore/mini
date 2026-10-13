@@ -25,11 +25,15 @@ type S3 struct {
 	bucket string
 }
 
-func NewS3(endpoint, accessKey, secretKey, bucket, region string, useSSL bool) (*S3, error) {
+// urlStyle: "virtual" puts the bucket in the host name (bucket.endpoint, required by
+// Railway Buckets), "path" in the path (MinIO, s3mock); "auto" lets the client pick.
+func NewS3(endpoint, accessKey, secretKey, bucket, region string, useSSL bool, urlStyle string) (*S3, error) {
+	lookup := map[string]minio.BucketLookupType{"path": minio.BucketLookupPath, "virtual": minio.BucketLookupDNS}[urlStyle] // else auto
 	c, err := minio.New(endpoint, &minio.Options{
-		Creds:  credentials.NewStaticV4(accessKey, secretKey, ""),
-		Secure: useSSL,
-		Region: region,
+		Creds:        credentials.NewStaticV4(accessKey, secretKey, ""),
+		Secure:       useSSL,
+		Region:       region,
+		BucketLookup: lookup,
 	})
 	if err != nil {
 		return nil, err

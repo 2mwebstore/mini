@@ -107,7 +107,7 @@ func serve() error {
 	rdb := redis.NewClient(ropt)
 	defer rdb.Close()
 
-	store, err := storage.NewS3(cfg.StorageEndpoint, cfg.StorageAccessKey, cfg.StorageSecretKey, cfg.StorageBucket, cfg.StorageRegion, cfg.StorageUseSSL)
+	store, err := storage.NewS3(cfg.StorageEndpoint, cfg.StorageAccessKey, cfg.StorageSecretKey, cfg.StorageBucket, cfg.StorageRegion, cfg.StorageUseSSL, cfg.StorageURLStyle)
 	if err != nil {
 		return err
 	}
@@ -239,7 +239,7 @@ func seedDemo(args []string) error {
 	if err != nil {
 		return err
 	}
-	store, err := storage.NewS3(cfg.StorageEndpoint, cfg.StorageAccessKey, cfg.StorageSecretKey, cfg.StorageBucket, cfg.StorageRegion, cfg.StorageUseSSL)
+	store, err := storage.NewS3(cfg.StorageEndpoint, cfg.StorageAccessKey, cfg.StorageSecretKey, cfg.StorageBucket, cfg.StorageRegion, cfg.StorageUseSSL, cfg.StorageURLStyle)
 	if err != nil {
 		return err
 	}

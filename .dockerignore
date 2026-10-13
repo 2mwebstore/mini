@@ -1,0 +1,14 @@
+# Build context for the root Dockerfile (single-container image).
+.git
+.env
+**/.env
+**/.DS_Store
+**/node_modules
+**/.nuxt
+**/.output
+**/.data
+**/dist
+backend/*.test
+backend/api
+backups
+ops

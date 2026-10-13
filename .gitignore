@@ -4,3 +4,7 @@ backups/
 /backend/api
 /bot/bot
 ops/nginx/certs/*.pem
+.DS_Store
+node_modules/
+.nuxt/
+.output/

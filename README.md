@@ -31,7 +31,9 @@ attendance-system/
 ├── admin/                   HR admin panel (Nuxt 3 SPA, /admin/)
 ├── ops/nginx/               reverse proxy (+ TLS template)
 ├── ops/backup/              daily mysqldump with retention
-├── docker-compose.yml
+├── docker-compose.yml       self-hosted stack (nginx + one container per app)
+├── Dockerfile               single-container image (Railway): API + both front ends
+├── railway.json             Railway build/deploy settings
 └── .env.example
 ```
 
@@ -114,6 +116,65 @@ Create the bucket first and keep it **private** — photos are only served throu
 authenticated API, never by public URL. Then remove the `minio` service from
 `docker-compose.yml`. (As of October 2026 the `minio/minio` image can no longer be
 pulled from Docker Hub, so a fresh `docker compose up` needs R2/S3 or another image.)
+
+## Deploy on Railway
+
+The root `Dockerfile` builds one image in which the API also serves the admin panel
+(`/admin/`) and the Mini App (`/app/`), all on one domain. `railway.json` tells Railway
+to build it and to wait for `/health` before switching traffic. Railway needs four
+services in one project:
+
+1. **+ New → GitHub Repo** → this repository (leave *Root Directory* empty).
+2. **+ New → Database → MySQL**, **+ New → Database → Redis**, **+ New → Bucket**
+   (photo storage; private, S3-compatible).
+3. In the app service: **Variables → Raw Editor**, paste the block below, and set
+   `JWT_SECRET` (`openssl rand -hex 32`). The names inside `${{…}}` are the service
+   names — change `MySQL`, `Redis` and `Bucket` if yours differ.
+
+   ```
+   PORT=8080
+   JWT_SECRET=
+   MYSQL_HOST=${{MySQL.MYSQLHOST}}
+   MYSQL_PORT=${{MySQL.MYSQLPORT}}
+   MYSQL_USER=${{MySQL.MYSQLUSER}}
+   MYSQL_PASSWORD=${{MySQL.MYSQLPASSWORD}}
+   MYSQL_DATABASE=${{MySQL.MYSQLDATABASE}}
+   REDIS_URL=${{Redis.REDIS_URL}}
+   STORAGE_ENDPOINT=${{Bucket.ENDPOINT}}
+   STORAGE_ACCESS_KEY=${{Bucket.ACCESS_KEY_ID}}
+   STORAGE_SECRET_KEY=${{Bucket.SECRET_ACCESS_KEY}}
+   STORAGE_BUCKET=${{Bucket.BUCKET}}
+   STORAGE_REGION=${{Bucket.REGION}}
+   STORAGE_URL_STYLE=virtual
+   TRUSTED_PROXIES=100.64.0.0/10
+   ```
+
+   Never change `JWT_SECRET` afterwards: it signs sessions and encrypts the bot token
+   saved in Settings (a new secret means everyone signs in again and the token must be
+   re-entered).
+4. **Settings → Networking → Generate Domain**, target port `8080`. When the deploy is
+   green, `https://<domain>/health` shows database, redis and storage `connected`.
+5. Create the owner from a terminal with the [Railway CLI](https://docs.railway.com/guides/cli)
+   (`railway link` to this project and the app service first):
+
+   ```bash
+   railway ssh
+   ADMIN_PASSWORD='a-long-password' /app/api create-admin -code GT000 -name "Owner Name" -email you@company.com
+   ```
+
+6. Open `https://<domain>/admin/` and continue from step 1 after *Quick start* above
+   (*Settings → Telegram*, Mini App URL `https://<domain>/app/`).
+
+Notes:
+
+- **URL style:** the bucket's *Credentials* tab says whether it uses virtual-hosted or
+  path-style URLs; for a path-style bucket set `STORAGE_URL_STYLE=path`.
+- **Client IPs** (login rate limit, audit log): each request in the deploy logs shows
+  `ip=`. It should be the visitor's address; if you only see `100.x.x.x` addresses,
+  Railway's proxy is not covered by `TRUSTED_PROXIES`.
+- **Backups:** there is no backup container here — enable backups on the MySQL service
+  in Railway. The 08:00 backup alert stays silent because no backup status file exists.
+- **Demo data** on a throwaway project only: `railway ssh`, then `/app/api seed-demo -force`.
 
 ## Telegram Mini App (employees)
 

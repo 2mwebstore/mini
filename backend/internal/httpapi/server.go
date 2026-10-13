@@ -64,8 +64,8 @@ func (s *Server) Router() *gin.Engine {
 		gin.SetMode(gin.ReleaseMode)
 	}
 	r := gin.New()
-	// Trust X-Forwarded-For only from private networks (nginx inside docker).
-	_ = r.SetTrustedProxies([]string{"10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16", "127.0.0.1"})
+	// Trust X-Forwarded-For only from the proxy in front (TRUSTED_PROXIES; config validates it).
+	_ = r.SetTrustedProxies(s.cfg.TrustedProxies)
 	uploadLimit := int64(attendance.MaxUploadBytes + 64<<10) // photo + multipart overhead
 	r.Use(gin.Recovery(), requestID(), accessLog(), securityHeaders(), bodyLimit(1<<20, map[string]int64{
 		"/api/v1/app/attendance/check-in":  uploadLimit,
@@ -133,6 +133,9 @@ func (s *Server) Router() *gin.Engine {
 	app := v1.Group("/app", s.webAppAuth(), rateLimit(s.rdb, "app", 300, time.Minute, byActor))
 	s.mountApp(app, byActor)
 
+	if s.cfg.WebDir != "" {
+		mountWeb(r, s.cfg.WebDir)
+	}
 	return r
 }
 
