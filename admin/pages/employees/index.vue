@@ -3,6 +3,9 @@ import { employeeService } from '~/services/employee.service'
 import { useAuthStore } from '~/stores/auth'
 import { useLookupsStore } from '~/stores/lookups'
 import { employeeStatus, roleLabels } from '~/utils/format'
+import { optionsFrom } from '~/utils/options'
+
+const statusOptions = optionsFrom(employeeStatus)
 
 const auth = useAuthStore()
 const lookups = useLookupsStore()
@@ -49,24 +52,13 @@ onMounted(() => {
     <div class="card mb-4 grid gap-3 p-4" :class="allBranches ? 'sm:grid-cols-5' : 'sm:grid-cols-4'">
       <FormField label="Search" for="e-q"><input id="e-q" v-model="filter.q" class="input" type="search" placeholder="Name or employee ID" /></FormField>
       <FormField v-if="allBranches" label="Branch" for="e-branch">
-        <select id="e-branch" v-model="filter.branch_id" class="input">
-          <option value="">All</option>
-          <option v-for="b in lookups.branches ?? []" :key="b.id" :value="String(b.id)">{{ b.name }}</option>
-        </select>
+        <SearchSelect id="e-branch" v-model="filter.branch_id" :options="lookups.branchOptions" empty-label="All" />
       </FormField>
       <FormField label="Department" for="e-dept">
-        <select id="e-dept" v-model="filter.department_id" class="input">
-          <option value="">All</option>
-          <option v-for="d in lookups.departments ?? []" :key="d.id" :value="String(d.id)">{{ d.name }}</option>
-        </select>
+        <SearchSelect id="e-dept" v-model="filter.department_id" :options="lookups.departmentOptions" empty-label="All" />
       </FormField>
       <FormField label="Status" for="e-status">
-        <select id="e-status" v-model="filter.status" class="input">
-          <option value="">All</option>
-          <option value="ACTIVE">Active</option>
-          <option value="SUSPENDED">Suspended</option>
-          <option value="INACTIVE">Inactive</option>
-        </select>
+        <SearchSelect id="e-status" v-model="filter.status" :options="statusOptions" empty-label="All" />
       </FormField>
       <label class="flex items-end gap-2 pb-2 text-sm">
         <input v-model="filter.include_inactive" type="checkbox" class="size-4 accent-[var(--primary)]" />

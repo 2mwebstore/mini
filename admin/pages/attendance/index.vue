@@ -4,6 +4,11 @@ import { useAuthStore } from '~/stores/auth'
 import { useLookupsStore } from '~/stores/lookups'
 import type { AttendanceFilter } from '~/types/api'
 import { confirmationStatus, dayStatus, formatClock, formatDate, formatMinutes, monthStartISO, todayISO } from '~/utils/format'
+import { optionsFrom } from '~/utils/options'
+
+const dayStatusOptions = optionsFrom(dayStatus, ['PRESENT', 'LATE', 'EARLY_LEAVE', 'ABSENT', 'LEAVE'])
+const manualStatusOptions = optionsFrom(dayStatus, ['PRESENT', 'LATE', 'EARLY_LEAVE', 'ABSENT', 'LEAVE', 'HOLIDAY'])
+const confirmationOptions = optionsFrom(confirmationStatus, ['PENDING', 'CONFIRMED', 'REJECTED'])
 
 const auth = useAuthStore()
 const lookups = useLookupsStore()
@@ -71,6 +76,7 @@ async function addRecord() {
   }
 }
 const activeEmployees = computed(() => (lookups.employees ?? []).filter(e => !e.deleted_at))
+const activeEmployeeOptions = computed(() => activeEmployees.value.map(e => ({ value: String(e.id), label: e.full_name, sub: e.employee_code })))
 </script>
 
 <template>
@@ -83,31 +89,17 @@ const activeEmployees = computed(() => (lookups.employees ?? []).filter(e => !e.
       <FormField label="From" for="f-from"><input id="f-from" v-model="filter.from" type="date" class="input" /></FormField>
       <FormField label="To" for="f-to"><input id="f-to" v-model="filter.to" type="date" class="input" :min="filter.from" /></FormField>
       <FormField label="Employee" for="f-emp">
-        <select id="f-emp" v-model="filter.employee_id" class="input">
-          <option value="">All</option>
-          <option v-for="e in lookups.employees ?? []" :key="e.id" :value="String(e.id)">{{ e.employee_code }} · {{ e.full_name }}</option>
-        </select>
+        <SearchSelect id="f-emp" v-model="filter.employee_id" :options="lookups.employeeOptions" empty-label="All" />
       </FormField>
       <BranchFilter id="f-branch" v-model="filter.branch_id" />
       <FormField label="Department" for="f-dept">
-        <select id="f-dept" v-model="filter.department_id" class="input">
-          <option value="">All</option>
-          <option v-for="d in lookups.departments ?? []" :key="d.id" :value="String(d.id)">{{ d.name }}</option>
-        </select>
+        <SearchSelect id="f-dept" v-model="filter.department_id" :options="lookups.departmentOptions" empty-label="All" />
       </FormField>
       <FormField label="Status" for="f-status">
-        <select id="f-status" v-model="filter.status" class="input">
-          <option value="">All</option>
-          <option v-for="s in ['PRESENT', 'LATE', 'EARLY_LEAVE', 'ABSENT', 'LEAVE']" :key="s" :value="s">{{ dayStatus[s as keyof typeof dayStatus].label }}</option>
-        </select>
+        <SearchSelect id="f-status" v-model="filter.status" :options="dayStatusOptions" empty-label="All" />
       </FormField>
       <FormField label="Review" for="f-conf">
-        <select id="f-conf" v-model="filter.confirmation" class="input">
-          <option value="">All</option>
-          <option value="PENDING">Pending</option>
-          <option value="CONFIRMED">Confirmed</option>
-          <option value="REJECTED">Rejected</option>
-        </select>
+        <SearchSelect id="f-conf" v-model="filter.confirmation" :options="confirmationOptions" empty-label="All" />
       </FormField>
     </div>
 
@@ -141,17 +133,11 @@ const activeEmployees = computed(() => (lookups.employees ?? []).filter(e => !e.
     <AppModal v-model="addOpen" title="Add attendance record">
       <form id="add-form" class="grid gap-3 sm:grid-cols-2" @submit.prevent="addRecord">
         <FormField label="Employee" for="m-emp" class="sm:col-span-2">
-          <select id="m-emp" v-model="manual.employee_id" class="input" required>
-            <option value="" disabled>Choose…</option>
-            <option v-for="e in activeEmployees" :key="e.id" :value="String(e.id)">{{ e.employee_code }} · {{ e.full_name }}</option>
-          </select>
+          <SearchSelect id="m-emp" v-model="manual.employee_id" :options="activeEmployeeOptions" placeholder="Choose an employee…" required />
         </FormField>
         <FormField label="Date" for="m-date"><input id="m-date" v-model="manual.date" type="date" class="input" required /></FormField>
         <FormField label="Status" for="m-status" hint="Leave on Automatic to derive it from the times.">
-          <select id="m-status" v-model="manual.status" class="input">
-            <option value="">Automatic</option>
-            <option v-for="s in ['PRESENT', 'LATE', 'EARLY_LEAVE', 'ABSENT', 'LEAVE', 'HOLIDAY']" :key="s" :value="s">{{ dayStatus[s as keyof typeof dayStatus].label }}</option>
-          </select>
+          <SearchSelect id="m-status" v-model="manual.status" :options="manualStatusOptions" empty-label="Automatic" />
         </FormField>
         <FormField label="Check in" for="m-in" :hint="`Company time (${tz})`"><input id="m-in" v-model="manual.check_in" type="time" class="input" /></FormField>
         <FormField label="Check out" for="m-out"><input id="m-out" v-model="manual.check_out" type="time" class="input" /></FormField>

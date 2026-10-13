@@ -3,6 +3,9 @@ import { attendanceService } from '~/services/attendance.service'
 import { useAuthStore } from '~/stores/auth'
 import type { Confirmation } from '~/types/api'
 import { confirmationStatus, dayStatus, formatClock, formatDate, formatDateTime, formatMinutes, typeLabel } from '~/utils/format'
+import { optionsFrom } from '~/utils/options'
+
+const statusOptions = optionsFrom(dayStatus, ['PRESENT', 'LATE', 'EARLY_LEAVE', 'ABSENT', 'LEAVE', 'HOLIDAY'])
 
 const auth = useAuthStore()
 const route = useRoute()
@@ -143,10 +146,7 @@ const mapUrl = (lat: number, lng: number) => `https://www.openstreetmap.org/?mla
         <FormField label="Check in" for="e-in" :hint="`Company time (${tz})`"><input id="e-in" v-model="edit.check_in" type="time" class="input" /></FormField>
         <FormField label="Check out" for="e-out"><input id="e-out" v-model="edit.check_out" type="time" class="input" /></FormField>
         <FormField label="Status" for="e-status" class="sm:col-span-2" hint="Automatic derives late / early leave from the times.">
-          <select id="e-status" v-model="edit.status" class="input">
-            <option value="">Automatic</option>
-            <option v-for="s in ['PRESENT', 'LATE', 'EARLY_LEAVE', 'ABSENT', 'LEAVE', 'HOLIDAY']" :key="s" :value="s">{{ dayStatus[s as keyof typeof dayStatus].label }}</option>
-          </select>
+          <SearchSelect id="e-status" v-model="edit.status" :options="statusOptions" empty-label="Automatic" />
         </FormField>
         <FormField label="Reason (audited)" for="e-reason" class="sm:col-span-2">
           <textarea id="e-reason" v-model="edit.reason" class="input" rows="2" maxlength="500" required />

@@ -15,6 +15,10 @@ export default defineNuxtPlugin(async () => {
       tg.setHeaderColor('secondary_bg_color')
       tg.setBackgroundColor('secondary_bg_color')
     }
+    // Native controls (date pickers, scrollbars) follow Telegram's theme, not the phone's.
+    const syncScheme = () => document.documentElement.style.setProperty('color-scheme', tg.colorScheme)
+    syncScheme()
+    tg.onEvent('themeChanged', syncScheme)
   }
 
   const auth = useAuthStore()

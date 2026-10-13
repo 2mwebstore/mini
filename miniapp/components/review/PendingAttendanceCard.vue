@@ -10,26 +10,21 @@ const at = computed(() => (isIn.value ? props.item.check_in_at : props.item.chec
 </script>
 
 <template>
-  <article class="rounded-2xl bg-surface p-4">
-    <div class="flex items-start justify-between gap-3">
-      <div class="min-w-0">
-        <p class="truncate text-[15px] font-semibold">{{ item.full_name }}</p>
-        <p class="text-[13px] text-hint">{{ item.employee_code }} · {{ formatDate(item.work_date) }}</p>
+  <article class="rounded-2xl bg-surface p-3.5">
+    <div class="flex gap-3">
+      <div class="w-24 shrink-0">
+        <AuthPhoto zoomable :photo-id="item.photo_id" :alt="`${item.full_name} ${isIn ? 'check-in' : 'check-out'} photo`" />
       </div>
-      <StatusBadge :tone="isIn ? 'success' : 'info'" :label="isIn ? 'Check-in' : 'Check-out'" />
-    </div>
-    <div class="mt-3 grid grid-cols-[1fr_1.2fr] gap-3">
-      <AuthPhoto :photo-id="item.photo_id" :alt="`${item.full_name} ${isIn ? 'check-in' : 'check-out'} photo`" />
-      <dl class="flex flex-col gap-2 text-sm">
-        <div>
-          <dt class="text-hint">Time</dt>
-          <dd class="text-lg font-semibold tabular-nums">{{ formatClock(at, timezone) }}</dd>
+      <div class="flex min-w-0 flex-1 flex-col">
+        <div class="flex items-start justify-between gap-2">
+          <p class="truncate text-[15px] font-semibold">{{ item.full_name }}</p>
+          <StatusBadge :tone="isIn ? 'success' : 'info'" :label="isIn ? 'Check-in' : 'Check-out'" />
         </div>
-        <div v-if="isIn && item.late_minutes">
-          <dt class="text-hint">Late</dt>
-          <dd class="font-medium text-warning">{{ formatMinutes(item.late_minutes) }}</dd>
-        </div>
-      </dl>
+        <p class="truncate text-[13px] text-hint">{{ item.employee_code }} · {{ formatDate(item.work_date) }}</p>
+        <p class="mt-auto pt-2 text-[28px] font-bold leading-none tabular-nums">{{ formatClock(at, timezone) }}</p>
+        <p v-if="isIn && item.late_minutes" class="mt-1 text-[13px] font-medium text-warning">Late {{ formatMinutes(item.late_minutes) }}</p>
+        <p v-else class="mt-1 text-[13px] text-hint">{{ isIn ? 'On time' : 'Checked out' }}</p>
+      </div>
     </div>
     <div class="mt-3 grid grid-cols-2 gap-2">
       <AppButton variant="danger" :disabled="busy" @click="$emit('reject')">Reject</AppButton>

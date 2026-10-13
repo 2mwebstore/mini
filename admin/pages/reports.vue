@@ -68,16 +68,10 @@ const totals = computed(() => {
       <FormField label="To" for="r-to"><input id="r-to" v-model="filter.to" type="date" class="input" :min="filter.from" /></FormField>
       <BranchFilter id="r-branch" v-model="filter.branch_id" />
       <FormField label="Department" for="r-dept">
-        <select id="r-dept" v-model="filter.department_id" class="input">
-          <option value="">All</option>
-          <option v-for="d in lookups.departments ?? []" :key="d.id" :value="String(d.id)">{{ d.name }}</option>
-        </select>
+        <SearchSelect id="r-dept" v-model="filter.department_id" :options="lookups.departmentOptions" empty-label="All" />
       </FormField>
       <FormField label="Employee" for="r-emp">
-        <select id="r-emp" v-model="filter.employee_id" class="input">
-          <option value="">All</option>
-          <option v-for="e in lookups.employees ?? []" :key="e.id" :value="String(e.id)">{{ e.employee_code }} · {{ e.full_name }}</option>
-        </select>
+        <SearchSelect id="r-emp" v-model="filter.employee_id" :options="lookups.employeeOptions" empty-label="All" />
       </FormField>
       <div class="flex flex-wrap gap-2 sm:col-span-5">
         <AppButton v-for="p in presets" :key="p.label" size="sm" variant="secondary" @click="filter.from = p.from(); filter.to = p.to()">{{ p.label }}</AppButton>

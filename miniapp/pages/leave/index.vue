@@ -26,10 +26,15 @@ async function cancel(l: LeaveRequest) {
   <div class="flex flex-col gap-4">
     <header class="flex items-center justify-between">
       <h1 class="text-2xl font-bold">Leave</h1>
-      <AppButton variant="secondary" @click="navigateTo('/leave/new')">+ New request</AppButton>
+      <AppButton variant="secondary" class="py-2" @click="navigateTo('/leave/new')">
+        <AppIcon name="plus" class="size-4" />New request
+      </AppButton>
     </header>
 
     <StateView :loading="loading && !items" :error="error" :empty="!items?.length" empty-text="You have no leave requests yet." @retry="load">
+      <template #empty-action>
+        <AppButton @click="navigateTo('/leave/new')">Request leave</AppButton>
+      </template>
       <AppCard>
         <div class="-my-3 divide-y divide-separator">
           <LeaveItem v-for="l in items" :key="l.id" :leave="l">

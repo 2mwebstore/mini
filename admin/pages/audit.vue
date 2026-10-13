@@ -14,6 +14,7 @@ const actions = [
   'employee.deactivate', 'user.create', 'settings.update', 'holiday.create', 'holiday.delete', 'report.export', 'auth.login', 'auth.logout',
 ]
 const action = ref('')
+const actionOptions = actions.map(a => ({ value: a, label: a }))
 const items = ref<AuditLog[]>([])
 const loading = ref(false)
 const error = ref<ApiError | null>(null)
@@ -43,10 +44,7 @@ const channelLabel: Record<string, string> = { MINIAPP: 'Mini App', DASHBOARD: '
 <template>
   <div>
     <PageHeader title="Audit log" subtitle="Every change, append-only (the database refuses edits and deletes).">
-      <select v-model="action" class="input w-56" aria-label="Filter by action">
-        <option value="">All actions</option>
-        <option v-for="a in actions" :key="a" :value="a">{{ a }}</option>
-      </select>
+      <SearchSelect v-model="action" class="w-56" label="Filter by action" :options="actionOptions" empty-label="All actions" />
     </PageHeader>
 
     <StateView :loading="loading && !items.length" :error="items.length ? null : error" :empty="!items.length" empty-text="No entries." @retry="load()">

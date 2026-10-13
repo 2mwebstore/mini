@@ -40,6 +40,7 @@ const save = () => apply(changes.value, 'Settings saved')
 const removeToken = () => apply({ telegram_bot_token: '' }, 'Bot token removed')
 
 const zones: string[] = typeof Intl.supportedValuesOf === 'function' ? Intl.supportedValuesOf('timeZone') : []
+const zoneOptions = zones.map(z => ({ value: z, label: z.replaceAll('_', ' ') }))
 
 // ---------- holidays ----------
 const year = ref(new Date().getFullYear())
@@ -114,9 +115,7 @@ async function removeHoliday(id: number) {
           <h2 class="text-sm font-semibold sm:col-span-2">Company</h2>
           <FormField label="Company name" for="s-name" class="sm:col-span-2"><input id="s-name" v-model="form.company_name" class="input" required /></FormField>
           <FormField label="Timezone" for="s-tz" class="sm:col-span-2" hint="Work dates, late minutes and reports use this timezone.">
-            <select v-if="zones.length" id="s-tz" v-model="form.timezone" class="input">
-              <option v-for="z in zones" :key="z" :value="z">{{ z }}</option>
-            </select>
+            <SearchSelect v-if="zones.length" id="s-tz" v-model="form.timezone" :options="zoneOptions" searchable />
             <input v-else id="s-tz" v-model="form.timezone" class="input" />
           </FormField>
           <label class="flex items-center gap-2 text-sm sm:col-span-2">

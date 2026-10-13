@@ -3,7 +3,9 @@ import { attendanceService } from '~/services/attendance.service'
 
 // Attendance photos are private: they are streamed by the API after a scope check,
 // so they are fetched with the app's auth header rather than via <img src>.
-const props = defineProps<{ photoId: number | null; alt: string }>()
+// zoomable: tapping the photo shows it full screen (reviewers checking a face).
+const props = defineProps<{ photoId: number | null; alt: string; zoomable?: boolean }>()
+const zoomed = ref(false)
 
 const url = ref<string>()
 const failed = ref(false)
@@ -34,10 +36,32 @@ onBeforeUnmount(() => {
 </script>
 
 <template>
-  <div class="aspect-[3/4] w-full overflow-hidden rounded-xl bg-page">
-    <img v-if="url" :src="url" :alt="alt" class="size-full object-cover" />
-    <div v-else class="flex size-full items-center justify-center text-sm text-hint">
-      {{ failed || !photoId ? 'Photo unavailable' : 'Loading photo…' }}
+  <div class="aspect-[3/4] overflow-hidden rounded-xl bg-page">
+    <button v-if="url && zoomable" type="button" class="size-full" :aria-label="`View ${alt} full screen`" @click="zoomed = true">
+      <img :src="url" :alt="alt" class="size-full object-cover" />
+    </button>
+    <img v-else-if="url" :src="url" :alt="alt" class="size-full object-cover" />
+    <div v-else class="flex size-full items-center justify-center p-1 text-center text-xs text-hint">
+      {{ failed || !photoId ? 'Photo unavailable' : 'Loading…' }}
     </div>
   </div>
+  <Teleport to="body">
+    <div
+      v-if="zoomed && url"
+      class="fixed inset-0 z-50 flex items-center justify-center bg-black/90 p-4"
+      role="dialog"
+      aria-modal="true"
+      :aria-label="alt"
+      @click="zoomed = false"
+    >
+      <img :src="url" :alt="alt" class="size-full object-contain" />
+      <button
+        type="button"
+        class="absolute right-4 top-[max(1rem,env(safe-area-inset-top))] flex size-10 items-center justify-center rounded-full bg-white/15 text-white"
+        aria-label="Close photo"
+      >
+        <AppIcon name="close" class="size-5" />
+      </button>
+    </div>
+  </Teleport>
 </template>

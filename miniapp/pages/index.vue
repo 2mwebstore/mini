@@ -34,6 +34,14 @@ const action = computed(() => {
   return null
 })
 
+const initial = computed(() => (auth.me?.full_name ?? '?').trim().charAt(0).toUpperCase())
+
+const shortcuts = [
+  { to: '/leave/new', icon: 'calendar-plus', tint: 'bg-success/15 text-success', title: 'Request leave', sub: 'Annual, sick, personal…' },
+  { to: '/history', icon: 'chart', tint: 'bg-primary/15 text-accent', title: 'My attendance', sub: 'Days, hours and late arrivals' },
+  { to: '/leave', icon: 'leave', tint: 'bg-info/15 text-info', title: 'My leave', sub: 'Status of your requests' },
+] as const
+
 const blockedMessage = computed(() => {
   const t = today.value
   if (!t || action.value) return ''
@@ -43,44 +51,59 @@ const blockedMessage = computed(() => {
 
 <template>
   <div class="flex flex-col gap-4">
-    <header>
-      <p class="text-[13px] text-hint">{{ [auth.settings?.company_name, auth.me?.branch_name].filter(Boolean).join(' · ') }}</p>
-      <h1 class="text-2xl font-bold">{{ greeting }}</h1>
+    <header class="flex items-center gap-3">
+      <span class="flex size-11 shrink-0 items-center justify-center rounded-full bg-primary text-lg font-semibold text-primary-fg" aria-hidden="true">
+        {{ initial }}
+      </span>
+      <div class="min-w-0">
+        <p class="truncate text-[13px] text-hint">{{ [auth.settings?.company_name, auth.me?.branch_name].filter(Boolean).join(' · ') }}</p>
+        <h1 class="truncate text-xl font-bold">{{ greeting }}</h1>
+      </div>
     </header>
 
     <StateView :loading="loading && !today" :error="today ? null : error" @retry="load">
-      <template v-if="today">
-        <TodayCard :today="today" :timezone="auth.timezone" />
+      <TodayCard v-if="today" :today="today" :timezone="auth.timezone">
         <AppButton v-if="action" block :variant="action.variant" class="py-4 text-[17px]" @click="navigateTo(action.to)">
+          <AppIcon :name="action.to === '/check/in' ? 'in' : 'out'" class="size-5" />
           {{ action.label }}
         </AppButton>
-        <p v-else-if="blockedMessage" class="rounded-2xl bg-surface px-4 py-3 text-center text-[15px] text-hint">
+        <p v-else-if="blockedMessage" class="rounded-2xl bg-page px-4 py-3 text-center text-[15px] text-hint">
           {{ blockedMessage }}
         </p>
-      </template>
+      </TodayCard>
     </StateView>
 
     <NuxtLink
       v-if="pending && pending.attendance + pending.leave > 0"
       to="/team"
-      class="flex items-center justify-between rounded-2xl bg-warning/15 px-4 py-3"
+      class="flex items-center gap-3 rounded-2xl bg-surface p-4 active:opacity-70"
     >
-      <span class="text-[15px]">
-        <b>{{ pending.attendance + pending.leave }}</b> waiting for your review
-        <span class="text-hint">· {{ pending.attendance }} attendance · {{ pending.leave }} leave</span>
+      <span class="flex size-10 shrink-0 items-center justify-center rounded-xl bg-warning/15 text-warning">
+        <AppIcon name="review" class="size-5" />
       </span>
-      <span class="text-warning" aria-hidden="true">›</span>
+      <span class="min-w-0 flex-1">
+        <span class="block text-[15px] font-semibold">{{ pending.attendance + pending.leave }} waiting for your review</span>
+        <span class="block text-[13px] text-hint">{{ pending.attendance }} attendance · {{ pending.leave }} leave</span>
+      </span>
+      <AppIcon name="chevron" class="size-5 shrink-0 text-hint" />
     </NuxtLink>
 
-    <div class="grid grid-cols-2 gap-3">
-      <NuxtLink to="/leave/new" class="rounded-2xl bg-surface p-4">
-        <span class="text-2xl" aria-hidden="true">🏖️</span>
-        <p class="mt-2 font-medium">Request leave</p>
+    <nav class="divide-y divide-separator overflow-hidden rounded-2xl bg-surface" aria-label="Shortcuts">
+      <NuxtLink
+        v-for="s in shortcuts"
+        :key="s.to"
+        :to="s.to"
+        class="flex items-center gap-3 px-4 py-3 active:bg-page"
+      >
+        <span class="flex size-9 shrink-0 items-center justify-center rounded-xl" :class="s.tint">
+          <AppIcon :name="s.icon" class="size-5" />
+        </span>
+        <span class="min-w-0 flex-1">
+          <span class="block text-[15px] font-medium">{{ s.title }}</span>
+          <span class="block truncate text-[13px] text-hint">{{ s.sub }}</span>
+        </span>
+        <AppIcon name="chevron" class="size-5 shrink-0 text-hint" />
       </NuxtLink>
-      <NuxtLink to="/history" class="rounded-2xl bg-surface p-4">
-        <span class="text-2xl" aria-hidden="true">📊</span>
-        <p class="mt-2 font-medium">My attendance</p>
-      </NuxtLink>
-    </div>
+    </nav>
   </div>
 </template>

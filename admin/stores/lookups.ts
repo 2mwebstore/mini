@@ -3,6 +3,7 @@ import { branchService } from '~/services/branch.service'
 import { employeeService } from '~/services/employee.service'
 import { leaveService } from '~/services/leave.service'
 import type { Branch, Department, Employee, LeaveType, WorkSchedule } from '~/types/api'
+import type { SelectOption } from '~/utils/options'
 
 // Reference data shared by filters and forms, fetched once per session.
 export const useLookupsStore = defineStore('lookups', {
@@ -13,6 +14,12 @@ export const useLookupsStore = defineStore('lookups', {
     schedules: null as WorkSchedule[] | null,
     leaveTypes: null as LeaveType[] | null,
   }),
+  getters: {
+    // Ready-made <SearchSelect> options.
+    branchOptions: (s): SelectOption[] => (s.branches ?? []).map(b => ({ value: String(b.id), label: b.name, sub: b.status === 'ACTIVE' ? undefined : 'Closed' })),
+    departmentOptions: (s): SelectOption[] => (s.departments ?? []).map(d => ({ value: String(d.id), label: d.name })),
+    employeeOptions: (s): SelectOption[] => (s.employees ?? []).map(e => ({ value: String(e.id), label: e.full_name, sub: e.employee_code })),
+  },
   actions: {
     async loadEmployees(force = false) {
       if (!this.employees || force) this.employees = await employeeService.list({ include_inactive: true })

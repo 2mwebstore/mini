@@ -4,6 +4,7 @@ import { useAuthStore } from '~/stores/auth'
 import { useLookupsStore } from '~/stores/lookups'
 import type { Branch, BranchInput } from '~/types/api'
 import { roleLabels } from '~/utils/format'
+import type { SelectOption } from '~/utils/options'
 
 definePageMeta({ permission: ['branches.manage', 'branch.settings'] })
 
@@ -52,6 +53,18 @@ const candidates = computed(() =>
 )
 const chosen = ref('')
 const chosenEmp = computed(() => candidates.value.find(e => String(e.id) === chosen.value))
+const candidateOptions = computed((): SelectOption[] =>
+  candidates.value.map(e => ({
+    value: String(e.id),
+    label: e.full_name,
+    sub: [e.employee_code, e.branch?.name, e.role ? roleLabels[e.role.code] : ''].filter(Boolean).join(' · '),
+    disabled: e.id === branch.data.value?.admin_employee_id,
+  })),
+)
+const statusOptions: SelectOption[] = [
+  { value: 'ACTIVE', label: 'Open' },
+  { value: 'INACTIVE', label: 'Closed' },
+]
 async function assign(employeeId: number | null) {
   const ok = await run('admin', async () => {
     branch.data.value = await branchService.assignAdmin(id, employeeId)
@@ -85,10 +98,7 @@ const adminHasLogin = computed(() => {
             <FormField label="Name" for="b-name" class="sm:col-span-2"><input id="b-name" v-model="form.name" class="input" required maxlength="150" /></FormField>
             <FormField label="Address" for="b-addr" class="sm:col-span-2"><input id="b-addr" v-model="form.address" class="input" maxlength="255" /></FormField>
             <FormField label="Status" for="b-status">
-              <select id="b-status" v-model="form.status" class="input">
-                <option value="ACTIVE">Open</option>
-                <option value="INACTIVE">Closed</option>
-              </select>
+              <SearchSelect id="b-status" v-model="form.status" :options="statusOptions" />
             </FormField>
           </section>
 
@@ -109,12 +119,7 @@ const adminHasLogin = computed(() => {
             <template v-if="owner">
               <FormField label="Assign a new admin" for="b-admin" hint="The person becomes Branch Admin and moves to this branch; a replaced admin becomes staff.">
                 <div class="flex gap-2">
-                  <select id="b-admin" v-model="chosen" class="input">
-                    <option value="">Choose an employee…</option>
-                    <option v-for="e in candidates" :key="e.id" :value="String(e.id)" :disabled="e.id === branch.data.value.admin_employee_id">
-                      {{ e.employee_code }} · {{ e.full_name }}{{ e.branch ? ` (${e.branch.name})` : '' }}{{ e.role ? ` — ${roleLabels[e.role.code]}` : '' }}
-                    </option>
-                  </select>
+                  <SearchSelect id="b-admin" v-model="chosen" :options="candidateOptions" placeholder="Choose an employee…" />
                   <AppButton :disabled="!chosen" :loading="busy === 'admin'" @click="assign(Number(chosen))">Assign</AppButton>
                 </div>
               </FormField>

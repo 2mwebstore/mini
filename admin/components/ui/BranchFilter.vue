@@ -14,9 +14,6 @@ onMounted(() => visible.value && lookups.loadBranches().catch(() => {}))
 
 <template>
   <FormField v-if="visible" label="Branch" :for="id">
-    <select :id="id" v-model="model" class="input">
-      <option value="">All branches</option>
-      <option v-for="b in lookups.branches ?? []" :key="b.id" :value="String(b.id)">{{ b.name }}</option>
-    </select>
+    <SearchSelect :id="id" v-model="model" :options="lookups.branchOptions" empty-label="All" />
   </FormField>
 </template>

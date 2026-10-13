@@ -5,6 +5,9 @@ import { useAuthStore } from '~/stores/auth'
 import { useLookupsStore } from '~/stores/lookups'
 import type { LeaveRequest } from '~/types/api'
 import { formatDate, formatDateRange, leaveStatus } from '~/utils/format'
+import { optionsFrom } from '~/utils/options'
+
+const statusOptions = optionsFrom(leaveStatus)
 
 const auth = useAuthStore()
 const lookups = useLookupsStore()
@@ -46,17 +49,11 @@ const canDecide = (l: LeaveRequest) => l.status === 'PENDING' && auth.isReviewer
 
     <div class="card mb-4 grid gap-3 p-4 sm:grid-cols-5">
       <FormField label="Status" for="l-status">
-        <select id="l-status" v-model="filter.status" class="input">
-          <option value="">All</option>
-          <option v-for="(v, k) in leaveStatus" :key="k" :value="k">{{ v.label }}</option>
-        </select>
+        <SearchSelect id="l-status" v-model="filter.status" :options="statusOptions" empty-label="All" />
       </FormField>
       <BranchFilter id="l-branch" v-model="filter.branch_id" />
       <FormField label="Employee" for="l-emp">
-        <select id="l-emp" v-model="filter.employee_id" class="input">
-          <option value="">All</option>
-          <option v-for="e in lookups.employees ?? []" :key="e.id" :value="String(e.id)">{{ e.employee_code }} · {{ e.full_name }}</option>
-        </select>
+        <SearchSelect id="l-emp" v-model="filter.employee_id" :options="lookups.employeeOptions" empty-label="All" />
       </FormField>
       <FormField label="From" for="l-from"><input id="l-from" v-model="filter.from" type="date" class="input" /></FormField>
       <FormField label="To" for="l-to"><input id="l-to" v-model="filter.to" type="date" class="input" /></FormField>

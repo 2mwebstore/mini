@@ -2,7 +2,8 @@
 import { useAuthStore } from '~/stores/auth'
 import { useLookupsStore } from '~/stores/lookups'
 import type { Employee, EmployeeInput, EmployeeStatus, RoleCode } from '~/types/api'
-import { isoDay, roleLabels } from '~/utils/format'
+import { employeeStatus, isoDay, roleLabels } from '~/utils/format'
+import { optionsFrom, type SelectOption } from '~/utils/options'
 
 // Create/edit form for an employee. Emits only the fields the API should apply.
 const props = defineProps<{ employee?: Employee | null; saving?: boolean }>()
@@ -47,6 +48,13 @@ const companyWide = computed(() => form.role === 'super_admin' || form.role === 
 const branchFixed = computed(() => !auth.can('all.view')) // a branch admin adds staff to their own branch
 const activeBranches = computed(() => (lookups.branches ?? []).filter(b => b.status === 'ACTIVE' || String(b.id) === form.branch_id))
 const managers = computed(() => (lookups.employees ?? []).filter(m => !m.deleted_at && m.id !== e?.id))
+const branchOptions = computed((): SelectOption[] => activeBranches.value.map(b => ({ value: String(b.id), label: b.name })))
+const scheduleOptions = computed((): SelectOption[] =>
+  (lookups.schedules ?? []).map(s => ({ value: String(s.id), label: s.name, sub: `${s.start_time}–${s.end_time}` })),
+)
+const managerOptions = computed((): SelectOption[] => managers.value.map(m => ({ value: String(m.id), label: m.full_name, sub: m.employee_code })))
+const roleOptions = computed(() => optionsFrom(roleLabels, roles.value))
+const statusOptions = optionsFrom(employeeStatus)
 const tgValid = computed(() => form.telegram_user_id === '' || /^\d{1,15}$/.test(form.telegram_user_id))
 
 function submit() {
@@ -92,10 +100,7 @@ function submit() {
     </FormField>
 
     <FormField v-if="!companyWide" label="Branch" for="emp-branch" :hint="isBranchAdmin ? 'Branch admins move by being assigned on the Branches page.' : undefined">
-      <select v-if="!branchFixed" id="emp-branch" v-model="form.branch_id" class="input" required :disabled="isBranchAdmin">
-        <option value="" disabled>Choose a branch…</option>
-        <option v-for="b in activeBranches" :key="b.id" :value="String(b.id)">{{ b.name }}</option>
-      </select>
+      <SearchSelect v-if="!branchFixed" id="emp-branch" v-model="form.branch_id" :options="branchOptions" placeholder="Choose a branch…" required :disabled="isBranchAdmin" />
       <input v-else id="emp-branch" class="input" disabled :value="e?.branch?.name ?? auth.employee?.branch?.name ?? ''" />
     </FormField>
     <FormField label="Department" for="emp-dept" hint="Pick one or type a new name.">
@@ -107,28 +112,16 @@ function submit() {
     <FormField label="Email" for="emp-email"><input id="emp-email" v-model="form.email" class="input" type="email" maxlength="150" /></FormField>
     <FormField label="Join date" for="emp-join"><input id="emp-join" v-model="form.join_date" class="input" type="date" /></FormField>
     <FormField label="Work schedule" for="emp-sched">
-      <select id="emp-sched" v-model="form.work_schedule_id" class="input">
-        <option value="">{{ e ? 'Unchanged' : 'Default schedule' }}</option>
-        <option v-for="s in lookups.schedules ?? []" :key="s.id" :value="String(s.id)">{{ s.name }} ({{ s.start_time }}–{{ s.end_time }})</option>
-      </select>
+      <SearchSelect id="emp-sched" v-model="form.work_schedule_id" :options="scheduleOptions" :empty-label="e ? 'Unchanged' : 'Default schedule'" />
     </FormField>
     <FormField label="Manager" for="emp-mgr" hint="The manager reviews this person's attendance and leave.">
-      <select id="emp-mgr" v-model="form.manager_id" class="input">
-        <option value="">No manager</option>
-        <option v-for="m in managers" :key="m.id" :value="String(m.id)">{{ m.employee_code }} · {{ m.full_name }}</option>
-      </select>
+      <SearchSelect id="emp-mgr" v-model="form.manager_id" :options="managerOptions" empty-label="No manager" />
     </FormField>
     <FormField label="Role" for="emp-role" :hint="isBranchAdmin ? 'Set on the Branches page.' : companyWide ? 'Works across all branches.' : undefined">
-      <select id="emp-role" v-model="form.role" class="input" :disabled="isBranchAdmin">
-        <option v-for="r in roles" :key="r" :value="r">{{ roleLabels[r] }}</option>
-      </select>
+      <SearchSelect id="emp-role" v-model="form.role" :options="roleOptions" :disabled="isBranchAdmin" />
     </FormField>
     <FormField v-if="e" label="Status" for="emp-status">
-      <select id="emp-status" v-model="form.status" class="input">
-        <option value="ACTIVE">Active</option>
-        <option value="SUSPENDED">Suspended</option>
-        <option value="INACTIVE">Inactive</option>
-      </select>
+      <SearchSelect id="emp-status" v-model="form.status" :options="statusOptions" />
     </FormField>
 
     <div class="flex justify-end gap-2 sm:col-span-2">
