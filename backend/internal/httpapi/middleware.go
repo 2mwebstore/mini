@@ -5,6 +5,7 @@ import (
 	"encoding/hex"
 	"fmt"
 	"log/slog"
+	"net"
 	"net/http"
 	"strconv"
 	"strings"
@@ -56,6 +57,21 @@ func accessLog() gin.HandlerFunc {
 		}
 		slog.Info("http", "method", c.Request.Method, "path", c.FullPath(), "status", c.Writer.Status(),
 			"ms", time.Since(start).Milliseconds(), "ip", c.ClientIP(), "request_id", c.GetString("request_id"))
+	}
+}
+
+// clientIPHeader keeps the platform's client-IP header only when it holds one IP
+// address, so ClientIP() falls back to the connection rather than trusting junk.
+func clientIPHeader(name string) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		if v := c.Request.Header.Get(name); v != "" {
+			if ip := net.ParseIP(strings.TrimSpace(v)); ip != nil {
+				c.Request.Header.Set(name, ip.String())
+			} else {
+				c.Request.Header.Del(name)
+			}
+		}
+		c.Next()
 	}
 }
 

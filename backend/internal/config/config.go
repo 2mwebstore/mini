@@ -30,6 +30,10 @@ type Config struct {
 	// TrustedProxies may set X-Forwarded-For (client IPs for rate limits and the
 	// audit log). Default: private networks (nginx inside docker).
 	TrustedProxies []string
+	// ClientIPHeader: a header the hosting platform's edge sets to the visitor's IP on
+	// every request (Railway: X-Real-IP). Trusted as-is, so set it only where the app
+	// cannot be reached without passing that edge.
+	ClientIPHeader string
 
 	// Built from MYSQL_HOST, MYSQL_PORT, MYSQL_DATABASE, MYSQL_USER, MYSQL_PASSWORD.
 	// (A full DATABASE_URL DSN, if set, is used as-is instead.)
@@ -73,6 +77,7 @@ func Load() (*Config, error) {
 		HTTPAddr:          get("HTTP_ADDR", ":"+get("PORT", "8080")),
 		WebDir:            os.Getenv("WEB_DIR"),
 		TrustedProxies:    splitCSV(get("TRUSTED_PROXIES", "10.0.0.0/8,172.16.0.0/12,192.168.0.0/16,127.0.0.1")),
+		ClientIPHeader:    get("CLIENT_IP_HEADER", ""),
 		DatabaseURL:       os.Getenv("DATABASE_URL"),
 		RedisURL:          get("REDIS_URL", "redis://redis:6379/0"),
 		JWTSecret:         os.Getenv("JWT_SECRET"),
@@ -126,6 +131,9 @@ func Load() (*Config, error) {
 				return nil, fmt.Errorf("WEB_DIR: no built front end at %s", filepath.Join(c.WebDir, app))
 			}
 		}
+	}
+	if h := c.ClientIPHeader; h != "" && strings.Trim(h, "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-") != "" {
+		return nil, fmt.Errorf("CLIENT_IP_HEADER: %q is not a header name", h)
 	}
 	for _, p := range c.TrustedProxies {
 		if _, _, err := net.ParseCIDR(p); err != nil && net.ParseIP(p) == nil {

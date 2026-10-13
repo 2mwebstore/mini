@@ -144,15 +144,17 @@ services in one project:
    STORAGE_ACCESS_KEY=${{Bucket.ACCESS_KEY_ID}}
    STORAGE_SECRET_KEY=${{Bucket.SECRET_ACCESS_KEY}}
    STORAGE_BUCKET=${{Bucket.BUCKET}}
-   STORAGE_REGION=${{Bucket.REGION}}
+   STORAGE_REGION=auto
    STORAGE_URL_STYLE=virtual
-   TRUSTED_PROXIES=100.64.0.0/10
+   CLIENT_IP_HEADER=X-Real-IP
    ```
 
    Never change `JWT_SECRET` afterwards: it signs sessions and encrypts the bot token
    saved in Settings (a new secret means everyone signs in again and the token must be
    re-entered).
-4. **Settings → Networking → Generate Domain**, target port `8080`. When the deploy is
+4. **Settings → Networking → Generate Domain**, target port `8080`. Only this one service
+   gets a domain: do not add separate services for `admin/`, `miniapp/` or `backend/`
+   (each would be on its own domain, where the panel and the Mini App cannot reach the API). When the deploy is
    green, `https://<domain>/health` shows database, redis and storage `connected`.
 5. Create the owner from a terminal with the [Railway CLI](https://docs.railway.com/guides/cli)
    (`railway link` to this project and the app service first):
@@ -169,9 +171,10 @@ Notes:
 
 - **URL style:** the bucket's *Credentials* tab says whether it uses virtual-hosted or
   path-style URLs; for a path-style bucket set `STORAGE_URL_STYLE=path`.
-- **Client IPs** (login rate limit, audit log): each request in the deploy logs shows
-  `ip=`. It should be the visitor's address; if you only see `100.x.x.x` addresses,
-  Railway's proxy is not covered by `TRUSTED_PROXIES`.
+- **Client IPs** (login rate limit, audit log): Railway's edge connects from shared CDN
+  addresses and puts the visitor's IP in `X-Real-IP`, hence `CLIENT_IP_HEADER`. The
+  `ip=` of each request in the deploy logs should match the `srcIp` that
+  `railway logs --http` shows for it.
 - **Backups:** there is no backup container here — enable backups on the MySQL service
   in Railway. The 08:00 backup alert stays silent because no backup status file exists.
 - **Demo data** on a throwaway project only: `railway ssh`, then `/app/api seed-demo -force`.

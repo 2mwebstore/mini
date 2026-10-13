@@ -66,6 +66,10 @@ func (s *Server) Router() *gin.Engine {
 	r := gin.New()
 	// Trust X-Forwarded-For only from the proxy in front (TRUSTED_PROXIES; config validates it).
 	_ = r.SetTrustedProxies(s.cfg.TrustedProxies)
+	if h := s.cfg.ClientIPHeader; h != "" {
+		r.TrustedPlatform = h // the platform's edge sets it to the visitor's IP
+		r.Use(clientIPHeader(h))
+	}
 	uploadLimit := int64(attendance.MaxUploadBytes + 64<<10) // photo + multipart overhead
 	r.Use(gin.Recovery(), requestID(), accessLog(), securityHeaders(), bodyLimit(1<<20, map[string]int64{
 		"/api/v1/app/attendance/check-in":  uploadLimit,

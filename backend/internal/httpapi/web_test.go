@@ -84,4 +84,20 @@ func TestWebFrontEnds(t *testing.T) {
 			t.Errorf("from %s: client IP %s, want %s", remote, seen, want)
 		}
 	}
+
+	// On a platform whose edge sets the visitor's IP in a header (Railway: X-Real-IP).
+	pr := (&Server{cfg: &config.Config{ClientIPHeader: "X-Real-IP"}}).Router()
+	pr.GET("/test-ip", func(c *gin.Context) { seen = c.ClientIP() })
+	for hdr, want := range map[string]string{"203.0.113.50": "203.0.113.50", " 2001:db8::7 ": "2001:db8::7", "junk, 1.2.3.4": "152.233.15.121", "": "152.233.15.121"} {
+		req := httptest.NewRequest("GET", "/test-ip", nil)
+		req.RemoteAddr = "152.233.15.121:4000"
+		req.Header.Set("X-Forwarded-For", "198.51.100.1") // ignored: the edge is not a trusted proxy
+		if hdr != "" {
+			req.Header.Set("X-Real-IP", hdr)
+		}
+		pr.ServeHTTP(httptest.NewRecorder(), req)
+		if seen != want {
+			t.Errorf("X-Real-IP %q: client IP %s, want %s", hdr, seen, want)
+		}
+	}
 }

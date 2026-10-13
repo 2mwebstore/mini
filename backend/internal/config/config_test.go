@@ -117,7 +117,7 @@ func TestPlatformVars(t *testing.T) {
 		t.Fatalf("got %+v, %v", c, err)
 	}
 
-	for k, v := range map[string]string{"STORAGE_URL_STYLE": "dns", "TRUSTED_PROXIES": "railway", "STORAGE_ENDPOINT": "ftp://x", "WEB_DIR": t.TempDir()} {
+	for k, v := range map[string]string{"CLIENT_IP_HEADER": "X-Real-IP: 1", "STORAGE_URL_STYLE": "dns", "TRUSTED_PROXIES": "railway", "STORAGE_ENDPOINT": "ftp://x", "WEB_DIR": t.TempDir()} {
 		t.Run(k, func(t *testing.T) {
 			t.Setenv(k, v)
 			if _, err := Load(); err == nil || !strings.Contains(err.Error(), k) {
