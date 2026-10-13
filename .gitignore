@@ -1,0 +1,6 @@
+.env
+backups/
+*.test
+/backend/api
+/bot/bot
+ops/nginx/certs/*.pem

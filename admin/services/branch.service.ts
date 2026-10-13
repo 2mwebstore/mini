@@ -1,0 +1,11 @@
+import type { Branch, BranchInput, Items } from '~/types/api'
+import { api } from './api'
+
+export const branchService = {
+  list: () => api.get<Items<Branch>>('/branches').then(r => r.items ?? []),
+  get: (id: number) => api.get<Branch>(`/branches/${id}`),
+  create: (input: BranchInput) => api.post<Branch>('/branches', input),
+  update: (id: number, input: BranchInput) => api.put<Branch>(`/branches/${id}`, input),
+  /** Owner only. null removes the branch's admin. */
+  assignAdmin: (id: number, employeeId: number | null) => api.put<Branch>(`/branches/${id}/admin`, { employee_id: employeeId }),
+}

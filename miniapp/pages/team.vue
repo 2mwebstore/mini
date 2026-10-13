@@ -1,0 +1,167 @@
+<script setup lang="ts">
+import type { ApiError } from '~/services/api'
+import { reviewService } from '~/services/review.service'
+import { useAuthStore } from '~/stores/auth'
+import type { LeaveRequest, PendingAttendance } from '~/types/api'
+
+definePageMeta({ middleware: 'reviewer' })
+
+const auth = useAuthStore()
+const tab = ref<'review' | 'today'>('review')
+
+// ---------- review queue ----------
+const queue = useResource(async () => {
+  const [attendance, leave] = await Promise.all([reviewService.pendingAttendance(), reviewService.pendingLeave()])
+  return { attendance, leave }
+})
+const pendingCount = computed(() => (queue.data.value ? queue.data.value.attendance.length + queue.data.value.leave.length : 0))
+const tabs = computed(() => [
+  { value: 'review', label: queue.data.value ? `Review (${pendingCount.value})` : 'Review' },
+  { value: 'today', label: 'Today' },
+])
+
+const busy = ref<string | null>(null)
+
+function drop(kind: 'attendance' | 'leave', id: number) {
+  const d = queue.data.value
+  if (!d) return
+  queue.data.value =
+    kind === 'attendance'
+      ? { ...d, attendance: d.attendance.filter(a => a.confirmation_id !== id) }
+      : { ...d, leave: d.leave.filter(l => l.id !== id) }
+}
+
+async function act(key: string, kind: 'attendance' | 'leave', id: number, call: () => Promise<unknown>) {
+  busy.value = key
+  try {
+    await call()
+    haptic('success')
+    drop(kind, id)
+  } catch (e) {
+    haptic('error')
+    const err = e as ApiError
+    await alertDialog(err.message)
+    // Someone else already handled it (or the employee re-submitted): take it off the list.
+    if (err.status === 409 || err.status === 404) drop(kind, id)
+  } finally {
+    busy.value = null
+  }
+}
+
+const confirmAttendance = (a: PendingAttendance) =>
+  act(`a${a.confirmation_id}`, 'attendance', a.confirmation_id, () => reviewService.confirmAttendance(a.confirmation_id))
+const approveLeave = (l: LeaveRequest) => act(`l${l.id}`, 'leave', l.id, () => reviewService.approveLeave(l.id))
+
+const rejecting = ref<{ kind: 'attendance'; item: PendingAttendance } | { kind: 'leave'; item: LeaveRequest } | null>(null)
+const sheetOpen = computed({
+  get: () => !!rejecting.value,
+  set: v => {
+    if (!v) rejecting.value = null
+  },
+})
+const attendancePresets = ['Please provide a valid attendance photo.', 'Not at the workplace.', 'Wrong time or duplicate submission.']
+
+async function reject(reason: string) {
+  const r = rejecting.value
+  if (!r) return
+  if (r.kind === 'attendance') {
+    await act(`a${r.item.confirmation_id}`, 'attendance', r.item.confirmation_id, () => reviewService.rejectAttendance(r.item.confirmation_id, reason))
+  } else {
+    await act(`l${r.item.id}`, 'leave', r.item.id, () => reviewService.rejectLeave(r.item.id, reason))
+  }
+  rejecting.value = null
+}
+
+// ---------- today ----------
+const daily = useResource(() => reviewService.daily(), { immediate: false })
+watch(tab, t => {
+  if (t === 'today' && !daily.data.value) daily.load()
+})
+const tiles = computed(() => {
+  const c = daily.data.value?.counts
+  if (!c) return []
+  return [
+    { label: 'Confirmed', value: c.Confirmed, tone: 'text-success' },
+    { label: 'Pending', value: c.Pending, tone: 'text-warning' },
+    { label: 'Not in yet', value: c.NotYet, tone: 'text-hint' },
+    { label: 'Absent', value: c.Absent, tone: 'text-danger' },
+    { label: 'On leave', value: c.Leave, tone: 'text-info' },
+    { label: 'Late', value: c.Late, tone: 'text-warning' },
+  ]
+})
+</script>
+
+<template>
+  <div class="flex flex-col gap-4">
+    <header>
+      <h1 class="text-2xl font-bold">Team</h1>
+      <p v-if="auth.me?.role === 'branch_admin' && auth.me.branch_name" class="text-[13px] text-hint">{{ auth.me.branch_name }}</p>
+    </header>
+    <Segmented v-model="tab" :options="tabs" />
+
+    <template v-if="tab === 'review'">
+      <StateView
+        :loading="queue.loading.value && !queue.data.value"
+        :error="queue.error.value"
+        :empty="pendingCount === 0"
+        empty-text="All caught up — nothing is waiting for review."
+        @retry="queue.load"
+      >
+        <section v-if="queue.data.value?.attendance.length" aria-labelledby="att-h">
+          <h2 id="att-h" class="mb-1.5 px-4 text-[13px] font-medium uppercase tracking-wide text-hint">Attendance</h2>
+          <div class="flex flex-col gap-3">
+            <PendingAttendanceCard
+              v-for="a in queue.data.value.attendance"
+              :key="a.confirmation_id"
+              :item="a"
+              :timezone="auth.timezone"
+              :busy="busy === `a${a.confirmation_id}`"
+              @confirm="confirmAttendance(a)"
+              @reject="rejecting = { kind: 'attendance', item: a }"
+            />
+          </div>
+        </section>
+        <section v-if="queue.data.value?.leave.length" class="mt-4" aria-labelledby="leave-h">
+          <h2 id="leave-h" class="mb-1.5 px-4 text-[13px] font-medium uppercase tracking-wide text-hint">Leave requests</h2>
+          <div class="flex flex-col gap-3">
+            <PendingLeaveCard
+              v-for="l in queue.data.value.leave"
+              :key="l.id"
+              :leave="l"
+              :busy="busy === `l${l.id}`"
+              @approve="approveLeave(l)"
+              @reject="rejecting = { kind: 'leave', item: l }"
+            />
+          </div>
+        </section>
+      </StateView>
+    </template>
+
+    <template v-else>
+      <StateView :loading="daily.loading.value" :error="daily.error.value" :empty="daily.data.value?.rows.length === 0" empty-text="No staff in your scope today." @retry="daily.load">
+        <template v-if="daily.data.value">
+          <div class="grid grid-cols-3 gap-2">
+            <div v-for="t in tiles" :key="t.label" class="rounded-2xl bg-surface px-3 py-3 text-center">
+              <p class="text-xl font-semibold tabular-nums" :class="t.tone">{{ t.value }}</p>
+              <p class="text-xs text-hint">{{ t.label }}</p>
+            </div>
+          </div>
+          <AppCard :title="`${daily.data.value.counts.Staff} staff`" class="mt-4">
+            <div class="-my-3 divide-y divide-separator">
+              <DayRowItem v-for="r in daily.data.value.rows" :key="r.employee_id" :row="r" :timezone="auth.timezone" show-name />
+            </div>
+          </AppCard>
+        </template>
+      </StateView>
+    </template>
+
+    <RejectSheet
+      v-model="sheetOpen"
+      :title="rejecting?.kind === 'leave' ? 'Reject leave request' : 'Reject attendance'"
+      :presets="rejecting?.kind === 'leave' ? [] : attendancePresets"
+      :required="rejecting?.kind !== 'leave'"
+      :loading="!!busy"
+      @submit="reject"
+    />
+  </div>
+</template>

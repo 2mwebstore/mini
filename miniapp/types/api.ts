@@ -1,0 +1,212 @@
+// API contracts for /api/v1/app (see backend/internal/httpapi/app.go).
+// Timestamps are UTC ISO strings; calendar dates (work_date, leave dates) are
+// "YYYY-MM-DDT00:00:00Z" values that represent a day in the company timezone.
+
+export type AttendanceType = 'CHECK_IN' | 'CHECK_OUT'
+export type ConfirmationStatus = 'PENDING' | 'CONFIRMED' | 'REJECTED' | 'SUPERSEDED'
+export type DayStatus =
+  | 'PRESENT' | 'LATE' | 'EARLY_LEAVE' | 'ABSENT' | 'LEAVE' | 'HOLIDAY' | 'WEEKEND' | 'NOT_CHECKED_IN'
+export type LeaveStatus = 'PENDING' | 'APPROVED' | 'REJECTED' | 'CANCELLED'
+
+export interface Me {
+  employee_id: number
+  employee_code: string
+  full_name: string
+  role: 'super_admin' | 'hr_admin' | 'branch_admin' | 'manager' | 'staff'
+  is_reviewer: boolean
+  is_admin: boolean
+  can_export: boolean
+  can_manage_staff: boolean
+  branch_id: number | null
+  branch_name: string
+  permissions: string[]
+}
+
+export interface Profile {
+  employee_code: string
+  full_name: string
+  position: string
+  status: string
+  department: string
+  branch: string
+  role_name: string
+  schedule: { start: string; end: string; grace_minutes: number; work_days: number[] }
+}
+
+export interface CompanySettings {
+  company_name: string
+  timezone: string
+  gps_enabled: boolean
+  gps_required: boolean
+  confirmation_required: boolean
+}
+
+export interface MeResponse {
+  me: Me
+  profile: Profile
+  settings: CompanySettings
+}
+
+export interface Confirmation {
+  id: number
+  type: AttendanceType
+  status: ConfirmationStatus
+  reason: string
+  reviewed_at: string | null
+}
+
+export interface Attendance {
+  id: number
+  employee_id: number
+  work_date: string
+  check_in_at: string | null
+  check_out_at: string | null
+  working_minutes: number
+  late_minutes: number
+  early_leave_minutes: number
+  status: DayStatus
+  confirmation_status: ConfirmationStatus
+  note: string
+  confirmations?: Confirmation[]
+  employee?: { id: number; employee_code: string; full_name: string }
+}
+
+export interface Precheck {
+  allowed: boolean
+  need_gps: boolean
+  gps_required: boolean
+  message?: string
+}
+
+export interface TodayStatus {
+  date: string
+  work_day: boolean
+  holiday?: string
+  schedule_start: string
+  schedule_end: string
+  grace_minutes: number
+  attendance: Attendance | null
+  check_in: Precheck
+  check_out: Precheck
+}
+
+export interface SubmitResult {
+  type: AttendanceType
+  attendance: Attendance
+  pending: boolean
+  resubmission: boolean
+  location_label: string
+}
+
+export interface DayRow {
+  attendance_id?: number
+  employee_id: number
+  employee_code: string
+  full_name: string
+  department: string
+  date: string
+  check_in_at: string | null
+  check_out_at: string | null
+  working_minutes: number
+  late_minutes: number
+  early_leave_minutes: number
+  status: DayStatus
+  confirmation_status: ConfirmationStatus | ''
+  confirmed_by: string
+  leave_type: string
+}
+
+export interface Summary {
+  working_days: number
+  present_days: number
+  late_days: number
+  early_leave_days: number
+  absent_days: number
+  leave_days: number
+  pending_days: number
+  rejected_days: number
+  missing_checkout: number
+  late_minutes: number
+  working_minutes: number
+  avg_minutes_per_day: number
+}
+
+export interface HistoryResponse {
+  from: string
+  to: string
+  rows: DayRow[]
+  summary: Summary | null
+}
+
+export interface LeaveType {
+  id: number
+  code: string
+  name: string
+}
+
+export interface LeaveRequest {
+  id: number
+  employee_id: number
+  leave_type_id: number
+  start_date: string
+  end_date: string
+  days: number
+  reason: string
+  status: LeaveStatus
+  review_note: string
+  created_at: string
+  employee?: { id: number; employee_code: string; full_name: string }
+  leave_type?: LeaveType
+  reviewer?: { full_name: string }
+}
+
+export interface LeaveInput {
+  leave_type_id: number
+  start_date: string // YYYY-MM-DD
+  end_date: string
+  reason: string
+}
+
+export interface LeavePreview {
+  days: number
+  start_date: string
+  end_date: string
+  leave_type: LeaveType
+}
+
+export interface PendingAttendance {
+  confirmation_id: number
+  attendance_id: number
+  type: AttendanceType
+  employee_id: number
+  employee_code: string
+  full_name: string
+  work_date: string
+  check_in_at: string | null
+  check_out_at: string | null
+  late_minutes: number
+  photo_id: number | null
+}
+
+/** Field names come from the Go struct as-is (no JSON tags). */
+export interface DayCounts {
+  Staff: number
+  Confirmed: number
+  Pending: number
+  Rejected: number
+  Leave: number
+  Absent: number
+  NotYet: number
+  Late: number
+  MissingOut: number
+}
+
+export interface DailyReport {
+  date: string
+  counts: DayCounts
+  rows: DayRow[]
+}
+
+export interface Items<T> {
+  items: T[]
+}

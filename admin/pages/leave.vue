@@ -1,0 +1,95 @@
+<script setup lang="ts">
+import type { ApiError } from '~/services/api'
+import { leaveService } from '~/services/leave.service'
+import { useAuthStore } from '~/stores/auth'
+import { useLookupsStore } from '~/stores/lookups'
+import type { LeaveRequest } from '~/types/api'
+import { formatDate, formatDateRange, leaveStatus } from '~/utils/format'
+
+const auth = useAuthStore()
+const lookups = useLookupsStore()
+const filter = reactive({ status: 'PENDING', branch_id: '', employee_id: '', from: '', to: '' })
+
+const list = useResource(() =>
+  leaveService.list({
+    status: filter.status || undefined,
+    branch_id: Number(filter.branch_id) || undefined,
+    employee_id: Number(filter.employee_id) || undefined,
+    from: filter.from || undefined,
+    to: filter.to || undefined,
+    limit: 300,
+  }),
+)
+watch(filter, () => list.load())
+onMounted(() => lookups.loadEmployees().catch(() => {}))
+
+const { busy, error, run } = useAction()
+async function decide(l: LeaveRequest, fn: () => Promise<unknown>, msg: string) {
+  const ok = await run(`l${l.id}`, fn, msg)
+  if (ok || (error.value as ApiError | null)?.status === 409) list.load()
+  return ok
+}
+const approve = (l: LeaveRequest) => decide(l, () => leaveService.approve(l.id), `Approved leave for ${l.employee?.full_name}`)
+const rejecting = ref<LeaveRequest | null>(null)
+const rejectOpen = computed({ get: () => !!rejecting.value, set: v => !v && (rejecting.value = null) })
+async function reject(note: string) {
+  const l = rejecting.value!
+  if (await decide(l, () => leaveService.reject(l.id, note), 'Leave rejected')) rejecting.value = null
+}
+// Reviewers act on their scope; the API checks each request (no self-approval, team only for managers).
+const canDecide = (l: LeaveRequest) => l.status === 'PENDING' && auth.isReviewer && (l.employee_id !== auth.employee?.id || auth.role === 'super_admin')
+</script>
+
+<template>
+  <div>
+    <PageHeader title="Leave" subtitle="Requests from the Mini App. Approving marks those working days as leave." />
+
+    <div class="card mb-4 grid gap-3 p-4 sm:grid-cols-5">
+      <FormField label="Status" for="l-status">
+        <select id="l-status" v-model="filter.status" class="input">
+          <option value="">All</option>
+          <option v-for="(v, k) in leaveStatus" :key="k" :value="k">{{ v.label }}</option>
+        </select>
+      </FormField>
+      <BranchFilter id="l-branch" v-model="filter.branch_id" />
+      <FormField label="Employee" for="l-emp">
+        <select id="l-emp" v-model="filter.employee_id" class="input">
+          <option value="">All</option>
+          <option v-for="e in lookups.employees ?? []" :key="e.id" :value="String(e.id)">{{ e.employee_code }} · {{ e.full_name }}</option>
+        </select>
+      </FormField>
+      <FormField label="From" for="l-from"><input id="l-from" v-model="filter.from" type="date" class="input" /></FormField>
+      <FormField label="To" for="l-to"><input id="l-to" v-model="filter.to" type="date" class="input" /></FormField>
+    </div>
+
+    <StateView :loading="list.loading.value && !list.data.value" :error="list.error.value" :empty="list.data.value?.length === 0" empty-text="No leave requests match." @retry="list.load">
+      <div class="card overflow-x-auto">
+        <table class="table">
+          <thead><tr><th>Employee</th><th>Type</th><th>Dates</th><th>Days</th><th>Reason</th><th>Status</th><th /></tr></thead>
+          <tbody>
+            <tr v-for="l in list.data.value ?? []" :key="l.id">
+              <td><span class="font-medium">{{ l.employee?.full_name }}</span><span class="block text-xs text-muted">{{ l.employee?.employee_code }} · requested {{ formatDate(l.created_at) }}</span></td>
+              <td>{{ l.leave_type?.name }}</td>
+              <td class="whitespace-nowrap">{{ formatDateRange(l.start_date, l.end_date) }}</td>
+              <td class="tabular-nums">{{ l.days }}</td>
+              <td class="max-w-xs"><p class="line-clamp-2">{{ l.reason }}</p></td>
+              <td>
+                <StatusBadge v-bind="leaveStatus[l.status]" />
+                <span v-if="l.reviewer" class="block text-xs text-muted">by {{ l.reviewer.full_name }}</span>
+                <span v-if="l.review_note" class="block max-w-[12rem] truncate text-xs text-muted" :title="l.review_note">“{{ l.review_note }}”</span>
+              </td>
+              <td>
+                <div v-if="canDecide(l)" class="flex justify-end gap-2">
+                  <AppButton size="sm" variant="danger" :disabled="busy === `l${l.id}`" @click="rejecting = l">Reject</AppButton>
+                  <AppButton size="sm" variant="success" :loading="busy === `l${l.id}`" @click="approve(l)">Approve</AppButton>
+                </div>
+              </td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+    </StateView>
+
+    <RejectModal v-model="rejectOpen" :title="`Reject leave — ${rejecting?.employee?.full_name ?? ''}`" :loading="!!busy" @submit="reject" />
+  </div>
+</template>

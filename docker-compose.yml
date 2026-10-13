@@ -1,0 +1,130 @@
+# Telegram Attendance & Leave Management System — Phase 1 stack.
+#   cp .env.example .env   # fill in secrets
+#   docker compose up -d
+# Only nginx publishes a port. MySQL, Redis and MinIO stay on the private network.
+
+name: attendance
+
+x-restart: &restart
+  restart: unless-stopped
+
+services:
+  database:
+    <<: *restart
+    image: mysql:8.4
+    # needed so the migration can create the append-only triggers on audit_logs
+    command: ["--log-bin-trust-function-creators=1", "--character-set-server=utf8mb4", "--collation-server=utf8mb4_unicode_ci"]
+    environment:
+      MYSQL_DATABASE: ${MYSQL_DATABASE}
+      MYSQL_USER: ${MYSQL_USER}
+      MYSQL_PASSWORD: ${MYSQL_PASSWORD}
+      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD}
+      TZ: UTC
+    volumes:
+      - mysql-data:/var/lib/mysql
+    healthcheck:
+      test: ["CMD-SHELL", "mysqladmin ping -h 127.0.0.1 -u root -p\"$${MYSQL_ROOT_PASSWORD}\" --silent"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+
+  redis:
+    <<: *restart
+    image: redis:7-alpine
+    command: ["redis-server", "--requirepass", "${REDIS_PASSWORD}", "--appendonly", "yes"]
+    volumes:
+      - redis-data:/data
+    healthcheck:
+      test: ["CMD-SHELL", "redis-cli -a \"$${REDIS_PASSWORD}\" --no-auth-warning ping | grep PONG"]
+      interval: 10s
+      timeout: 3s
+      retries: 10
+    environment:
+      REDIS_PASSWORD: ${REDIS_PASSWORD}
+
+  minio:
+    <<: *restart
+    image: minio/minio:latest
+    command: ["server", "/data", "--console-address", ":9001"]
+    environment:
+      MINIO_ROOT_USER: ${STORAGE_ACCESS_KEY}
+      MINIO_ROOT_PASSWORD: ${STORAGE_SECRET_KEY}
+    volumes:
+      - minio-data:/data
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fs http://127.0.0.1:9000/minio/health/live || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 10
+
+  api:
+    <<: *restart
+    build: ./backend
+    depends_on:
+      database: { condition: service_healthy }
+      redis: { condition: service_healthy }
+      minio: { condition: service_started }
+    environment:
+      APP_ENV: production
+      HTTP_ADDR: ":8080"
+      MYSQL_HOST: ${MYSQL_HOST:-database}
+      MYSQL_PORT: ${MYSQL_PORT:-3306}
+      MYSQL_DATABASE: ${MYSQL_DATABASE}
+      MYSQL_USER: ${MYSQL_USER}
+      MYSQL_PASSWORD: ${MYSQL_PASSWORD}
+      REDIS_URL: "redis://:${REDIS_PASSWORD}@redis:6379/0"
+      JWT_SECRET: ${JWT_SECRET}
+      STORAGE_ENDPOINT: ${STORAGE_ENDPOINT:-minio:9000}
+      STORAGE_ACCESS_KEY: ${STORAGE_ACCESS_KEY}
+      STORAGE_SECRET_KEY: ${STORAGE_SECRET_KEY}
+      STORAGE_BUCKET: ${STORAGE_BUCKET:-attendance}
+      STORAGE_REGION: ${STORAGE_REGION:-us-east-1}
+      STORAGE_USE_SSL: ${STORAGE_USE_SSL:-false}
+    # Telegram (bot token, Mini App URL, chats) is set in the admin panel: Settings → Telegram.
+    volumes:
+      - ./backups:/backups:ro   # read the backup status to alert on failures
+
+  # Telegram Mini App for employees (static Nuxt build), served at /app/ through nginx
+  miniapp:
+    <<: *restart
+    build: ./miniapp
+
+  # HR admin panel (static Nuxt build), served at /admin/ through nginx
+  admin:
+    <<: *restart
+    build: ./admin
+
+  nginx:
+    <<: *restart
+    image: nginx:1.27-alpine
+    depends_on:
+      api: { condition: service_healthy }
+      miniapp: { condition: service_started }
+      admin: { condition: service_started }
+    ports:
+      - "${NGINX_HTTP_PORT:-80}:80"
+      - "${NGINX_HTTPS_PORT:-443}:443"
+    volumes:
+      - ./ops/nginx/conf.d:/etc/nginx/conf.d:ro
+      - ./ops/nginx/certs:/etc/nginx/certs:ro
+
+  backup:
+    <<: *restart
+    build: ./ops/backup
+    depends_on:
+      database: { condition: service_healthy }
+    environment:
+      MYSQL_HOST: database
+      MYSQL_DATABASE: ${MYSQL_DATABASE}
+      MYSQL_USER: root
+      MYSQL_PASSWORD: ${MYSQL_ROOT_PASSWORD}
+      BACKUP_TIME: ${BACKUP_TIME:-02:00}
+      BACKUP_RETENTION_DAYS: ${BACKUP_RETENTION_DAYS:-30}
+      TZ: ${TIMEZONE:-Asia/Phnom_Penh}
+    volumes:
+      - ./backups:/backups
+
+volumes:
+  mysql-data:
+  redis-data:
+  minio-data:

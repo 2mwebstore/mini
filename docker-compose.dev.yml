@@ -1,0 +1,40 @@
+# Local development: Redis and S3 photo storage for `go run ./cmd/api serve` (in
+# backend/), published on 127.0.0.1. Not for production.
+#   docker compose -f docker-compose.dev.yml up -d
+#   docker compose -f docker-compose.dev.yml down        # stop (data kept in volumes)
+# MySQL: use your own (e.g. MAMP; set MYSQL_HOST/MYSQL_PORT in the root .env). No
+# MySQL on this computer? Add `--profile mysql` to also start one on 127.0.0.1:3307
+# (user/password attendance/attendance).
+
+name: attendance-dev
+
+services:
+  database:
+    profiles: ["mysql"]
+    image: mysql:8.4
+    # needed so the migration can create the append-only triggers on audit_logs
+    command: ["--log-bin-trust-function-creators=1", "--character-set-server=utf8mb4", "--collation-server=utf8mb4_unicode_ci"]
+    environment:
+      MYSQL_DATABASE: attendance
+      MYSQL_USER: attendance
+      MYSQL_PASSWORD: attendance
+      MYSQL_ROOT_PASSWORD: root
+      TZ: UTC
+    ports: ["127.0.0.1:3307:3306"]
+    volumes: [dev-mysql:/var/lib/mysql]
+    healthcheck:
+      test: ["CMD-SHELL", "mysqladmin ping -h 127.0.0.1 -uroot -proot --silent"]
+      interval: 5s
+      retries: 30
+
+  redis:
+    image: redis:7-alpine
+    ports: ["127.0.0.1:6379:6379"]
+
+  # S3-compatible photo storage for development (MinIO's image is no longer on Docker Hub).
+  storage:
+    image: adobe/s3mock:5.2.3
+    ports: ["127.0.0.1:9090:9090"]
+
+volumes:
+  dev-mysql:
