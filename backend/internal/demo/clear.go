@@ -24,7 +24,7 @@ type Cleared struct {
 var clearTables = []string{
 	"attendance_confirmations", "attendance_locations", "attendance_photos", "attendance",
 	"leave_requests", "leave_balances", "roster_shifts", "schedule_overrides", "notifications",
-	"user_branches", "holidays", "work_schedules", "leave_types", "departments", "positions",
+	"user_branches", "employee_managers", "holidays", "work_schedules", "leave_types", "departments", "positions",
 }
 
 // Clear wipes all business data — branches, employees, system users other than
@@ -87,7 +87,7 @@ func clearAll(ctx context.Context, tx *gorm.DB, keep []uint64, out *Cleared) err
 			return err
 		}
 	}
-	if err := tx.Exec("UPDATE employees SET branch_id = NULL, department_id = NULL, position_id = NULL, work_schedule_id = NULL, manager_id = NULL").Error; err != nil {
+	if err := tx.Exec("UPDATE employees SET branch_id = NULL, department_id = NULL, position_id = NULL, work_schedule_id = NULL").Error; err != nil {
 		return err
 	}
 	// Roles a branch made go with it (nobody is left who has one).

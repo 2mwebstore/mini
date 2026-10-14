@@ -1756,6 +1756,48 @@ func TestIntegration(t *testing.T) {
 		t.Fatalf("company roles are not theirs: %d", code)
 	}
 
+	// ---------- several managers ----------
+	code, body, _ = h.admin("POST", "/employees", ownerJWT, map[string]any{"employee_code": "MG090", "full_name": "Nary Second", "role": "manager",
+		"telegram_user_id": 1090, "branch_id": mainBranch})
+	if code != 201 {
+		t.Fatalf("second manager: %d %v", code, body)
+	}
+	second := uint64(num(body, "id"))
+	code, body, _ = h.admin("POST", "/employees", ownerJWT, map[string]any{"employee_code": "MG091", "full_name": "Two Bosses",
+		"telegram_user_id": 1091, "branch_id": mainBranch, "manager_ids": []uint64{mgr.ID, second}})
+	if code != 201 || len(body["manager_ids"].([]any)) != 2 || len(body["managers"].([]any)) != 2 {
+		t.Fatalf("an employee with two managers: %d %v", code, body)
+	}
+	twoID := uint64(num(body, "id"))
+	if code, body, _ := h.admin("PUT", fmt.Sprintf("/employees/%d", twoID), ownerJWT, map[string]any{"manager_ids": []uint64{twoID}}); code != 400 || errCode(body) != "INVALID_MANAGER" {
+		t.Fatalf("nobody manages themselves: %d %v", code, body)
+	}
+	if code, body, _ := h.admin("PUT", fmt.Sprintf("/employees/%d", twoID), ownerJWT, map[string]any{"manager_ids": []uint64{owner.ID}}); code != 400 || errCode(body) != "INVALID_MANAGER" {
+		t.Fatalf("managers are employees, not admin accounts: %d %v", code, body)
+	}
+	code, body, _ = h.admin("POST", "/attendance", ownerJWT, map[string]any{"employee_id": twoID, "date": "2026-10-09", "check_in": "09:00", "check_out": "17:30", "reason": "Test record"})
+	if code != 200 && code != 201 {
+		t.Fatalf("a record to look at: %d %v", code, body)
+	}
+	twoAtt := fmt.Sprintf("/attendance/%d", uint64(num(body, "id")))
+	for _, tg := range []int64{mgrTG, 1090} {
+		if code, _, _ := h.app("GET", twoAtt, tg, nil); code != 200 {
+			t.Fatalf("each manager (%d) sees their report's records: %d", tg, code)
+		}
+	}
+	if code, _, _ := h.app("GET", twoAtt, sokhaTG, nil); code != 404 {
+		t.Fatalf("others don't: %d", code)
+	}
+	if code, body, _ := h.admin("PUT", fmt.Sprintf("/employees/%d", twoID), ownerJWT, map[string]any{"manager_ids": []uint64{second}}); code != 200 || len(body["manager_ids"].([]any)) != 1 {
+		t.Fatalf("down to one manager: %d %v", code, body)
+	}
+	if code, _, _ := h.app("GET", twoAtt, mgrTG, nil); code != 404 {
+		t.Fatalf("a removed manager no longer sees them: %d", code)
+	}
+	if _, body, _ := h.admin("GET", "/employees", ownerJWT, nil); !strings.Contains(fmt.Sprint(body["items"]), fmt.Sprintf("manager_ids:[%d]", second)) {
+		t.Fatal("the list carries each person's manager_ids")
+	}
+
 	// ---------- lists come 10 at a time ----------
 	w, paged := h.do("GET", "/api/v1/audit-logs", nil, withHeader("Authorization", "Bearer "+ownerJWT))
 	if w.Code != 200 || len(paged["items"].([]any)) != 10 || num(paged, "page_size") != 10 || num(paged, "total") <= 10 {

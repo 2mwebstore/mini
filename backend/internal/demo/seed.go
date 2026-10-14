@@ -163,6 +163,7 @@ type seeder struct {
 	types  map[string]map[string]uint64               // branch code -> leave type code -> id
 	client *auth.Actor                                // the client's Company Admin
 	owner  *models.Employee
+	mgrOf  map[string]uint64 // staff code -> their manager's id
 	isHol  func(time.Time) bool
 	plan   *attendance.Planner // who works which shift, after roster and special schedules
 	sum    *Summary
@@ -198,7 +199,7 @@ func Seed(ctx context.Context, d Deps, o Options) (*Summary, error) {
 		ctx: ctx, d: d, o: o, loc: st.Location, today: timeutil.DateOf(o.Now, st.Location),
 		cli:  &auth.Actor{Employee: models.Employee{RoleID: models.RoleSuperAdmin, FullName: "Demo seed"}, Channel: auth.ChannelCLI},
 		rng:  rand.New(rand.NewPCG(2026, 10)), // fixed: the same demo every time
-		emps: map[string]*models.Employee{}, admins: map[string]*models.Employee{}, branch: map[string]*models.Branch{}, sum: &Summary{},
+		emps: map[string]*models.Employee{}, mgrOf: map[string]uint64{}, admins: map[string]*models.Employee{}, branch: map[string]*models.Branch{}, sum: &Summary{},
 		shifts: map[string]map[string]*models.WorkSchedule{}, types: map[string]map[string]uint64{},
 	}
 	s.isHol = s.holidayOn
@@ -441,7 +442,8 @@ func (s *seeder) staff() error {
 			in.BranchID = &b.ID
 		}
 		if m, ok := managers[p.branch]; ok && p.role == "staff" && p.position != "Branch Manager" {
-			in.ManagerID = &m
+			in.ManagerIDs = &[]uint64{m}
+			s.mgrOf[p.code] = m
 		}
 		actor := s.cli
 		if p.branch == clientBranch.code {
@@ -701,12 +703,13 @@ func (s *seeder) nextWorkday(d time.Time) time.Time {
 // the client's Company Admin for the client's branch, else the owner.
 func (s *seeder) reviewerOf(code string) *models.Employee {
 	e := s.emps[code]
-	if e.ManagerID == nil && branchCode(code) == clientBranch.code {
+	mgr, managed := s.mgrOf[code]
+	if !managed && branchCode(code) == clientBranch.code {
 		return s.admins["A-CLIENT"]
 	}
-	if e.ManagerID != nil {
+	if managed {
 		for _, m := range s.emps {
-			if m.ID == *e.ManagerID {
+			if m.ID == mgr {
 				return m
 			}
 		}

@@ -37,7 +37,7 @@ function openPicker(e: MouseEvent) {
         class="flex min-h-[52px] items-center gap-2 rounded-xl border border-separator bg-surface px-3 py-1.5 transition peer-focus-visible:border-primary peer-active:bg-page"
         aria-hidden="true"
       >
-        <AppIcon name="calendar" class="hidden size-5 shrink-0 text-hint min-[360px]:block" />
+        <AppIcon name="calendar" class="hidden size-5 shrink-0 text-hint min-[420px]:block" />
         <span class="min-w-0">
           <span class="block truncate text-[15px] font-medium tabular-nums" :class="!shown && 'text-hint'">{{ shown?.date ?? 'Choose a date' }}</span>
           <span v-if="shown" class="block truncate text-[12px] text-hint">{{ shown.weekday }}</span>

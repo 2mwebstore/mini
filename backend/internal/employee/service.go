@@ -6,6 +6,7 @@ import (
 	"context"
 	"errors"
 	"regexp"
+	"slices"
 	"strings"
 	"time"
 
@@ -25,22 +26,23 @@ type Service struct{ db *gorm.DB }
 func NewService(db *gorm.DB) *Service { return &Service{db: db} }
 
 type Input struct {
-	EmployeeCode     string  `json:"employee_code"`
-	FullName         string  `json:"full_name"`
-	TelegramUserID   *int64  `json:"telegram_user_id"`
-	TelegramUsername string  `json:"telegram_username"`
-	Department       string  `json:"department"` // by name; created if missing
-	DepartmentID     *uint64 `json:"department_id"`
-	BranchID         *uint64 `json:"branch_id"`   // required for staff, managers and branch admins
-	Position         *string `json:"position"`    // by name; created if missing
-	PositionID       *uint64 `json:"position_id"` // from the managed list (0 = none)
-	Phone            *string `json:"phone"`
-	Email            *string `json:"email"`
-	JoinDate         string  `json:"join_date"`
-	WorkScheduleID   *uint64 `json:"work_schedule_id"`
-	ManagerID        *uint64 `json:"manager_id"`
-	Role             string  `json:"role"`   // a role code (branch_admin is assigned on the Branches page)
-	Status           string  `json:"status"` // ACTIVE | INACTIVE | SUSPENDED (update only)
+	EmployeeCode     string    `json:"employee_code"`
+	FullName         string    `json:"full_name"`
+	TelegramUserID   *int64    `json:"telegram_user_id"`
+	TelegramUsername string    `json:"telegram_username"`
+	Department       string    `json:"department"` // by name; created if missing
+	DepartmentID     *uint64   `json:"department_id"`
+	BranchID         *uint64   `json:"branch_id"`   // required for staff, managers and branch admins
+	Position         *string   `json:"position"`    // by name; created if missing
+	PositionID       *uint64   `json:"position_id"` // from the managed list (0 = none)
+	Phone            *string   `json:"phone"`
+	Email            *string   `json:"email"`
+	JoinDate         string    `json:"join_date"`
+	WorkScheduleID   *uint64   `json:"work_schedule_id"`
+	ManagerIDs       *[]uint64 `json:"manager_ids"` // their managers (each reviews them); [] = none
+	ManagerID        *uint64   `json:"manager_id"`  // one manager (older clients); 0 = none
+	Role             string    `json:"role"`        // a role code (branch_admin is assigned on the Branches page)
+	Status           string    `json:"status"`      // ACTIVE | INACTIVE | SUSPENDED (update only)
 }
 
 var codeRe = regexp.MustCompile(`^[A-Za-z0-9_-]{2,32}$`)
@@ -72,6 +74,10 @@ func (s *Service) Create(ctx context.Context, actor *auth.Actor, in Input) (*mod
 	if err := s.apply(ctx, &emp, in); err != nil {
 		return nil, err
 	}
+	managers, err := s.managersFrom(ctx, &emp, in)
+	if err != nil {
+		return nil, err
+	}
 	err = s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 		if err := s.resolveDepartment(tx, &emp, in); err != nil {
 			return err
@@ -82,6 +88,11 @@ func (s *Service) Create(ctx context.Context, actor *auth.Actor, in Input) (*mod
 				return apperr.Conflict("DUPLICATE_CODE", "Employee ID "+emp.EmployeeCode+" already exists.")
 			}
 			return err
+		}
+		if managers != nil {
+			if err := setManagers(tx, emp.ID, *managers); err != nil {
+				return err
+			}
 		}
 		if in.TelegramUserID != nil && *in.TelegramUserID != 0 {
 			if err := LinkTelegram(tx, emp.ID, *in.TelegramUserID, in.TelegramUsername); err != nil {
@@ -112,7 +123,7 @@ func (s *Service) Update(ctx context.Context, actor *auth.Actor, id uint64, in I
 	if (!actor.CanManage(emp) || models.IsAdminRole(emp.RoleID) && !actor.Has(auth.PermAssignAdminRoles)) && emp.ID != actor.ID() {
 		return nil, apperr.ErrForbidden
 	}
-	before := map[string]any{"name": emp.FullName, "role": auth.RoleCode(emp.RoleID), "status": emp.Status, "manager_id": emp.ManagerID,
+	before := map[string]any{"name": emp.FullName, "role": auth.RoleCode(emp.RoleID), "status": emp.Status, "manager_ids": emp.ManagerIDs,
 		"department_id": emp.DepartmentID, "branch_id": emp.BranchID}
 	if v := strings.TrimSpace(in.FullName); v != "" {
 		emp.FullName = v
@@ -160,11 +171,16 @@ func (s *Service) Update(ctx context.Context, actor *auth.Actor, id uint64, in I
 		}
 		emp.Status = st
 	}
-	if in.ManagerID != nil && *in.ManagerID == emp.ID {
-		return nil, apperr.BadRequest("INVALID_MANAGER", "An employee cannot manage themselves.")
+	managers, err := s.managersFrom(ctx, emp, in)
+	if err != nil {
+		return nil, err
 	}
 	if err := s.apply(ctx, emp, in); err != nil {
 		return nil, err
+	}
+	after := emp.ManagerIDs
+	if managers != nil {
+		after = *managers
 	}
 	err = s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 		if err := s.resolveDepartment(tx, emp, in); err != nil {
@@ -174,6 +190,11 @@ func (s *Service) Update(ctx context.Context, actor *auth.Actor, id uint64, in I
 		if err := tx.Omit(clause.Associations).Save(emp).Error; err != nil {
 			return err
 		}
+		if managers != nil {
+			if err := setManagers(tx, emp.ID, *managers); err != nil {
+				return err
+			}
+		}
 		if in.TelegramUserID != nil {
 			if err := LinkTelegram(tx, emp.ID, *in.TelegramUserID, in.TelegramUsername); err != nil {
 				return err
@@ -181,7 +202,7 @@ func (s *Service) Update(ctx context.Context, actor *auth.Actor, id uint64, in I
 		}
 		return audit.Write(ctx, tx, actor, audit.Entry{Action: audit.ActionEmployeeUpdate, EntityType: "employee", EntityID: emp.ID, TargetEmployeeID: emp.ID,
 			Details: map[string]any{"before": before, "after": map[string]any{"name": emp.FullName, "role": auth.RoleCode(emp.RoleID), "status": emp.Status,
-				"manager_id": emp.ManagerID, "department_id": emp.DepartmentID, "branch_id": emp.BranchID}, "telegram_user_id": in.TelegramUserID}})
+				"manager_ids": after, "department_id": emp.DepartmentID, "branch_id": emp.BranchID}, "telegram_user_id": in.TelegramUserID}})
 	})
 	if err != nil {
 		return nil, err
@@ -246,15 +267,53 @@ func (s *Service) apply(ctx context.Context, emp *models.Employee, in Input) err
 		}
 		emp.WorkScheduleID = in.WorkScheduleID
 	}
-	if in.ManagerID != nil {
-		if *in.ManagerID == 0 {
-			emp.ManagerID = nil
-		} else {
-			var mgr models.Employee
-			if err := s.db.WithContext(ctx).First(&mgr, *in.ManagerID).Error; err != nil || !mgr.IsActive() {
-				return apperr.BadRequest("INVALID_MANAGER", "Manager not found or inactive.")
-			}
-			emp.ManagerID = in.ManagerID
+	return nil
+}
+
+// managersFrom: the managers asked for (nil: unchanged) — active staff, not the person.
+func (s *Service) managersFrom(ctx context.Context, emp *models.Employee, in Input) (*[]uint64, error) {
+	var want []uint64
+	switch {
+	case in.ManagerIDs != nil:
+		want = *in.ManagerIDs
+	case in.ManagerID != nil:
+		if *in.ManagerID != 0 {
+			want = []uint64{*in.ManagerID}
+		}
+	default:
+		return nil, nil
+	}
+	ids := []uint64{}
+	for _, id := range want {
+		if id != 0 && !slices.Contains(ids, id) {
+			ids = append(ids, id)
+		}
+	}
+	if len(ids) > 20 {
+		return nil, apperr.BadRequest("TOO_MANY_MANAGERS", "At most 20 managers.")
+	}
+	if emp.ID != 0 && slices.Contains(ids, emp.ID) {
+		return nil, apperr.BadRequest("INVALID_MANAGER", "An employee cannot manage themselves.")
+	}
+	if len(ids) > 0 {
+		var n int64
+		s.db.WithContext(ctx).Model(&models.Employee{}).
+			Where("id IN ? AND kind = ? AND status = ? AND deleted_at IS NULL", ids, models.KindStaff, models.EmployeeActive).Count(&n)
+		if int(n) != len(ids) {
+			return nil, apperr.BadRequest("INVALID_MANAGER", "Managers must be active employees.")
+		}
+	}
+	return &ids, nil
+}
+
+// setManagers replaces someone's managers.
+func setManagers(tx *gorm.DB, employeeID uint64, ids []uint64) error {
+	if err := tx.Where("employee_id = ?", employeeID).Delete(&models.EmployeeManager{}).Error; err != nil {
+		return err
+	}
+	for _, m := range ids {
+		if err := tx.Create(&models.EmployeeManager{EmployeeID: employeeID, ManagerID: m}).Error; err != nil {
+			return err
 		}
 	}
 	return nil
@@ -411,6 +470,9 @@ func LinkTelegram(tx *gorm.DB, employeeID uint64, tgID int64, username string) e
 func (s *Service) get(ctx context.Context, id uint64) (*models.Employee, error) {
 	var e models.Employee
 	err := s.db.WithContext(ctx).Preload("Department").Preload("Branch").Preload("WorkSchedule").Preload("Role").Preload("TelegramAccount").
+		Preload("Managers", func(db *gorm.DB) *gorm.DB {
+			return db.Select("employees.id", "employees.employee_code", "employees.full_name")
+		}).
 		Where("kind = ?", models.KindStaff).First(&e, id).Error
 	if errors.Is(err, gorm.ErrRecordNotFound) {
 		return nil, apperr.NotFound("EMPLOYEE_NOT_FOUND", "Employee not found.")
@@ -418,7 +480,36 @@ func (s *Service) get(ctx context.Context, id uint64) (*models.Employee, error) 
 	if err != nil {
 		return nil, err
 	}
+	e.ManagerIDs = []uint64{}
+	for _, m := range e.Managers {
+		e.ManagerIDs = append(e.ManagerIDs, m.ID)
+	}
 	return &e, nil
+}
+
+// fillManagers sets each listed employee's manager_ids (one query).
+func (s *Service) fillManagers(ctx context.Context, emps []models.Employee) error {
+	ids := make([]uint64, len(emps))
+	for i := range emps {
+		ids[i] = emps[i].ID
+		emps[i].ManagerIDs = []uint64{}
+	}
+	if len(ids) == 0 {
+		return nil
+	}
+	var links []models.EmployeeManager
+	if err := s.db.WithContext(ctx).Where("employee_id IN ?", ids).Order("manager_id").Find(&links).Error; err != nil {
+		return err
+	}
+	at := map[uint64]int{}
+	for i := range emps {
+		at[emps[i].ID] = i
+	}
+	for _, l := range links {
+		e := &emps[at[l.EmployeeID]]
+		e.ManagerIDs = append(e.ManagerIDs, l.ManagerID)
+	}
+	return nil
 }
 
 func (s *Service) Get(ctx context.Context, actor *auth.Actor, id uint64) (*models.Employee, error) {
@@ -474,7 +565,7 @@ func (s *Service) List(ctx context.Context, actor *auth.Actor, f ListFilter) ([]
 	if err := q.Limit(1000).Find(&out).Error; err != nil {
 		return nil, err
 	}
-	return out, nil
+	return out, s.fillManagers(ctx, out)
 }
 
 // Find resolves "/report Dara" or "/report GT001": exact code first, then name match.

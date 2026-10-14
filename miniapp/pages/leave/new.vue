@@ -24,15 +24,19 @@ onMounted(async () => {
 const today = todayISO(auth.timezone)
 const form = reactive({ leaveTypeId: '', whole: 'FULL' as 'FULL' | 'HALF', half: 'FIRST_HALF' as HalfDay, start: today, end: today, reason: '' })
 const chosenType = computed(() => types.value?.find(t => String(t.id) === form.leaveTypeId))
+const capitalize = (v: string) => v.charAt(0).toUpperCase() + v.slice(1)
 const typeOptions = computed((): PickOption[] => (types.value ?? []).map(t => {
   const b = balances.value.get(t.id)
   return {
     value: String(t.id),
     label: t.name,
-    sub: t.approval === 'AUTO' ? 'Approved automatically' : t.description || undefined,
+    // What the type is: its description, else its allowance; and if it needs no review.
+    sub: capitalize([t.description || (t.annual_days ? `${fmtDays(t.annual_days)} a year` : ''), t.approval === 'AUTO' ? 'approved automatically' : '']
+      .filter(Boolean).join(' · ')) || undefined,
     color: t.color,
-    hint: b ? `${fmtDays(Math.max(0, b.available))} left` : undefined,
-    hintTone: b && b.available <= 0 ? 'warning' : 'hint',
+    icon: 'leave',
+    hint: b?.tracked ? `${fmtDays(Math.max(0, b.available))} left` : undefined,
+    hintTone: b && b.available <= 0 ? 'warning' : 'success',
   }
 }))
 watch(types, t => {

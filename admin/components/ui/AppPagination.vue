@@ -23,7 +23,7 @@ const plural = computed(() => props.total === 1 ? props.noun
       <div class="flex items-center gap-2">
         <span>Rows</span>
         <SearchSelect
-          :id="`${uid}-size`" :model-value="String(pageSize)" :options="sizeOptions" label="Rows per page" class="w-24"
+          :id="`${uid}-size`" :model-value="String(pageSize)" :options="sizeOptions" label="Rows per page" class="w-24" :searchable="false"
           @update:model-value="v => $emit('size', Number(v))"
         />
       </div>

@@ -213,7 +213,6 @@ type Employee struct {
 	Email          string     `json:"email"`
 	JoinDate       *time.Time `json:"join_date"`
 	WorkScheduleID *uint64    `json:"work_schedule_id"`
-	ManagerID      *uint64    `json:"manager_id"`
 	RoleID         uint8      `json:"role_id"`
 	Status         string     `json:"status"`
 	CreatedAt      time.Time  `json:"created_at"`
@@ -225,6 +224,16 @@ type Employee struct {
 	WorkSchedule    *WorkSchedule    `gorm:"foreignKey:WorkScheduleID" json:"work_schedule,omitempty"`
 	Role            *Role            `gorm:"foreignKey:RoleID" json:"role,omitempty"`
 	TelegramAccount *TelegramAccount `gorm:"foreignKey:EmployeeID" json:"telegram_account,omitempty"`
+	// The people who manage this person (employee_managers): each reviews them.
+	Managers   []*Employee `gorm:"many2many:employee_managers;joinForeignKey:EmployeeID;joinReferences:ManagerID" json:"managers,omitempty"`
+	ManagerIDs []uint64    `gorm:"-" json:"manager_ids"`
+}
+
+// EmployeeManager links someone to one of their managers.
+type EmployeeManager struct {
+	EmployeeID uint64 `gorm:"primaryKey"`
+	ManagerID  uint64 `gorm:"primaryKey"`
+	CreatedAt  time.Time
 }
 
 // Roles and their permissions are configured in the database; package auth reads

@@ -6,15 +6,16 @@ import (
 	"attendance/backend/internal/models"
 )
 
-func emp(id uint64, role uint8, manager *uint64) *models.Employee {
-	return &models.Employee{ID: id, RoleID: role, ManagerID: manager, Status: models.EmployeeActive}
+// emp builds a person; their manager (if any) is the actor whose Team lists them.
+func emp(id uint64, role uint8, _ *uint64) *models.Employee {
+	return &models.Employee{ID: id, RoleID: role, Status: models.EmployeeActive}
 }
 
 func TestVisibilityAndReview(t *testing.T) {
 	mgrID := uint64(10)
 	staffA := emp(1, models.RoleStaff, &mgrID)
 	staffB := emp(2, models.RoleStaff, nil)
-	manager := &Actor{Employee: *emp(10, models.RoleManager, nil)}
+	manager := &Actor{Employee: *emp(10, models.RoleManager, nil), Team: []uint64{staffA.ID}}
 	hr := &Actor{Employee: *emp(20, models.RoleHRAdmin, nil)}
 	super := &Actor{Employee: *emp(30, models.RoleSuperAdmin, nil)}
 	staff := &Actor{Employee: *staffA}

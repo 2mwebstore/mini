@@ -32,7 +32,7 @@ const form = reactive({
   email: e?.email ?? '',
   join_date: isoDay(e?.join_date),
   work_schedule_id: e?.work_schedule_id ? String(e.work_schedule_id) : '',
-  manager_id: e?.manager_id ? String(e.manager_id) : '',
+  manager_ids: (e?.manager_ids ?? []).map(String),
   role: (e?.role?.code ?? 'staff') as RoleCode,
   status: (e?.status ?? 'ACTIVE') as EmployeeStatus,
 })
@@ -54,9 +54,10 @@ const branchFixed = computed(() => !auth.multiBranch)
 watch(activeBranches, (list) => {
   if (!form.branch_id && list.length === 1) form.branch_id = String(list[0]!.id)
 }, { immediate: true })
-// Managers come from the same branch (the current one is kept so it shows).
-const managers = computed(() => (lookups.employees ?? []).filter(m =>
-  !m.deleted_at && m.id !== e?.id && (String(m.id) === form.manager_id || !form.branch_id || String(m.branch_id ?? '') === form.branch_id)))
+// Managers: people of the same branch whose role reviews a team (the chosen ones always show).
+const reviews = (roleId: number) => !!lookups.roles?.find(r => r.id === roleId)?.permissions.includes('team.review')
+const managers = computed(() => (lookups.employees ?? []).filter(m => form.manager_ids.includes(String(m.id))
+  || (!m.deleted_at && m.id !== e?.id && reviews(m.role_id) && (!form.branch_id || String(m.branch_id ?? '') === form.branch_id))))
 const branchOptions = computed((): SelectOption[] => activeBranches.value.map(b => ({ value: String(b.id), label: b.name })))
 // Departments, positions and shifts are the chosen branch's own.
 const departmentOptions = computed(() => form.branch_id ? lookups.departmentOptions(form.branch_id) : [])
@@ -69,7 +70,7 @@ watch(() => form.branch_id, (b) => {
 })
 const moved = computed(() => !!e && String(e.branch_id ?? '') !== form.branch_id)
 const needBranch = computed(() => !companyWide.value && !form.branch_id)
-const managerOptions = computed((): SelectOption[] => managers.value.map(m => ({ value: String(m.id), label: m.full_name, sub: m.employee_code })))
+const managerOptions = computed((): SelectOption[] => managers.value.map(m => ({ value: String(m.id), label: m.full_name, sub: [m.employee_code, m.role?.name].filter(Boolean).join(' · ') })))
 const roleOptions = computed((): SelectOption[] => roles.value.map(r => ({ value: r.code, label: r.name, sub: r.branch_name || (r.is_system ? undefined : 'custom') })))
 const statusOptions = optionsFrom(employeeStatus)
 const tgValid = computed(() => form.telegram_user_id === '' || /^\d{1,15}$/.test(form.telegram_user_id))
@@ -82,7 +83,7 @@ function submit() {
     department_id: Number(form.department_id) || 0,
     phone: form.phone.trim(),
     email: form.email.trim(),
-    manager_id: Number(form.manager_id) || 0,
+    manager_ids: form.manager_ids.map(Number),
     role: form.role,
   }
   if (!e) input.employee_code = form.employee_code.trim()
@@ -136,8 +137,11 @@ function submit() {
         :empty-label="needBranch ? 'Choose a branch first' : e && !moved ? 'Unchanged' : 'The branch\'s default shift'"
       />
     </FormField>
-    <FormField label="Manager" for="emp-mgr" hint="The manager reviews this person's attendance and leave.">
-      <SearchSelect id="emp-mgr" v-model="form.manager_id" :options="managerOptions" empty-label="No manager" />
+    <FormField label="Managers" for="emp-mgr" hint="Each manager reviews this person's attendance and leave in the Mini App and gets their review messages.">
+      <MultiSelect
+        id="emp-mgr" v-model="form.manager_ids" :options="managerOptions" noun="manager"
+        placeholder="No manager" search-placeholder="Search name or ID…"
+      />
     </FormField>
     <FormField label="Role" for="emp-role" hint="Admin panel accounts are system users (Administration → System users).">
       <SearchSelect id="emp-role" v-model="form.role" :options="roleOptions" />

@@ -52,6 +52,8 @@ type Actor struct {
 	// Branches assigned to this system user (user_branches). For a company-wide
 	// role, none means every branch; a branch-level role also reaches its own branch.
 	Branches []uint64
+	// Team: the people this actor manages (employee_managers), deactivated ones too.
+	Team []uint64
 }
 
 func (a *Actor) ID() uint64 { return a.Employee.ID }
@@ -187,8 +189,9 @@ func (a *Actor) InBranch(branchID uint64) bool {
 	return all || slices.Contains(ids, branchID)
 }
 
+// managesEmployee: the actor is one of target's managers.
 func (a *Actor) managesEmployee(target *models.Employee) bool {
-	return target.ManagerID != nil && *target.ManagerID == a.Employee.ID
+	return slices.Contains(a.Team, target.ID)
 }
 
 // inScope: target is reached by the actor's branch scope. Company-wide people
@@ -246,9 +249,9 @@ func ReviewScope(q *gorm.DB, a *Actor) *gorm.DB {
 	switch {
 	case branchReview && all:
 	case branchReview && len(ids) > 0:
-		q = q.Where("(e.manager_id = ? OR (e.branch_id IN ? AND e.role_id NOT IN ?))", a.ID(), ids, models.CompanyWideRoleIDs())
+		q = q.Where("(e.id IN (SELECT employee_id FROM employee_managers WHERE manager_id = ?) OR (e.branch_id IN ? AND e.role_id NOT IN ?))", a.ID(), ids, models.CompanyWideRoleIDs())
 	default:
-		q = q.Where("e.manager_id = ?", a.ID())
+		q = q.Where("e.id IN (SELECT employee_id FROM employee_managers WHERE manager_id = ?)", a.ID())
 	}
 	if a.Employee.RoleID != models.RoleSuperAdmin {
 		q = q.Where("e.id <> ?", a.ID()) // nobody reviews themselves except the owner

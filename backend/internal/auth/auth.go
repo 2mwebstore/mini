@@ -121,6 +121,9 @@ func (s *Service) ActorFromJWT(ctx context.Context, raw string) (*Actor, error) 
 	if a.Branches, err = s.branchesOf(ctx, emp.ID); err != nil {
 		return nil, err
 	}
+	if a.Team, err = ManagedBy(ctx, s.db, emp.ID); err != nil {
+		return nil, err
+	}
 	return a, nil
 }
 
@@ -149,6 +152,9 @@ func (s *Service) ActorFromTelegram(ctx context.Context, tgUserID int64) (*Actor
 	}
 	a := &Actor{Employee: *emp, Channel: ChannelTelegram}
 	if a.Branches, err = s.branchesOf(ctx, emp.ID); err != nil {
+		return nil, err
+	}
+	if a.Team, err = ManagedBy(ctx, s.db, emp.ID); err != nil {
 		return nil, err
 	}
 	return a, nil
@@ -184,11 +190,26 @@ func (s *Service) loadEmployee(ctx context.Context, id uint64) (*models.Employee
 	return &e, err
 }
 
-// TeamIDs returns the employees managed by managerID.
+// TeamIDs returns the active staff managed by managerID (one of their managers).
 func TeamIDs(ctx context.Context, db *gorm.DB, managerID uint64) ([]uint64, error) {
 	var ids []uint64
 	err := db.WithContext(ctx).Model(&models.Employee{}).
-		Where("manager_id = ? AND deleted_at IS NULL AND kind = ?", managerID, models.KindStaff).Pluck("id", &ids).Error
+		Where("id IN (SELECT employee_id FROM employee_managers WHERE manager_id = ?) AND deleted_at IS NULL AND kind = ?", managerID, models.KindStaff).
+		Pluck("id", &ids).Error
+	return ids, err
+}
+
+// ManagedBy lists everyone managerID manages, deactivated people too (their history).
+func ManagedBy(ctx context.Context, db *gorm.DB, managerID uint64) ([]uint64, error) {
+	ids := []uint64{}
+	err := db.WithContext(ctx).Model(&models.EmployeeManager{}).Where("manager_id = ?", managerID).Pluck("employee_id", &ids).Error
+	return ids, err
+}
+
+// ManagersOf lists the managers of employeeID.
+func ManagersOf(ctx context.Context, db *gorm.DB, employeeID uint64) ([]uint64, error) {
+	ids := []uint64{}
+	err := db.WithContext(ctx).Model(&models.EmployeeManager{}).Where("employee_id = ?", employeeID).Order("manager_id").Pluck("manager_id", &ids).Error
 	return ids, err
 }
 

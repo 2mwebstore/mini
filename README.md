@@ -119,9 +119,11 @@ checking in, and a system user for the panel.
 Roles: system users have admin roles — `super_admin` (the owner), `hr_admin`
 (company-wide HR), `branch_admin` (one branch) or a custom admin role; employees have
 `staff`, `manager` or a custom role of that kind. The owner (and a Company Admin, for
-their own branches) creates branches; only the owner assigns branch admins and manages
-system users. A manager reviews the people whose
-**Manager** is set to them, in the Mini App.
+their own branches) creates branches; the owner manages every system user, and a
+branch's admins the accounts and roles of their branches. A manager reviews the people whose
+**Managers** include them, in the Mini App. Someone can have **several managers**
+(*Managers* in the employee form — people of their branch whose role reviews a team):
+each of them reviews the person and gets their review messages.
 
 ### HTTPS
 
@@ -536,7 +538,7 @@ it on a live database.
 | — | A late check-in (after the grace period) or an early check-out needs a reason (≤ 255 characters), stored as `check_in_reason` / `check_out_reason` | `attendance/service.go` (`REASON_REQUIRED`, migration `0008`) |
 | — | Departments, positions, shifts, leave types and holidays belong to one branch; a person only gets their own branch's (a move to another branch drops the old ones and gives the new branch's default shift) | `employee/`, `schedule/`, `leave/` (migration `0008`) |
 | 7 | `confirmation_required=false` auto-confirms | `company_settings` |
-| 8–10 | Staff: self · Manager: assigned team (`manager_id`) · Branch admin: their branch (+ assigned) · company-wide roles: all, or only their assigned branches. No self-review except super admin | `auth/permissions.go`, `auth/roles.go` |
+| 8–10 | Staff: self · Manager: the people they manage (`employee_managers`; a person may have several managers) · Branch admin: their branch (+ assigned) · company-wide roles: all, or only their assigned branches. No self-review except super admin | `auth/permissions.go`, `auth/roles.go` |
 | 11 | Approving leave marks those working days `LEAVE`; check-in on a leave day is refused. A **half day** marks nothing: the other half is worked, late/early measured against it | `leave/service.go`, `attendance/plan.go` (`Halves`, `WithHalfOff`) |
 | — | A half day is one working date; its hours are the first or second half of that day's shift (normal or cross-day). Two different halves of a date may both be taken | `leave/service.go` |
 | — | Leave can't exceed the balance (unless the type allows it), the per-request maximum or the notice period | `leave/policy.go` |
@@ -581,7 +583,7 @@ asked. Attendance records page at most 200 at a time; the audit log at most 500.
 |---|---|---|
 | `POST /auth/login` · `GET /auth/me` · `POST /auth/logout` | — | login: 10/min/IP; `me` includes company name + timezone |
 | `GET /employees?q=&branch_id=&department_id=&position_id=&status=&include_inactive=` · `GET /employees/:id` | scoped | staff only (system users are not employees) |
-| `POST /employees` · `PUT /employees/:id` · `DELETE /employees/:id` | staff.manage | delete = deactivate |
+| `POST /employees` · `PUT /employees/:id` · `DELETE /employees/:id` | staff.manage | delete = deactivate; `manager_ids: [..]` sets their managers (active employees; `[]` = none; `manager_id` still sets one); responses carry `manager_ids` and, for one employee, `managers` |
 | `GET /branches` · `GET /branches/:id` | scoped | company-wide users see all; others the branches they reach; `telegram_bot_set` / `telegram_bot_username` (the token itself is never returned) |
 | `POST /branches {code, name, address?, starter?}` | branches.manage (owner) or branches.create (Company Admin) | `starter: true` adds a default shift and the usual leave types; a creator limited to some branches gets the new one added to their access |
 | `PUT /branches/:id/admin {employee_id\|null}` | owner, or users.branch in their branches | assign / remove the branch admin (users.branch: one of their own accounts) |
@@ -684,6 +686,13 @@ company admins in Telegram if a backup failed or none ran for over a day.
 Run one now: `docker compose exec backup backup.sh now`.
 Restore: `gunzip -c backups/attendance-YYYYMMDD-HHMM.sql.gz | docker compose exec -T database mysql -uroot -p"$MYSQL_ROOT_PASSWORD" attendance`.
 Back up the photo bucket too (or rely on R2/S3 durability).
+
+## Upgrading: several managers per employee (migration 0011)
+
+Migration `0011` moves each employee's manager into the new `employee_managers` table
+and drops `employees.manager_id`; nothing changes for anyone. Give someone more
+managers in the employee form. API clients can keep sending `manager_id` (one manager)
+or send `manager_ids`; responses have `manager_ids` instead of `manager_id`.
 
 ## Upgrading: branch roles (migration 0010)
 

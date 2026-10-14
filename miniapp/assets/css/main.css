@@ -68,10 +68,13 @@ body {
   min-height: var(--tg-viewport-stable-height, 100vh);
 }
 
-/* Native-feeling inputs in both themes */
-input,
-select,
-textarea {
-  background: var(--color-surface);
-  color: var(--color-fg);
+/* Native-feeling inputs in both themes. In the base layer, so a field's own classes
+   (e.g. bg-transparent on the picker's search box) win over it. */
+@layer base {
+  input,
+  select,
+  textarea {
+    background: var(--color-surface);
+    color: var(--color-fg);
+  }
 }

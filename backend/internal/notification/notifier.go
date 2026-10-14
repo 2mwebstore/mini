@@ -125,10 +125,7 @@ func (n *Notifier) reviewers(ctx context.Context, bot *bots.Bot, emp *models.Emp
 	if bot.ReviewChatID != 0 {
 		return []recipient{{chatID: bot.ReviewChatID}}
 	}
-	var ids []uint64
-	if emp.ManagerID != nil {
-		ids = append(ids, *emp.ManagerID)
-	}
+	ids, _ := auth.ManagersOf(ctx, n.db, emp.ID) // all of their managers
 	var br models.Branch
 	if n.db.WithContext(ctx).Select("id", "admin_employee_id").First(&br, bot.BranchID).Error == nil && br.AdminEmployeeID != nil {
 		ids = append(ids, *br.AdminEmployeeID)

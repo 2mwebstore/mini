@@ -275,7 +275,8 @@ export interface Employee {
   email: string
   join_date: string | null
   work_schedule_id: number | null
-  manager_id: number | null
+  manager_ids: number[] // their managers: each reviews them
+  managers?: { id: number; employee_code: string; full_name: string }[]
   role_id: number
   status: EmployeeStatus
   created_at: string
@@ -302,7 +303,7 @@ export interface EmployeeInput {
   email?: string
   join_date?: string
   work_schedule_id?: number
-  manager_id?: number // 0 clears
+  manager_ids?: number[] // [] = no manager
   role?: RoleCode
   status?: EmployeeStatus
 }
