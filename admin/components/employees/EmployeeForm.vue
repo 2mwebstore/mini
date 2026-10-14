@@ -39,7 +39,13 @@ const form = reactive({
 
 // Employees are staff: Staff, Manager (reviews their team in the Mini App) or a custom
 // role of that kind. Admin roles belong to system users (the API enforces this).
-const roles = computed(() => (lookups.roles ?? []).filter(r => r.code === form.role || !isAdminRole(r)))
+// A branch's own roles are offered only for people of that branch.
+const roles = computed(() => (lookups.roles ?? []).filter(r =>
+  r.code === form.role || (!isAdminRole(r) && (r.branch_id == null || String(r.branch_id) === form.branch_id))))
+watch(() => form.branch_id, (b) => {
+  const r = lookups.roles?.find(x => x.code === form.role)
+  if (r?.branch_id && String(r.branch_id) !== b) form.role = 'staff'
+})
 // Roles that see every branch belong to no branch; everyone else belongs to one.
 const companyWide = computed(() => !!lookups.roles?.find(r => r.code === form.role)?.permissions.includes('all.view'))
 const activeBranches = computed(() => (lookups.branches ?? []).filter(b => b.status === 'ACTIVE' || String(b.id) === form.branch_id))
@@ -64,7 +70,7 @@ watch(() => form.branch_id, (b) => {
 const moved = computed(() => !!e && String(e.branch_id ?? '') !== form.branch_id)
 const needBranch = computed(() => !companyWide.value && !form.branch_id)
 const managerOptions = computed((): SelectOption[] => managers.value.map(m => ({ value: String(m.id), label: m.full_name, sub: m.employee_code })))
-const roleOptions = computed((): SelectOption[] => roles.value.map(r => ({ value: r.code, label: r.name, sub: r.is_system ? undefined : 'custom' })))
+const roleOptions = computed((): SelectOption[] => roles.value.map(r => ({ value: r.code, label: r.name, sub: r.branch_name || (r.is_system ? undefined : 'custom') })))
 const statusOptions = optionsFrom(employeeStatus)
 const tgValid = computed(() => form.telegram_user_id === '' || /^\d{1,15}$/.test(form.telegram_user_id))
 

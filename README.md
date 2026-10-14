@@ -289,14 +289,21 @@ to their access at once. They see only those branches and manage everything in t
 (staff, attendance, leave, schedules, setup lists, reports, GPS, Telegram); they cannot
 see other branches or change company settings.
 
-They also run **Administration** for their branches (*Admin accounts of their branches*,
-`users.branch`): on *System users* they create, edit, disable, reset the password of and
-delete admin accounts that work only in their branches — Branch Admins (which become
-that branch's admin), more Company Admins, or a custom role — never the owner, HR or any
+They also run **Administration** for their branches (*Admin accounts & roles of their
+branches*, `users.branch` — Branch Admins have it too, for their own branch): on
+*System users* they create, edit, disable, reset the password of and delete admin
+accounts that work only in their branches — Branch Admins (which become that branch's
+admin), more Company Admins, or a role of their branch — never the owner, HR or any
 company-wide role, and never a role with more powers than their own. Every account they
 make is placed in one of their branches; on *Branch assignment* they can add only their
-own branches. Accounts outside their branches don't exist for them. *Role management*
-stays the owner's.
+own branches. Accounts outside their branches don't exist for them.
+
+**Branch roles.** On *Role management* they see and edit only their branches' own roles
+(the owner sees every role, each labelled *Company* or with its branch). A branch role is
+made for one branch, may hold only permissions its maker has (plus checking in and
+leave, for staff roles), and is offered only for that branch's people — in the employee
+form and on System users (`ROLE_OTHER_BRANCH` otherwise). Company roles stay the owner's.
+The demo's client has one: *Shift Supervisor* (Kampot Coffee Co.).
 
 **GPS per branch.** On each branch's page: ask for the location at check-in/out, require
 it, and/or refuse check-ins outside the office radius (which needs the office point).
@@ -336,9 +343,9 @@ Pages a role cannot use are hidden. What the built-in roles may do (change it on
 | Schedules › Holidays — per branch; one holiday can be added to several branches at once | edit | edit | their branches | their branch |
 | Employees — add, edit, link Telegram, set branch/department/position/manager/role, deactivate; filter by branch, department and position | ✓ | ✓ (not admins) | their branches | their branch |
 | Employees › Departments, Positions — per branch: add, rename, delete unused | ✓ | ✓ | their branches | their branch |
-| Administration › System users — admin accounts (separate from employees): role, branch, Telegram, status, reset password, delete | ✓ | — | their branches' accounts | — |
-| Administration › Branch assignment | ✓ | — | their branches' accounts | — |
-| Administration › Role management | ✓ | — | — | — |
+| Administration › System users — admin accounts (separate from employees): role, branch, Telegram, status, reset password, delete | ✓ | — | their branches' accounts | their branch's accounts |
+| Administration › Branch assignment | ✓ | — | their branches' accounts | their branch's accounts |
+| Administration › Role management — company roles and each branch's own roles | ✓ (all) | — | their branches' roles | their branch's roles |
 | Branches — add/edit/close branches; each branch's page has its details, admin, **Location (GPS)** and **Telegram** (own bot) | ✓ (+ assign admins) | — | add, and edit their own | My branch: GPS + Telegram |
 | Reports — period summary per employee, Excel/CSV export (with check-in/out reasons) | ✓ | ✓ | their branches | their branch |
 | Settings › General — company name, timezone, confirmations, scheduled jobs | edit | view | — | — |
@@ -346,6 +353,10 @@ Pages a role cannot use are hidden. What the built-in roles may do (change it on
 
 Managers are employees: they review their team's attendance and leave in the Mini App
 (*Team* tab), not in the panel.
+
+**Map pins** next to check-in and check-out times — on the dashboard, the attendance
+list and a record's View — open the spot in **Google Maps** (green: inside the office
+radius, amber: outside, grey: the branch has no office point).
 
 **Every list shows 10 rows per page**, with *Rows* (10 / 25 / 50 / 100) and page buttons
 under it. Row actions are icon buttons with a coloured background — **View** (blue),
@@ -577,8 +588,8 @@ asked. Attendance records page at most 200 at a time; the audit log at most 500.
 | `PUT /branches/:id` | owner, a creator for branches they reach, or that branch's admin | `gps: {enabled, required, reject_outside}`, office lat/lng/radius or `clear_office`, `telegram_bot_token` (write-only, checked with Telegram, `""` removes the bot), `miniapp_url`, `telegram_group_id`, `telegram_review_chat_id`; branch admins: only these, not code/name/address/status |
 | `GET /departments?branch_id=` · `GET /positions?branch_id=` | scoped | `{id, branch_id, branch_name, name, employees}` |
 | `POST\|PUT /departments[/:id]` · `POST\|PUT /positions[/:id] {name, branch_id}` · `DELETE …/:id` | staff.manage, in a branch they reach | `branch_id` on create; in use → 409 |
-| `GET /roles` | any | roles with permissions, head counts and `assignable` (whether the caller may give it) |
-| `GET /roles/permissions` · `POST /roles` · `PUT /roles/:id` · `DELETE /roles/:id` | users.manage | `{name, description, permissions[]}`; built-in roles can't be deleted |
+| `GET /roles` | any | company roles + the roles of the branches the caller reaches: permissions, head counts, `branch_id` / `branch_name`, `assignable` (may give it to a system user) and `editable` |
+| `GET /roles/permissions` · `POST /roles` · `PUT /roles/:id` · `DELETE /roles/:id` | users.manage, or users.branch for their branches' roles | `{name, description, permissions[], branch_id?}`; the catalog lists what the caller may grant; a branch role's branch is fixed; built-in roles can't be deleted |
 | `GET /system-users` · `POST /system-users {full_name, email, password, role, branch_id?, phone?, telegram_user_id?}` · `PUT /system-users/:id {…, status?}` · `DELETE /system-users/:id` | users.manage, or users.branch for their branches' accounts | admin accounts, separate from employees; admin roles only (a Branch Admin takes its branch); delete keeps the audit history. With users.branch: only accounts working in the actor's branches, only roles that are branch-level and within their own powers, `branch_id` required and theirs |
 | `POST /system-users/:id/password {password}` · `PUT /system-users/:id/branches {branch_ids}` | users.manage, or users.branch | `branch_ids: []` = all branches (users.branch: only their own branches) |
 | `GET /work-schedules?branch_id=` | scoped | each branch's shifts, with how many staff use each |
@@ -598,7 +609,7 @@ asked. Attendance records page at most 200 at a time; the audit log at most 500.
 | `GET /leave/balances?year=&branch_id=&department_id=&q=` | scoped | `{types, items:[{employee…, balances:[{allocated, carried, used, pending, remaining, available, custom}]}]}` |
 | `PUT /leave/balances {employee_id, leave_type_id, year, allocated, carried, note}` · `DELETE /leave/balances?employee_id=&leave_type_id=&year=` | leave.manage | set / reset to the type's allowance |
 | `POST /leave/:id/approve` · `/reject {note}` | reviewer | |
-| `GET /reports/daily?date=&branch_id=` | scoped | counts + rows |
+| `GET /reports/daily?date=&branch_id=` | scoped | counts + rows (each with `check_in_place` / `check_out_place`: lat/lng, distance, inside) |
 | `GET /reports/summary?from=&to=&employee_id=&branch_id=&department_id=&status=` | scoped | rows + per-staff summaries + totals |
 | `GET /reports/export?format=xlsx\|csv&from=&to=&employee_id=&branch_id=&department_id=` | report.export | includes Branch, Shift, Check-In Reason and Check-Out Reason columns |
 | `GET /settings` · `PUT /settings {key: value}` | settings.view / owner | `{settings, backup}`: company name, timezone, confirmations, job times (Telegram and GPS are per branch) |
@@ -673,6 +684,14 @@ company admins in Telegram if a backup failed or none ran for over a day.
 Run one now: `docker compose exec backup backup.sh now`.
 Restore: `gunzip -c backups/attendance-YYYYMMDD-HHMM.sql.gz | docker compose exec -T database mysql -uroot -p"$MYSQL_ROOT_PASSWORD" attendance`.
 Back up the photo bucket too (or rely on R2/S3 durability).
+
+## Upgrading: branch roles (migration 0010)
+
+Migration `0010` adds `roles.branch_id` (a role can belong to one branch) and gives
+**Branch Admins** *Admin accounts & roles of their branches* (`users.branch`): they now
+see *Administration* — System users, Branch assignment and Role management — for their
+own branch. Existing roles stay company roles. Clearing data (`clear-data`) removes the
+branches' own roles with the branches.
 
 ## Upgrading: client admins manage their own admin accounts (migration 0009)
 

@@ -60,11 +60,13 @@ function pick(o: PickOption) {
     @click="show"
   >
     <span v-if="selected?.color" class="size-3 shrink-0 rounded-full" :style="{ background: selected.color }" aria-hidden="true" />
+    <!-- The name gets the whole width; its hint (“22 days left”) goes on the second line. -->
     <span class="min-w-0 flex-1">
       <span class="block truncate text-[15px]" :class="selected ? 'font-medium' : 'text-hint'">{{ selected?.label ?? placeholder }}</span>
-      <span v-if="selected?.sub" class="block truncate text-[13px] text-hint">{{ selected.sub }}</span>
+      <span v-if="selected?.hint || selected?.sub" class="block truncate text-[13px] text-hint">
+        <span v-if="selected?.hint" :class="tones[selected.hintTone ?? 'hint']">{{ selected.hint }}</span><template v-if="selected?.hint && selected?.sub"> · </template>{{ selected?.sub }}
+      </span>
     </span>
-    <span v-if="selected?.hint" class="shrink-0 text-[13px]" :class="tones[selected.hintTone ?? 'hint']">{{ selected.hint }}</span>
     <AppIcon name="chevron" class="size-5 shrink-0 rotate-90 text-hint" />
   </button>
 

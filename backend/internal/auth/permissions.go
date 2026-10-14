@@ -141,7 +141,20 @@ func (a *Actor) CanGrant(roleID uint8) bool {
 	if a.Has(PermUsersManage) {
 		return a.Has(PermAssignAdminRoles)
 	}
+	if b := RoleBranch(roleID); b != nil && !a.Reaches(*b) {
+		return false // another branch's role
+	}
 	return a.Has(PermUsersBranch) && roleID != models.RoleSuperAdmin && !IsCompanyWide(roleID) && RoleWithin(roleID, a)
+}
+
+// EditsRole: the actor may change this role — any but the owner's with users.manage;
+// with users.branch, a role of their branches that has no more powers than their own.
+func (a *Actor) EditsRole(roleID uint8) bool {
+	if a.Has(PermUsersManage) {
+		return roleID != models.RoleSuperAdmin
+	}
+	b := RoleBranch(roleID)
+	return a.Has(PermUsersBranch) && b != nil && a.Reaches(*b) && RoleWithin(roleID, a)
 }
 
 // Reaches: the branch is within the actor's reach.

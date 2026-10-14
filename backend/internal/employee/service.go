@@ -66,6 +66,9 @@ func (s *Service) Create(ctx context.Context, actor *auth.Actor, in Input) (*mod
 	if err := s.resolveBranch(ctx, actor, &emp, in.BranchID); err != nil {
 		return nil, err
 	}
+	if err := roleFits(&emp); err != nil {
+		return nil, err
+	}
 	if err := s.apply(ctx, &emp, in); err != nil {
 		return nil, err
 	}
@@ -143,6 +146,9 @@ func (s *Service) Update(ctx context.Context, actor *auth.Actor, id uint64, in I
 			// Departments, positions and shifts belong to a branch: a move drops the old ones.
 			emp.DepartmentID, emp.PositionID, emp.Position, emp.WorkScheduleID = nil, nil, "", nil
 		}
+	}
+	if err := roleFits(emp); err != nil {
+		return nil, err
 	}
 	if in.Status != "" {
 		st := strings.ToUpper(in.Status)
@@ -356,6 +362,14 @@ func (s *Service) resolveBranch(ctx context.Context, actor *auth.Actor, emp *mod
 		return apperr.BadRequest("INACTIVE_BRANCH", "That branch is closed.")
 	}
 	emp.BranchID = &b.ID
+	return nil
+}
+
+// roleFits: a branch's own role (Role management) goes only to people of that branch.
+func roleFits(e *models.Employee) error {
+	if !auth.RoleFits(e.RoleID, e.BranchID) {
+		return apperr.BadRequest("ROLE_OTHER_BRANCH", "That role belongs to another branch: choose a role of this person's branch.")
+	}
 	return nil
 }
 

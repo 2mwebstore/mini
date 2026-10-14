@@ -29,7 +29,7 @@ func (s *Server) listRoles(c *gin.Context) {
 }
 
 func (s *Server) permissionCatalog(c *gin.Context) {
-	c.JSON(http.StatusOK, gin.H{"items": auth.Catalog})
+	c.JSON(http.StatusOK, gin.H{"items": s.access.Catalog(actorFrom(c))})
 }
 
 func roleID(c *gin.Context) (uint8, bool) {

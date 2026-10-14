@@ -95,12 +95,16 @@ export interface Role {
   users: number
   locked: boolean // the owner role: always every permission
   assignable: boolean // the signed-in user may give this role to a system user
+  editable: boolean // the signed-in user may change (and delete) it
+  branch_id: number | null // a branch's own role (null: a company role)
+  branch_name: string
 }
 
 export interface RoleInput {
   name?: string
   description?: string
   permissions?: Permission[]
+  branch_id?: number // create: the branch it belongs to (0 = a company role, owner only)
 }
 
 /** An admin panel account. System users are not employees: they don't check in. */
@@ -504,6 +508,14 @@ export interface LeaveRequest {
   reviewer?: Employee
 }
 
+/** Where someone checked in or out, and how far from the office (null: no office set). */
+export interface Place {
+  latitude: number
+  longitude: number
+  distance_meters: number | null
+  inside_office: boolean | null
+}
+
 export interface DayRow {
   attendance_id?: number
   employee_id: number
@@ -517,6 +529,8 @@ export interface DayRow {
   check_out_at: string | null
   check_in_reason?: string // why late (asked when late)
   check_out_reason?: string // why early (asked when leaving early)
+  check_in_place?: Place // where they were (when shared)
+  check_out_place?: Place
   working_minutes: number
   late_minutes: number
   early_leave_minutes: number

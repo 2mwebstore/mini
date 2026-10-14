@@ -158,3 +158,8 @@ export function leaveSpan(l: { day_type?: string; half_from?: string | null; hal
 export function latestReview<T extends { id: number; type: string; status: string }>(confs: T[] | undefined, type: 'CHECK_IN' | 'CHECK_OUT'): T | undefined {
   return (confs ?? []).filter(c => c.type === type && c.status !== 'SUPERSEDED').sort((a, b) => b.id - a.id)[0]
 }
+
+/** Google Maps at a point (opens in a new tab). */
+export function mapsUrl(lat: number | string, lng: number | string): string {
+  return `https://www.google.com/maps/search/?api=1&query=${lat},${lng}`
+}

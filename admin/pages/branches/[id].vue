@@ -4,6 +4,7 @@ import { branchService } from '~/services/branch.service'
 import { useAuthStore } from '~/stores/auth'
 import { useLookupsStore } from '~/stores/lookups'
 import type { Branch, BranchInput } from '~/types/api'
+import { mapsUrl } from '~/utils/format'
 import type { SelectOption } from '~/utils/options'
 
 definePageMeta({ permission: ['branches.manage', 'branches.create', 'branch.settings'] })
@@ -77,7 +78,7 @@ watch(() => form.paste, v => {
   const p = parseLocation(v)
   if (p) Object.assign(form, { lat: p.lat, lng: p.lng, ownOffice: true })
 })
-const mapUrl = (lat: number | '', lng: number | '') => `https://www.openstreetmap.org/?mlat=${lat}&mlon=${lng}#map=17/${lat}/${lng}`
+const mapUrl = (lat: number | '', lng: number | '') => mapsUrl(lat, lng)
 const locating = ref(false)
 function useMyLocation() {
   if (!navigator.geolocation) return
@@ -214,7 +215,7 @@ const setup = computed(() => [
               <FormField label="Radius (m)" for="b-radius"><input id="b-radius" v-model.number="form.radius" class="input" type="number" min="10" max="100000" required /></FormField>
               <div class="flex flex-wrap items-center gap-2 sm:col-span-3">
                 <AppButton variant="secondary" size="sm" :loading="locating" @click="useMyLocation">Use my current location</AppButton>
-                <a v-if="form.lat !== '' && form.lng !== ''" :href="mapUrl(form.lat, form.lng)" target="_blank" rel="noopener" class="text-sm text-primary hover:underline">Check on map ↗</a>
+                <a v-if="form.lat !== '' && form.lng !== ''" :href="mapUrl(form.lat, form.lng)" target="_blank" rel="noopener" class="text-sm text-primary hover:underline">Check on Google Maps ↗</a>
               </div>
             </template>
             <FormField label="Paste a map link or “lat, lng”" for="b-paste" class="sm:col-span-3" hint="A Google Maps or OpenStreetMap link to the office fills in the coordinates.">

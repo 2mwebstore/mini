@@ -40,8 +40,9 @@ const stats = computed(() => {
 
     <StateView :loading="loading" :error="error" :empty="!rows.length" empty-text="No attendance recorded this month." @retry="load">
       <div class="grid grid-cols-3 gap-2">
-        <div v-for="s in stats" :key="s.label" class="rounded-2xl bg-surface px-3 py-3 text-center">
-          <p class="text-lg font-semibold tabular-nums">
+        <div v-for="s in stats" :key="s.label" class="rounded-2xl bg-surface px-1.5 py-3 text-center">
+          <!-- Shrinks with the screen so “68h 36m” stays on one line. -->
+          <p class="whitespace-nowrap text-[clamp(0.95rem,4.6vw,1.125rem)] font-semibold tabular-nums">
             {{ s.value }}<span v-if="s.of !== undefined" class="text-sm font-normal text-hint">/{{ s.of }}</span>
           </p>
           <p class="text-xs text-hint">{{ s.label }}</p>

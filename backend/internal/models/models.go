@@ -66,6 +66,7 @@ type Role struct {
 	Code        string    `json:"code"`
 	Name        string    `json:"name"`
 	Description string    `json:"description"`
+	BranchID    *uint64   `json:"branch_id"` // nil: a company role; else made by and for that branch
 	IsSystem    bool      `json:"is_system"`
 	CreatedAt   time.Time `json:"created_at"`
 	UpdatedAt   time.Time `json:"updated_at"`

@@ -90,9 +90,23 @@ const pager = usePager(rows) // who needs attention first
                   </template>
                   <span v-else class="text-muted">—</span>
                 </td>
-                <td class="tabular-nums">{{ formatClock(r.check_in_at, auth.company.timezone) }}</td>
-                <td class="tabular-nums">
-                  {{ formatClock(r.check_out_at, auth.company.timezone) }}<sup v-if="nextDay(r.date, r.check_out_at, auth.company.timezone)" class="ml-0.5 text-[10px] text-muted">+1</sup>
+                <td class="whitespace-nowrap tabular-nums">
+                  <span class="inline-flex items-center gap-1">
+                    {{ formatClock(r.check_in_at, auth.company.timezone) }}
+                    <MapPin
+                      v-if="r.check_in_place" :latitude="r.check_in_place.latitude" :longitude="r.check_in_place.longitude"
+                      :inside="r.check_in_place.inside_office" :distance="r.check_in_place.distance_meters" :what="`${r.full_name} check-in`"
+                    />
+                  </span>
+                </td>
+                <td class="whitespace-nowrap tabular-nums">
+                  <span class="inline-flex items-center gap-1">
+                    {{ formatClock(r.check_out_at, auth.company.timezone) }}<sup v-if="nextDay(r.date, r.check_out_at, auth.company.timezone)" class="text-[10px] text-muted">+1</sup>
+                    <MapPin
+                      v-if="r.check_out_place" :latitude="r.check_out_place.latitude" :longitude="r.check_out_place.longitude"
+                      :inside="r.check_out_place.inside_office" :distance="r.check_out_place.distance_meters" :what="`${r.full_name} check-out`"
+                    />
+                  </span>
                 </td>
                 <td class="tabular-nums">{{ formatMinutes(r.working_minutes) }}</td>
                 <td>

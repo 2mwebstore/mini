@@ -49,21 +49,22 @@ const label = computed(() => (isIn.value ? 'Check in' : 'Check out'))
       <AppIcon :name="kind" class="size-4 shrink-0" :class="isIn ? 'text-success' : 'text-accent'" />{{ label }}
     </p>
     <p class="mt-1 text-[26px] font-bold leading-tight tabular-nums" :class="!at && 'text-hint/60'">{{ at ? formatClock(at, timezone) : '--:--' }}</p>
-    <p class="truncate text-[13px] font-medium" :class="status.tone">{{ status.text }}</p>
-    <p v-if="reason" class="truncate text-[12px] text-hint" :title="reason">“{{ reason }}”</p>
-    <div class="mt-1 min-h-5">
+    <!-- Narrow phones: these wrap rather than cut off (“Worked 8h 23…”). -->
+    <p class="text-[13px] font-medium leading-snug" :class="status.tone">{{ status.text }}</p>
+    <p v-if="reason" class="line-clamp-2 break-words text-[12px] leading-snug text-hint" :title="reason">“{{ reason }}”</p>
+    <div class="mb-2 mt-1 min-h-5">
       <StatusBadge v-if="reviewBadge" v-bind="reviewBadge" />
     </div>
     <AppButton
       v-if="pre.allowed"
-      class="mt-2 py-2.5"
+      class="mt-auto whitespace-nowrap !gap-1.5 !px-2 py-2.5"
       block
       :variant="isIn ? 'success' : 'primary'"
       @click="$emit('go')"
     >
-      <AppIcon :name="kind" class="size-4" />{{ again ? 'Again' : label }}
+      <AppIcon :name="kind" class="size-4 shrink-0" />{{ again ? 'Again' : label }}
     </AppButton>
-    <span v-else-if="!at" class="mt-2 rounded-xl bg-hint/10 py-2.5 text-center text-[13px] text-hint">
+    <span v-else-if="!at" class="mt-auto rounded-xl bg-hint/10 px-1 py-2.5 text-center text-[13px] text-hint">
       {{ isIn ? 'Not available' : 'After check-in' }}
     </span>
   </div>

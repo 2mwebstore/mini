@@ -43,8 +43,8 @@ const rows = computed(() => {
     <AppCard>
       <dl class="-my-3 divide-y divide-separator">
         <div v-for="r in rows" :key="r.label" class="flex justify-between gap-4 py-3 text-[15px]">
-          <dt class="text-hint">{{ r.label }}</dt>
-          <dd class="text-right font-medium">{{ r.value }}</dd>
+          <dt class="shrink-0 whitespace-nowrap text-hint">{{ r.label }}</dt>
+          <dd class="min-w-0 break-words text-right font-medium">{{ r.value }}</dd>
         </div>
       </dl>
     </AppCard>

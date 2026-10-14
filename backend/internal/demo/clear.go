@@ -18,7 +18,8 @@ type Cleared struct {
 }
 
 // clearTables lists every table of business data, children first. Kept: the
-// schema and migrations, roles and permissions, company settings, the owner
+// schema and migrations, company roles and permissions (a branch's own roles go
+// with it), company settings, the owner
 // account(s) and the audit log (append-only by design).
 var clearTables = []string{
 	"attendance_confirmations", "attendance_locations", "attendance_photos", "attendance",
@@ -89,8 +90,15 @@ func clearAll(ctx context.Context, tx *gorm.DB, keep []uint64, out *Cleared) err
 	if err := tx.Exec("UPDATE employees SET branch_id = NULL, department_id = NULL, position_id = NULL, work_schedule_id = NULL, manager_id = NULL").Error; err != nil {
 		return err
 	}
-	if err := tx.Exec("DELETE FROM branches").Error; err != nil {
-		return err
+	// Roles a branch made go with it (nobody is left who has one).
+	for _, q := range []string{
+		"DELETE FROM role_permissions WHERE role_id IN (SELECT id FROM roles WHERE branch_id IS NOT NULL)",
+		"DELETE FROM roles WHERE branch_id IS NOT NULL",
+		"DELETE FROM branches",
+	} {
+		if err := tx.Exec(q).Error; err != nil {
+			return err
+		}
 	}
 	cli := &auth.Actor{Employee: models.Employee{RoleID: models.RoleSuperAdmin, FullName: "CLI"}, Channel: auth.ChannelCLI}
 	return audit.Write(ctx, tx, cli, audit.Entry{Action: "data.clear", EntityType: "system", Details: map[string]any{

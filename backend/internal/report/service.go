@@ -35,6 +35,14 @@ func NewService(db *gorm.DB, st *settings.Service) *Service {
 	return &Service{db: db, settings: st, Now: func() time.Time { return time.Now().UTC() }}
 }
 
+// Place is where someone checked in or out, and how far that was from the office.
+type Place struct {
+	Latitude       float64  `json:"latitude"`
+	Longitude      float64  `json:"longitude"`
+	DistanceMeters *float64 `json:"distance_meters"`
+	InsideOffice   *bool    `json:"inside_office"`
+}
+
 type DayRow struct {
 	AttendanceID   uint64     `json:"attendance_id,omitempty"`
 	EmployeeID     uint64     `json:"employee_id"`
@@ -48,6 +56,8 @@ type DayRow struct {
 	CheckOutAt     *time.Time `json:"check_out_at"`
 	CheckInReason  string     `json:"check_in_reason,omitempty"`
 	CheckOutReason string     `json:"check_out_reason,omitempty"`
+	CheckInPlace   *Place     `json:"check_in_place,omitempty"` // where they were (when shared)
+	CheckOutPlace  *Place     `json:"check_out_place,omitempty"`
 	WorkingMinutes int        `json:"working_minutes"`
 	LateMinutes    int        `json:"late_minutes"`
 	EarlyMinutes   int        `json:"early_leave_minutes"`
@@ -165,8 +175,21 @@ func (s *Service) Build(ctx context.Context, actor *auth.Actor, f Filter) (*Repo
 		return nil, err
 	}
 	byKey := map[string]attRow{}
+	attIDs := make([]uint64, 0, len(atts))
 	for _, a := range atts {
 		byKey[key(a.EmployeeID, a.WorkDate)] = a
+		attIDs = append(attIDs, a.ID)
+	}
+	// The latest position of each check-in and check-out (a re-submission adds one).
+	places := map[string]*Place{}
+	if len(attIDs) > 0 {
+		var locs []models.AttendanceLocation
+		if err := s.db.WithContext(ctx).Where("attendance_id IN ?", attIDs).Order("id").Find(&locs).Error; err != nil {
+			return nil, err
+		}
+		for _, l := range locs {
+			places[fmt.Sprintf("%d|%s", l.AttendanceID, l.Type)] = &Place{Latitude: l.Latitude, Longitude: l.Longitude, DistanceMeters: l.DistanceMeters, InsideOffice: l.InsideOffice}
+		}
 	}
 
 	// approved leave overlapping range
@@ -256,6 +279,10 @@ func (s *Service) Build(ctx context.Context, actor *auth.Actor, f Filter) (*Repo
 				row.AttendanceID = a.ID
 				row.CheckInAt, row.CheckOutAt = a.CheckInAt, a.CheckOutAt
 				row.CheckInReason, row.CheckOutReason = a.CheckInReason, a.CheckOutReason
+				row.CheckInPlace = places[fmt.Sprintf("%d|%s", a.ID, models.TypeCheckIn)]
+				if a.CheckOutAt != nil {
+					row.CheckOutPlace = places[fmt.Sprintf("%d|%s", a.ID, models.TypeCheckOut)]
+				}
 				row.WorkingMinutes, row.LateMinutes, row.EarlyMinutes = a.WorkingMinutes, a.LateMinutes, a.EarlyLeaveMinutes
 				row.Status, row.Confirmation, row.ConfirmedBy = a.Status, a.ConfirmationStatus, a.ConfirmerName
 				if a.Status == models.StatusLeave {

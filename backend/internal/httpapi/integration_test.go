@@ -1699,8 +1699,61 @@ func TestIntegration(t *testing.T) {
 	if code, _, _ := h.admin("DELETE", fmt.Sprintf("/system-users/%d", partner), clientJWT, nil); code != 204 && code != 200 {
 		t.Fatalf("they remove an account of theirs: %d", code)
 	}
-	if code, _, _ := h.admin("GET", "/roles/permissions", clientJWT, nil); code != 403 {
-		t.Fatalf("roles stay the owner's: %d", code)
+	// Role management: they make roles for their branches, with permissions they have.
+	_, cat, _ := h.admin("GET", "/roles/permissions", clientJWT, nil)
+	grantable := map[string]bool{}
+	for _, p := range cat["items"].([]any) {
+		grantable[fmt.Sprint(p.(map[string]any)["code"])] = true
+	}
+	if !grantable["team.review"] || !grantable["attendance.self"] || grantable["all.view"] || grantable["users.manage"] || grantable["settings.edit"] {
+		t.Fatalf("they can only give permissions they have: %v", grantable)
+	}
+	if code, body, _ := h.admin("POST", "/roles", clientJWT, map[string]any{"name": "Shift Lead", "permissions": []string{"team.view"}}); code != 400 || errCode(body) != "BRANCH_REQUIRED" {
+		t.Fatalf("a role of theirs belongs to one of their branches: %d %v", code, body)
+	}
+	if code, _, _ := h.admin("POST", "/roles", clientJWT, map[string]any{"name": "Spy", "branch_id": kccID, "permissions": []string{"all.view"}}); code != 403 {
+		t.Fatalf("no permissions they don't have: %d", code)
+	}
+	code, body, _ = h.admin("POST", "/roles", clientJWT, map[string]any{"name": "Shift Lead", "branch_id": kccID,
+		"permissions": []string{"attendance.self", "leave.self", "team.view", "team.review"}})
+	if code != 201 {
+		t.Fatalf("a role for their branch: %d %v", code, body)
+	}
+	shiftLead := fmt.Sprint(body["code"])
+	shiftLeadID := uint64(num(body, "id"))
+	if code, body, _ := h.admin("POST", "/employees", clientJWT, map[string]any{"employee_code": "KC09", "full_name": "Lead One", "role": shiftLead, "branch_id": kccID}); code != 201 {
+		t.Fatalf("their staff take their branch's role: %d %v", code, body)
+	}
+	if code, body, _ := h.admin("POST", "/employees", ownerJWT, map[string]any{"employee_code": "MX09", "full_name": "Wrong Branch", "role": shiftLead, "branch_id": mainBranch}); code != 400 || errCode(body) != "ROLE_OTHER_BRANCH" {
+		t.Fatalf("a branch's role is not for another branch: %d %v", code, body)
+	}
+	seen := func(tok string) map[string]bool {
+		_, body, _ := h.admin("GET", "/roles", tok, nil)
+		out := map[string]bool{}
+		for _, r := range body["items"].([]any) {
+			out[fmt.Sprint(r.(map[string]any)["code"])] = true
+		}
+		return out
+	}
+	kcrJWT, _ := h.login("kcr.admin@example.com", "new-kampot-pass-1") // the Branch Admin of their other branch
+	if !seen(clientJWT)[shiftLead] || seen(kcrJWT)[shiftLead] || !seen(ownerJWT)[shiftLead] {
+		t.Fatal("a branch's role is seen in that branch (and by the owner) only")
+	}
+	// A Branch Admin runs Administration for their branch too.
+	if code, body, _ := h.admin("GET", "/system-users", kcrJWT, nil); code != 200 || len(body["items"].([]any)) != 1 {
+		t.Fatalf("a Branch Admin sees their branch's accounts (just themselves): %d %v", code, body)
+	}
+	if code, body, _ := h.admin("POST", "/roles", kcrJWT, map[string]any{"name": "Riverside Lead", "branch_id": kcrID, "permissions": []string{"team.view"}}); code != 201 {
+		t.Fatalf("a Branch Admin makes roles for their branch: %d %v", code, body)
+	}
+	if code, _, _ := h.admin("POST", "/roles", kcrJWT, map[string]any{"name": "Elsewhere", "branch_id": kccID, "permissions": []string{"team.view"}}); code != 400 {
+		t.Fatalf("not for a branch they don't run: %d", code)
+	}
+	if code, _, _ := h.admin("PUT", fmt.Sprintf("/roles/%d", shiftLeadID), clientJWT, map[string]any{"permissions": []string{"attendance.self", "team.view"}}); code != 200 {
+		t.Fatalf("they edit their branch's role: %d", code)
+	}
+	if code, _, _ := h.admin("PUT", "/roles/2", clientJWT, map[string]any{"name": "Mine now"}); code != 404 {
+		t.Fatalf("company roles are not theirs: %d", code)
 	}
 
 	// ---------- lists come 10 at a time ----------
@@ -1750,7 +1803,7 @@ func TestIntegration(t *testing.T) {
 		}
 		return strings.Join(codes, ",")
 	}
-	if v := visibleTo(clientJWT); v != "KC01" {
+	if v := visibleTo(clientJWT); v != "KC01,KC09" {
 		t.Fatalf("the client sees only their staff: %s", v)
 	}
 	for _, path := range []string{"/departments", "/positions", "/work-schedules", "/leave/types?all=1", "/holidays"} {

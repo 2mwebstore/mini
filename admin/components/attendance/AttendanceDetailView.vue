@@ -6,9 +6,7 @@
 import { attendanceService } from '~/services/attendance.service'
 import { useAuthStore } from '~/stores/auth'
 import type { AttendanceDetail, AttendanceLocation, Confirmation } from '~/types/api'
-import {
-  confirmationStatus, dayStatus, formatClock, formatDate, formatDateTime, formatMinutes, latestReview, leaveSpan, nextDay, typeLabel,
-} from '~/utils/format'
+import { confirmationStatus, dayStatus, formatClock, formatDate, formatDateTime, formatMinutes, latestReview, leaveSpan, mapsUrl, nextDay, typeLabel } from '~/utils/format'
 
 const props = defineProps<{ detail: AttendanceDetail }>()
 const emit = defineEmits<{ changed: [] }>()
@@ -23,7 +21,7 @@ const leave = computed(() => props.detail.leave)
 const sourceLabel = { DEFAULT: 'Usual shift', ROSTER: 'Weekly roster', SPECIAL: 'Special schedule' } as const
 const recordSource = computed(() => ({ MANUAL: 'Manual entry', SYSTEM: 'System', TELEGRAM: 'Mini App' })[att.value.source] ?? att.value.source)
 
-const mapUrl = (l: AttendanceLocation) => `https://www.openstreetmap.org/?mlat=${l.latitude}&mlon=${l.longitude}#map=18/${l.latitude}/${l.longitude}`
+const mapUrl = (l: AttendanceLocation) => mapsUrl(l.latitude, l.longitude)
 
 // One side of the day: the check-in or the check-out.
 function side(type: 'CHECK_IN' | 'CHECK_OUT') {
@@ -143,7 +141,7 @@ async function reject(reason: string) {
                 <span class="block text-xs text-muted">
                   <span class="font-mono">{{ s.location.latitude.toFixed(5) }}, {{ s.location.longitude.toFixed(5) }}</span>
                   <template v-if="s.location.accuracy != null"> · ±{{ Math.round(s.location.accuracy) }} m</template>
-                  · <a :href="mapUrl(s.location)" target="_blank" rel="noopener noreferrer" class="link">Map ↗</a>
+                  · <a :href="mapUrl(s.location)" target="_blank" rel="noopener noreferrer" class="link">Google Maps ↗</a>
                 </span>
               </template>
               <span v-else class="text-muted">{{ att.source === 'TELEGRAM' ? 'Not shared' : '—' }}</span>

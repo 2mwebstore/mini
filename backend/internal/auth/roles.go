@@ -29,7 +29,7 @@ var Catalog = []PermissionInfo{
 	{PermBranchReview, "Branch", "Review own branch", "Confirm check-ins and approve leave in their branch."},
 	{PermBranchSettings, "Branch", "Branch settings", "Edit their branches' office location, GPS rules and Telegram bot and chats."},
 	{PermBranchesCreate, "Branch", "Create branches", "Create new branches (added to their own branch access) and rename or close the branches they reach."},
-	{PermUsersBranch, "Branch", "Admin accounts of their branches", "Create, edit and remove admin panel logins limited to their branches, with roles that have no more powers than their own."},
+	{PermUsersBranch, "Branch", "Admin accounts & roles of their branches", "Create, edit and remove admin panel logins and roles of their branches, with no more powers than their own."},
 	{PermAllView, "Company", "View all branches", "See everyone — limited to the branches assigned to the user, if any."},
 	{PermAllReview, "Company", "Review all branches", "Confirm check-ins and approve leave for everyone they can see."},
 	{PermAttendanceEdit, "Records", "Edit attendance", "Add and correct attendance records (audited, reason required)."},
@@ -51,6 +51,7 @@ type roleInfo struct {
 	code   string
 	name   string
 	system bool
+	branch *uint64 // a branch's own role (nil: company role)
 	perms  map[Permission]bool
 }
 
@@ -87,7 +88,7 @@ func builtinRoles() map[uint8]*roleInfo {
 		models.RoleHRAdmin: {id: models.RoleHRAdmin, code: "hr_admin", name: "HR / Admin", system: true, perms: set(append(team, PermAllView, PermAllReview,
 			PermAttendanceEdit, PermStaffManage, PermReportExport, PermSettingsView, PermSchedulesManage, PermLeaveManage)...)},
 		models.RoleBranchAdmin: {id: models.RoleBranchAdmin, code: "branch_admin", name: "Branch Admin", system: true, perms: set(append(team, PermBranchView,
-			PermBranchReview, PermAttendanceEdit, PermStaffManage, PermReportExport, PermBranchSettings, PermSchedulesManage, PermLeaveManage)...)},
+			PermBranchReview, PermAttendanceEdit, PermStaffManage, PermReportExport, PermBranchSettings, PermSchedulesManage, PermLeaveManage, PermUsersBranch)...)},
 		models.RoleSuperAdmin: {id: models.RoleSuperAdmin, code: "super_admin", name: "Super Admin", system: true, perms: map[Permission]bool{}},
 	}
 	for _, p := range Catalog {
@@ -108,7 +109,7 @@ func LoadRoles(ctx context.Context, db *gorm.DB) error {
 	}
 	m := map[uint8]*roleInfo{}
 	for _, r := range roles {
-		m[r.ID] = &roleInfo{id: r.ID, code: r.Code, name: r.Name, system: r.IsSystem, perms: map[Permission]bool{}}
+		m[r.ID] = &roleInfo{id: r.ID, code: r.Code, name: r.Name, system: r.IsSystem, branch: r.BranchID, perms: map[Permission]bool{}}
 	}
 	for _, g := range grants {
 		if r := m[g.RoleID]; r != nil {
@@ -214,6 +215,30 @@ func RolesWith(p Permission) []int {
 
 // basic permissions anyone may hand out (a manager is not an admin).
 var basic = map[Permission]bool{PermAttendanceSelf: true, PermLeaveSelf: true, PermTeamView: true, PermTeamReview: true, PermReportExport: true}
+
+// RoleBranch is the branch a role belongs to (nil: a company role).
+func RoleBranch(id uint8) *uint64 {
+	if r := roleOf(id); r != nil {
+		return r.branch
+	}
+	return nil
+}
+
+// RoleFits: the role may be given to someone of this branch — a company role to
+// anyone, a branch's role only to people of that branch.
+func RoleFits(id uint8, branchID *uint64) bool {
+	b := RoleBranch(id)
+	return b == nil || (branchID != nil && *branchID == *b)
+}
+
+// Grantable: what the actor may put in a role — everything with users.manage; with
+// users.branch, the permissions they have (plus checking in and leave, for staff roles).
+func Grantable(a *Actor, p Permission) bool {
+	if a.Has(PermUsersManage) {
+		return true
+	}
+	return a.Has(PermUsersBranch) && (p == PermAttendanceSelf || p == PermLeaveSelf || a.Has(p))
+}
 
 // RoleWithin: the role grants nothing the actor doesn't have (own check-in and leave
 // don't count: system users never use them).

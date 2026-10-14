@@ -108,10 +108,13 @@ var people = []person{
 	{"D-BB04", "Ratha Chhim", "staff", "Operations", "Warehouse Officer", "BB"},
 
 	// The client's own branch, set up by their Company Admin.
-	{"D-KC01", "Dalin Sum", "manager", "Café", "Café Manager", "KCC"},
+	{"D-KC01", "Dalin Sum", shiftLead, "Café", "Café Manager", "KCC"}, // the client's own role
 	{"D-KC02", "Mony Prak", "staff", "Café", "Barista", "KCC"},
 	{"D-KC03", "Rotha Nov", "staff", "Kitchen", "Cook", "KCC"},
 }
+
+// shiftLead: the role the client's Company Admin makes for their branch.
+const shiftLead = "shift_supervisor"
 
 // sysUser is an admin panel account (Administration → System users), separate
 // from staff. The branch managers above also have one, as each branch's admin:
@@ -182,6 +185,10 @@ func Seed(ctx context.Context, d Deps, o Options) (*Summary, error) {
 	}
 	if n > 0 {
 		return nil, ErrAlreadySeeded
+	}
+	// The roles in this database (custom ones too), not just the built-in ones.
+	if err := auth.LoadRoles(ctx, d.DB); err != nil {
+		return nil, err
 	}
 	st, err := d.Settings.Get(ctx)
 	if err != nil {
@@ -287,6 +294,12 @@ func (s *seeder) clientCompany() error {
 	}
 	s.client.Branches = []uint64{b.ID}
 	s.branch[def.code] = b
+	// …and a role of their own for the café's shift leads (Role management, their branch only).
+	rname, rdesc := "Shift Supervisor", "Leads a café shift: reviews the team's check-ins and leave in the Mini App"
+	if _, err := access.NewService(s.d.DB).CreateRole(s.ctx, s.client, access.RoleInput{Name: &rname, Description: &rdesc, BranchID: &b.ID,
+		Permissions: []auth.Permission{auth.PermAttendanceSelf, auth.PermLeaveSelf, auth.PermTeamView, auth.PermTeamReview}}); err != nil {
+		return fmt.Errorf("client role: %w", err)
+	}
 	s.sum.Branches = append(s.sum.Branches, b.Name)
 	s.sum.Logins = append(s.sum.Logins, Login{Email: email, Name: name, Role: "Company Admin — only " + b.Name + " (created it)"})
 	return nil
@@ -438,7 +451,7 @@ func (s *seeder) staff() error {
 		if err != nil {
 			return fmt.Errorf("create %s: %w", p.code, err)
 		}
-		if p.role == "manager" {
+		if p.role == "manager" || p.role == shiftLead {
 			managers[p.branch] = e.ID
 		}
 		s.sum.Employees++
@@ -475,6 +488,10 @@ func (s *seeder) backdate() error {
 // the A-RG system user has it, limited to two branches by access().
 func (s *seeder) roles() error {
 	name, desc := "Regional Supervisor", "Oversees the branches assigned to them"
+	var n int64
+	if s.d.DB.WithContext(s.ctx).Model(&models.Role{}).Where("name = ? AND branch_id IS NULL", name).Count(&n); n > 0 {
+		return nil // a company role, kept by clear-data
+	}
 	_, err := access.NewService(s.d.DB).CreateRole(s.ctx, s.cli, access.RoleInput{Name: &name, Description: &desc, Permissions: []auth.Permission{
 		auth.PermAttendanceSelf, auth.PermLeaveSelf, auth.PermTeamView, auth.PermTeamReview, auth.PermAllView, auth.PermAllReview,
 		auth.PermAttendanceEdit, auth.PermReportExport}})

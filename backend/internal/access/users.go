@@ -164,6 +164,9 @@ func (s *Service) CreateUser(ctx context.Context, actor *auth.Actor, in UserInpu
 		if err := s.placeBranch(tx, actor, &p, in.BranchID); err != nil {
 			return err
 		}
+		if err := roleFits(&p); err != nil {
+			return err
+		}
 		if err := tx.Omit(clause.Associations).Create(&p).Error; err != nil {
 			return err
 		}
@@ -278,6 +281,9 @@ func (s *Service) UpdateUser(ctx context.Context, actor *auth.Actor, id uint64, 
 				branchIn = p.BranchID
 			}
 			if err := s.placeBranch(tx, actor, p, branchIn); err != nil {
+				return err
+			}
+			if err := roleFits(p); err != nil {
 				return err
 			}
 		}
@@ -565,6 +571,14 @@ func (s *Service) claimBranchAdmin(tx *gorm.DB, p *models.Employee, prev *models
 		return apperr.Conflict("BRANCH_HAS_ADMIN", fmt.Sprintf("%s already has a branch admin (%s). Change it on the Branches page, or pick another role.", b.Name, who))
 	}
 	return tx.Model(&models.Branch{}).Where("id = ?", b.ID).Update("admin_employee_id", p.ID).Error
+}
+
+// roleFits: a branch's own role goes only to people of that branch.
+func roleFits(p *models.Employee) error {
+	if !auth.RoleFits(p.RoleID, p.BranchID) {
+		return apperr.BadRequest("ROLE_OTHER_BRANCH", "That role belongs to another branch: choose its branch, or another role.")
+	}
+	return nil
 }
 
 // lastOwner refuses to remove the last active owner (someone must manage the company).

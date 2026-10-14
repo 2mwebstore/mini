@@ -100,8 +100,14 @@ func TestSeed(t *testing.T) {
 	// Staff are employees only: no panel logins, no admin roles.
 	var staffLogins int64
 	db.Model(&models.User{}).Joins("JOIN employees e ON e.id = users.employee_id").Where("e.kind = ?", models.KindStaff).Count(&staffLogins)
-	var staffAdmins int64
-	db.Model(&models.Employee{}).Where("kind = ? AND role_id NOT IN ?", models.KindStaff, []int{int(models.RoleStaff), int(models.RoleManager)}).Count(&staffAdmins)
+	var staffRoles []uint8
+	db.Model(&models.Employee{}).Where("kind = ?", models.KindStaff).Distinct().Pluck("role_id", &staffRoles)
+	staffAdmins := 0
+	for _, r := range staffRoles {
+		if models.IsAdminRole(r) {
+			staffAdmins++
+		}
+	}
 	if staffLogins != 0 || staffAdmins != 0 {
 		t.Errorf("employees with panel logins %d, with admin roles %d", staffLogins, staffAdmins)
 	}

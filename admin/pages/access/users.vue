@@ -34,7 +34,7 @@ function access(u: SystemUser) {
 // System users get admin roles; managers and staff are employees (they use the Mini App).
 // Only the roles the signed-in user may give are offered.
 const adminRoles = computed(() => (lookups.roles ?? []).filter(r => isAdminRole(r) && r.assignable))
-const roleOptions = computed((): SelectOption[] => adminRoles.value.map(r => ({ value: r.code, label: r.name, sub: r.is_system ? undefined : 'custom' })))
+const roleOptions = computed((): SelectOption[] => adminRoles.value.map(r => ({ value: r.code, label: r.name, sub: r.branch_name || (r.is_system ? undefined : 'custom') })))
 const roleOf = (code: string): Role | undefined => lookups.roles?.find(r => r.code === code)
 // Company-wide roles see every branch; the others work in a home branch.
 const companyWide = (code: string) => code === 'super_admin' || !!roleOf(code)?.permissions.includes('all.view')
@@ -61,6 +61,9 @@ const editRoleOptions = computed((): SelectOption[] => {
   return opts
 })
 const needsBranch = computed(() => !!form.role && !companyWide(form.role))
+// A branch's own role goes with that branch.
+const roleBranch = computed(() => roleOf(form.role)?.branch_id ?? null)
+watch(roleBranch, b => b && (form.branch_id = String(b)))
 // Accounts made by a Company Admin always work in one of their branches.
 const branchRequired = computed(() => form.role === 'branch_admin' || scoped.value)
 function generate(): string {
@@ -175,7 +178,7 @@ async function remove(u: SystemUser) {
             : 'Optional home branch. Add more branches on Branch assignment; branches they create are theirs too.'"
         >
           <SearchSelect
-            id="u-branch" v-model="form.branch_id" :options="branchOptions" :required="branchRequired"
+            id="u-branch" v-model="form.branch_id" :options="branchOptions" :required="branchRequired" :disabled="!!roleBranch"
             :placeholder="branchRequired ? 'Choose a branch…' : 'No home branch'" :empty-label="branchRequired ? undefined : 'No home branch'"
           />
         </FormField>

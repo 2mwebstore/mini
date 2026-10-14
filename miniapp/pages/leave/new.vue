@@ -133,7 +133,7 @@ const dateInput = 'mt-1 w-full rounded-xl border border-separator bg-surface px-
         <AppCard title="When">
           <Segmented v-model="form.whole" :options="[{ value: 'FULL', label: 'Full day' }, { value: 'HALF', label: 'Half day' }]" />
 
-          <div v-if="form.whole === 'FULL'" class="mt-3 grid grid-cols-2 gap-3">
+          <div v-if="form.whole === 'FULL'" class="mt-3 grid grid-cols-1 gap-3 min-[360px]:grid-cols-2">
             <label class="text-[13px] text-hint">
               From
               <input v-model="form.start" type="date" required :class="dateInput" />

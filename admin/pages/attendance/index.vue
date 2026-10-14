@@ -94,12 +94,11 @@ function editFromView(id: number) {
   viewing.value = null
   if (a) editing.value = a
 }
-// Where a check-in/out was made, for the list's pin: inside / outside the office radius.
+// Where a check-in/out was made, for the list's pin (opens Google Maps).
 function placeOf(a: Attendance, type: 'CHECK_IN' | 'CHECK_OUT') {
   const r = latestReview(a.confirmations, type)
-  const l = r?.location_id ? a.locations?.find(x => x.id === r.location_id) : undefined
-  if (!l || l.inside_office == null) return null
-  return { inside: l.inside_office, title: `${l.inside_office ? 'Inside' : 'Outside'} the office radius (${Math.round(l.distance_meters ?? 0)} m)` }
+  return (r?.location_id ? a.locations?.find(x => x.id === r.location_id) : undefined)
+    ?? [...(a.locations ?? [])].filter(l => l.type === type).sort((x, y) => y.id - x.id)[0] ?? null
 }
 
 const activeEmployees = computed(() => (lookups.employees ?? []).filter(e => !e.deleted_at))
@@ -146,7 +145,10 @@ const activeEmployeeOptions = computed(() => activeEmployees.value.map(e => ({ v
                       <span class="inline-flex items-center gap-1 font-medium tabular-nums">
                         {{ formatClock(at, tz) }}<sup v-if="t === 'CHECK_OUT' && nextDay(a.work_date, at, tz)" class="text-[10px] text-muted" title="Next morning (night shift)">+1</sup>
                         <template v-for="p in [placeOf(a, t)]" :key="t">
-                          <svg v-if="p" viewBox="0 0 24 24" class="size-3.5" :class="p.inside ? 'text-success' : 'text-warning'" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" role="img" :aria-label="p.title"><title>{{ p.title }}</title><path d="M12 21s-7-6.2-7-11.5A7 7 0 0 1 19 9.5C19 14.8 12 21 12 21zm0-9a2.5 2.5 0 1 0 0-5 2.5 2.5 0 0 0 0 5z" /></svg>
+                          <MapPin
+                            v-if="p" :latitude="p.latitude" :longitude="p.longitude" :inside="p.inside_office" :distance="p.distance_meters"
+                            :what="`${a.employee?.full_name} ${t === 'CHECK_IN' ? 'check-in' : 'check-out'}`"
+                          />
                         </template>
                       </span>
                       <span class="mt-0.5 block text-xs">
