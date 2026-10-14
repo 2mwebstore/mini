@@ -285,3 +285,39 @@ export interface DailyReport {
 export interface Items<T> {
   items: T[]
 }
+
+/** Extra time an employee asks to work on a date (statuses as leave). */
+export interface OvertimeRequest {
+  id: number
+  employee_id: number
+  work_date: string
+  start_at: string
+  end_at: string // may be the next day
+  minutes: number
+  reason: string
+  status: LeaveStatus
+  review_note: string
+  reviewed_at: string | null
+  created_at: string
+  employee?: { id: number; employee_code: string; full_name: string; branch?: { name: string } }
+  reviewer?: { full_name: string }
+}
+
+/** The person's shift on a date and the suggested overtime: from its end, for an hour. */
+export interface OvertimePlan {
+  date: string
+  work: boolean // a work day (else the usual shift's hours)
+  shift_name: string
+  shift_start: string
+  shift_end: string
+  cross_day: boolean
+  default_from: string
+  default_to: string
+}
+
+export interface OvertimeInput {
+  date: string
+  start_time: string
+  end_time: string // earlier than the start = the next day
+  reason: string
+}

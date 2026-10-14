@@ -263,6 +263,26 @@ report exports.
 geolocation, following the GPS rules of the person's branch (*Branches → a branch →
 Location (GPS)*).
 
+## Overtime
+
+Employees ask for **overtime** in the Mini App (*Home → Overtime → New request*): a date
+and a **From–To** range — by default **from the end of that day's shift to an hour
+later** (on a day off, from the end of their usual shift); a "To" at or before "From"
+ends the next day — and a **reason** (common reasons are one tap). It must be outside
+the shift, 15 minutes to 12 hours, not overlapping their other overtime, and at most 30
+days back / 60 ahead.
+
+Their **line manager** (each of their managers), or whoever reviews their branch,
+**approves or rejects** it — on the Mini App's *Team* tab or the admin panel's
+*Attendance → Overtime* (filters, 10 a page, approve / reject icons), and both sides get
+a Telegram message. The employee can **cancel** a request while it is pending, or once
+approved until it starts.
+
+**Reports** count overtime by the date it is for: per person *OT approved* and *OT
+pending* (and totals) on the Reports page, and in the Excel/CSV export (daily sheet:
+*Overtime Approved / Pending (min)*; summary sheet: *Overtime Approved / Pending*). The
+dashboard's "waiting for review" includes overtime.
+
 ## Branches
 
 Every staff member, manager and branch admin belongs to one branch; the owner and HR
@@ -612,6 +632,8 @@ asked. Attendance records page at most 200 at a time; the audit log at most 500.
 | `PUT /leave/balances {employee_id, leave_type_id, year, allocated, carried, note}` · `DELETE /leave/balances?employee_id=&leave_type_id=&year=` | leave.manage | set / reset to the type's allowance |
 | `POST /leave/:id/approve` · `/reject {note}` | reviewer | |
 | `GET /reports/daily?date=&branch_id=` | scoped | counts + rows (each with `check_in_place` / `check_out_place`: lat/lng, distance, inside) |
+| `GET /overtime?status=&employee_id=&branch_id=&from=&to=&page=&page_size=` · `GET /overtime/:id` · `GET /overtime/pending` | scoped / reviewer | overtime requests, newest date first |
+| `POST /overtime/:id/approve` · `/reject {note}` | reviewer | the person's reviewers only; both sides get a Telegram message |
 | `GET /reports/summary?from=&to=&employee_id=&branch_id=&department_id=&status=` | scoped | rows + per-staff summaries + totals |
 | `GET /reports/export?format=xlsx\|csv&from=&to=&employee_id=&branch_id=&department_id=` | report.export | includes Branch, Shift, Check-In Reason and Check-Out Reason columns |
 | `GET /settings` · `PUT /settings {key: value}` | settings.view / owner | `{settings, backup}`: company name, timezone, confirmations, job times (Telegram and GPS are per branch) |
@@ -630,6 +652,9 @@ asked. Attendance records page at most 200 at a time; the audit log at most 500.
 | `GET /leave/types` · `GET /leave/balances` · `GET /leave/mine` · `POST /leave/preview` · `POST /leave` · `POST /leave/:id/cancel` | self | body adds `day_type` `FULL`\|`FIRST_HALF`\|`SECOND_HALF`; preview returns `{days, balance, plan, problem}` — `plan` is the shift on the first date with its halves and work type, `problem` why it would be refused |
 | `GET /attendance/pending` · confirm/reject · `GET /leave/pending` · approve/reject · `GET /reports/daily` | reviewer | same handlers as the panel |
 | `GET /attendance/:id` · `GET /attendance/photos/:id` · `GET /leave/:id` | scoped | |
+| `GET /overtime/plan?date=` | self | the shift that day and the suggested overtime: `default_from` (shift end), `default_to` (+1h) |
+| `GET /overtime/mine` · `POST /overtime {date, start_time, end_time, reason}` · `POST /overtime/:id/cancel` | self | errors: `REASON_REQUIRED`, `OVERLAPS_SHIFT`, `OVERLAP`, `INVALID_LENGTH`, `TOO_FAR_BACK/AHEAD`, `NOT_CANCELLABLE` |
+| `GET /overtime/pending` · `POST /overtime/:id/approve` · `/reject` | reviewer | same handlers as the panel |
 
 ## Security checklist
 
@@ -686,6 +711,11 @@ company admins in Telegram if a backup failed or none ran for over a day.
 Run one now: `docker compose exec backup backup.sh now`.
 Restore: `gunzip -c backups/attendance-YYYYMMDD-HHMM.sql.gz | docker compose exec -T database mysql -uroot -p"$MYSQL_ROOT_PASSWORD" attendance`.
 Back up the photo bucket too (or rely on R2/S3 durability).
+
+## Upgrading: overtime (migration 0012)
+
+Migration `0012` adds the `overtime_requests` table. Nothing else changes; the Mini App
+home gets an *Overtime* shortcut and the admin menu *Attendance → Overtime*.
 
 ## Upgrading: several managers per employee (migration 0011)
 

@@ -33,6 +33,7 @@ import (
 	"attendance/backend/internal/leave"
 	"attendance/backend/internal/models"
 	"attendance/backend/internal/notification"
+	"attendance/backend/internal/overtime"
 	"attendance/backend/internal/report"
 	"attendance/backend/internal/schedule"
 	"attendance/backend/internal/scheduler"
@@ -142,10 +143,11 @@ func serve() error {
 	empSvc := employee.NewService(db)
 	attSvc := attendance.NewService(db, st, store, notifier)
 	leaveSvc := leave.NewService(db, st, notifier)
+	otSvc := overtime.NewService(db, st, notifier)
 	repSvc := report.NewService(db, st)
 
 	srv := httpapi.New(cfg, httpapi.Deps{DB: db, Redis: rdb, Store: store, Auth: authSvc, Settings: st, Employees: empSvc,
-		Branches: branch.NewService(db), Attendance: attSvc, Leave: leaveSvc, Reports: repSvc, Schedules: schedule.NewService(db, st), Access: access.NewService(db), Telegram: tg, Bots: botReg}).HTTPServer(cfg.HTTPAddr)
+		Branches: branch.NewService(db), Attendance: attSvc, Leave: leaveSvc, Overtime: otSvc, Reports: repSvc, Schedules: schedule.NewService(db, st), Access: access.NewService(db), Telegram: tg, Bots: botReg}).HTTPServer(cfg.HTTPAddr)
 	sched := scheduler.New(db, rdb, st, repSvc, notifier)
 	sched.BackupStatusFile = cfg.BackupStatusFile
 	go sched.Run(ctx)
@@ -287,9 +289,9 @@ func seedDemo(args []string) error {
 	if err != nil {
 		return err
 	}
-	fmt.Printf("Demo data added: %d branches (%s), %d employees, %d attendance days, %d leave requests, %d new holidays,\n"+
-		"%d extra shifts (incl. a night shift), %d roster entries, %d special schedules.\n\n",
-		len(sum.Branches), strings.Join(sum.Branches, ", "), sum.Employees, sum.AttendanceDays, sum.LeaveRequests, sum.Holidays,
+	fmt.Printf("Demo data added: %d branches (%s), %d employees, %d attendance days, %d leave requests, %d overtime requests,\n"+
+		"%d new holidays, %d extra shifts (incl. a night shift), %d roster entries, %d special schedules.\n\n",
+		len(sum.Branches), strings.Join(sum.Branches, ", "), sum.Employees, sum.AttendanceDays, sum.LeaveRequests, sum.Overtime, sum.Holidays,
 		sum.Shifts, sum.RosterEntries, sum.SpecialSchedules)
 	fmt.Println("System users (admin panel logins):")
 	tw := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)

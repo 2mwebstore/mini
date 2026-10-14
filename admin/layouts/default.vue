@@ -22,6 +22,7 @@ const items: NavItem[] = [
     label: 'Attendance', icon: 'M12 7v5l3 3M12 21a9 9 0 1 0 0-18 9 9 0 0 0 0 18z',
     children: [
       { to: '/attendance', label: 'Records' },
+      { to: '/overtime', label: 'Overtime' },
       { to: '/reports', label: 'Reports' },
     ],
   },

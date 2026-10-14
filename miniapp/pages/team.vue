@@ -2,7 +2,7 @@
 import type { ApiError } from '~/services/api'
 import { reviewService } from '~/services/review.service'
 import { useAuthStore } from '~/stores/auth'
-import type { LeaveRequest, PendingAttendance } from '~/types/api'
+import type { LeaveRequest, OvertimeRequest, PendingAttendance } from '~/types/api'
 
 definePageMeta({ middleware: 'reviewer' })
 
@@ -11,10 +11,10 @@ const tab = ref<'review' | 'today'>('review')
 
 // ---------- review queue ----------
 const queue = useResource(async () => {
-  const [attendance, leave] = await Promise.all([reviewService.pendingAttendance(), reviewService.pendingLeave()])
-  return { attendance, leave }
+  const [attendance, leave, overtime] = await Promise.all([reviewService.pendingAttendance(), reviewService.pendingLeave(), reviewService.pendingOvertime()])
+  return { attendance, leave, overtime }
 })
-const pendingCount = computed(() => (queue.data.value ? queue.data.value.attendance.length + queue.data.value.leave.length : 0))
+const pendingCount = computed(() => (queue.data.value ? queue.data.value.attendance.length + queue.data.value.leave.length + queue.data.value.overtime.length : 0))
 const tabs = computed(() => [
   { value: 'review', label: queue.data.value ? `Review (${pendingCount.value})` : 'Review' },
   { value: 'today', label: 'Today' },
@@ -22,16 +22,17 @@ const tabs = computed(() => [
 
 const busy = ref<string | null>(null)
 
-function drop(kind: 'attendance' | 'leave', id: number) {
+type Kind = 'attendance' | 'leave' | 'overtime'
+function drop(kind: Kind, id: number) {
   const d = queue.data.value
   if (!d) return
   queue.data.value =
-    kind === 'attendance'
-      ? { ...d, attendance: d.attendance.filter(a => a.confirmation_id !== id) }
-      : { ...d, leave: d.leave.filter(l => l.id !== id) }
+    kind === 'attendance' ? { ...d, attendance: d.attendance.filter(a => a.confirmation_id !== id) }
+      : kind === 'leave' ? { ...d, leave: d.leave.filter(l => l.id !== id) }
+        : { ...d, overtime: d.overtime.filter(o => o.id !== id) }
 }
 
-async function act(key: string, kind: 'attendance' | 'leave', id: number, call: () => Promise<unknown>) {
+async function act(key: string, kind: Kind, id: number, call: () => Promise<unknown>) {
   busy.value = key
   try {
     await call()
@@ -51,8 +52,9 @@ async function act(key: string, kind: 'attendance' | 'leave', id: number, call: 
 const confirmAttendance = (a: PendingAttendance) =>
   act(`a${a.confirmation_id}`, 'attendance', a.confirmation_id, () => reviewService.confirmAttendance(a.confirmation_id))
 const approveLeave = (l: LeaveRequest) => act(`l${l.id}`, 'leave', l.id, () => reviewService.approveLeave(l.id))
+const approveOvertime = (o: OvertimeRequest) => act(`o${o.id}`, 'overtime', o.id, () => reviewService.approveOvertime(o.id))
 
-const rejecting = ref<{ kind: 'attendance'; item: PendingAttendance } | { kind: 'leave'; item: LeaveRequest } | null>(null)
+const rejecting = ref<{ kind: 'attendance'; item: PendingAttendance } | { kind: 'leave'; item: LeaveRequest } | { kind: 'overtime'; item: OvertimeRequest } | null>(null)
 const sheetOpen = computed({
   get: () => !!rejecting.value,
   set: v => {
@@ -60,14 +62,17 @@ const sheetOpen = computed({
   },
 })
 const attendancePresets = ['Not at the workplace.', 'Location does not match the workplace.', 'Wrong time or duplicate submission.']
+const overtimePresets = ['Not needed this time.', 'Please plan it with me first.', 'Too many hours this week.']
 
 async function reject(reason: string) {
   const r = rejecting.value
   if (!r) return
   if (r.kind === 'attendance') {
     await act(`a${r.item.confirmation_id}`, 'attendance', r.item.confirmation_id, () => reviewService.rejectAttendance(r.item.confirmation_id, reason))
-  } else {
+  } else if (r.kind === 'leave') {
     await act(`l${r.item.id}`, 'leave', r.item.id, () => reviewService.rejectLeave(r.item.id, reason))
+  } else {
+    await act(`o${r.item.id}`, 'overtime', r.item.id, () => reviewService.rejectOvertime(r.item.id, reason))
   }
   rejecting.value = null
 }
@@ -134,6 +139,20 @@ const tiles = computed(() => {
             />
           </div>
         </section>
+        <section v-if="queue.data.value?.overtime.length" class="mt-4" aria-labelledby="ot-h">
+          <h2 id="ot-h" class="mb-1.5 px-4 text-[13px] font-medium uppercase tracking-wide text-hint">Overtime requests</h2>
+          <div class="flex flex-col gap-3">
+            <PendingOvertimeCard
+              v-for="o in queue.data.value.overtime"
+              :key="o.id"
+              :item="o"
+              :timezone="auth.timezone"
+              :busy="busy === `o${o.id}`"
+              @approve="approveOvertime(o)"
+              @reject="rejecting = { kind: 'overtime', item: o }"
+            />
+          </div>
+        </section>
       </StateView>
     </template>
 
@@ -157,9 +176,9 @@ const tiles = computed(() => {
 
     <RejectSheet
       v-model="sheetOpen"
-      :title="rejecting?.kind === 'leave' ? 'Reject leave request' : 'Reject attendance'"
-      :presets="rejecting?.kind === 'leave' ? [] : attendancePresets"
-      :required="rejecting?.kind !== 'leave'"
+      :title="rejecting?.kind === 'leave' ? 'Reject leave request' : rejecting?.kind === 'overtime' ? 'Reject overtime' : 'Reject attendance'"
+      :presets="rejecting?.kind === 'leave' ? [] : rejecting?.kind === 'overtime' ? overtimePresets : attendancePresets"
+      :required="rejecting?.kind === 'attendance'"
       :loading="!!busy"
       @submit="reject"
     />

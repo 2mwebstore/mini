@@ -47,6 +47,14 @@ func (s *Server) mountApp(g *gin.RouterGroup, byActor func(*gin.Context) string)
 	g.POST("/leave/:id/approve", requireReviewer(), s.reviewLeave(true))
 	g.POST("/leave/:id/reject", requireReviewer(), s.reviewLeave(false))
 
+	g.GET("/overtime/plan", s.appOvertimePlan)
+	g.GET("/overtime/mine", s.appMyOvertime)
+	g.GET("/overtime/pending", requireReviewer(), s.pendingOvertime)
+	g.POST("/overtime", s.appOvertimeSubmit)
+	g.POST("/overtime/:id/cancel", s.appOvertimeCancel)
+	g.POST("/overtime/:id/approve", requireReviewer(), s.reviewOvertime(true))
+	g.POST("/overtime/:id/reject", requireReviewer(), s.reviewOvertime(false))
+
 	g.GET("/reports/daily", requireReviewer(), s.dailyReport)
 }
 

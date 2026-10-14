@@ -31,4 +31,4 @@ export default defineNuxtPlugin(async () => {
   }
 })
 
-const startPages = ['team', 'leave', 'history']
+const startPages = ['team', 'leave', 'history', 'overtime']

@@ -24,6 +24,7 @@ const filter = reactive({
   department_id: q('department_id'),
   branch_id: q('branch_id'),
   status: q('status'),
+  confirmation: q('confirmation'), // only from links (the dashboard's "waiting for review"): shown as a chip
   page: Number(q('page')) || 1,
   size: Number(q('page_size')) || 10, // rows per page
 })
@@ -38,13 +39,14 @@ const query = computed<AttendanceFilter>(() => ({
   department_id: Number(filter.department_id) || undefined,
   branch_id: Number(filter.branch_id) || undefined,
   status: filter.status || undefined,
+  confirmation: filter.confirmation || undefined,
   page: filter.page,
   page_size: filter.size,
 }))
 
 const list = useResource(() => attendanceService.list(query.value))
 watch(
-  () => [filter.from, filter.to, filter.employee_id, filter.department_id, filter.branch_id, filter.status, filter.size],
+  () => [filter.from, filter.to, filter.employee_id, filter.department_id, filter.branch_id, filter.status, filter.confirmation, filter.size],
   () => (filter.page = 1),
 )
 watch(query, q => {
@@ -125,6 +127,13 @@ const activeEmployeeOptions = computed(() => activeEmployees.value.map(e => ({ v
         <SearchSelect id="f-status" v-model="filter.status" :options="dayStatusOptions" empty-label="All" />
       </FormField>
     </div>
+
+    <p v-if="filter.confirmation" class="mb-3 flex items-center gap-2 text-sm">
+      <span class="inline-flex items-center gap-1 rounded-full bg-warning/10 py-1 pl-3 pr-1 text-warning">
+        Only records waiting for review
+        <button type="button" class="rounded-full px-1.5 hover:bg-warning/20" aria-label="Show all records" @click="filter.confirmation = ''">×</button>
+      </span>
+    </p>
 
     <StateView :loading="list.loading.value && !list.data.value" :error="list.error.value" :empty="list.data.value?.items.length === 0" empty-text="No attendance matches these filters." @retry="list.load">
       <div v-if="list.data.value" class="card overflow-hidden" :class="{ 'opacity-60': list.loading.value }">

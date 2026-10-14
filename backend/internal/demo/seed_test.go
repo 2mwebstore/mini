@@ -224,6 +224,19 @@ func TestSeed(t *testing.T) {
 			}
 		}
 	}
+	// Overtime from the end of the day's shift, in every state.
+	var ots []models.OvertimeRequest
+	db.Find(&ots)
+	states := map[string]int{}
+	for _, o := range ots {
+		states[o.Status]++
+		if o.Minutes != int(o.EndAt.Sub(o.StartAt).Minutes()) || (o.Status == models.LeaveApproved) != (o.ReviewedBy != nil && o.ReviewNote == "") && o.Status != models.LeaveRejected {
+			t.Errorf("overtime %d: %+v", o.ID, o)
+		}
+	}
+	if states[models.LeavePending] == 0 || states[models.LeaveApproved] == 0 || states[models.LeaveRejected] == 0 || states[models.LeaveCancelled] == 0 {
+		t.Errorf("overtime states: %v", states)
+	}
 	if pending == 0 || rejected != 1 || absent == 0 || late == 0 || leave < 4 || todayRows < 8 || overnight < 10 {
 		t.Errorf("variety: pending %d rejected %d absent %d late %d leave %d today %d overnight %d", pending, rejected, absent, late, leave, todayRows, overnight)
 	}

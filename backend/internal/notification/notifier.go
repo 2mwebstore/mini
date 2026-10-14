@@ -391,6 +391,57 @@ func (n *Notifier) LeaveReviewed(lr models.LeaveRequest) {
 	})
 }
 
+// ---------- overtime ----------
+
+// OvertimeSpan: "Wed 14 Oct 2026, 17:30–18:30 (1h)".
+func OvertimeSpan(ot models.OvertimeRequest, loc *time.Location) string {
+	s, e := ot.StartAt.In(loc), ot.EndAt.In(loc)
+	span := fmt.Sprintf("%s, %s–%s", ot.WorkDate.Format("Mon 02 Jan 2006"), s.Format("15:04"), e.Format("15:04"))
+	if e.Format("2006-01-02") != ot.WorkDate.Format("2006-01-02") {
+		span += " (next day)"
+	}
+	return fmt.Sprintf("%s (%s)", span, timeutil.FormatMinutes(ot.Minutes))
+}
+
+func (n *Notifier) OvertimeSubmitted(ot models.OvertimeRequest, emp models.Employee, loc *time.Location) {
+	n.run(func(ctx context.Context) {
+		bot := n.bots.ForBranch(ctx, emp.BranchID)
+		if bot == nil {
+			return
+		}
+		text := fmt.Sprintf("⏱️ <b>NEW OVERTIME REQUEST</b>\n👤 %s (%s)\n📅 %s\n📝 %s\nStatus: 🟡 Pending",
+			telegram.Esc(emp.FullName), telegram.Esc(emp.EmployeeCode), OvertimeSpan(ot, loc), telegram.Esc(ot.Reason))
+		for _, r := range n.reviewers(ctx, bot, &emp) {
+			msg, err := n.sender(bot).SendMessage(ctx, r.chatID, text, openApp(bot, r.chatID, "✅ Review in app", "team"))
+			n.record(ctx, r, "overtime.submitted", "overtime", ot.ID, msg, err)
+		}
+	})
+}
+
+func (n *Notifier) OvertimeReviewed(ot models.OvertimeRequest, loc *time.Location) {
+	n.run(func(ctx context.Context) {
+		bot := n.bots.ForBranch(ctx, n.branchOfPerson(ctx, ot.EmployeeID))
+		if bot == nil {
+			return
+		}
+		chat, ok := n.employeeChat(ctx, ot.EmployeeID)
+		if !ok {
+			return
+		}
+		var text string
+		if ot.Status == models.LeaveApproved {
+			text = fmt.Sprintf("✅ <b>OVERTIME APPROVED</b>\n📅 %s", OvertimeSpan(ot, loc))
+		} else {
+			text = fmt.Sprintf("❌ <b>OVERTIME REJECTED</b>\n📅 %s", OvertimeSpan(ot, loc))
+			if ot.ReviewNote != "" {
+				text += "\nReason: " + telegram.Esc(ot.ReviewNote)
+			}
+		}
+		msg, err := n.sender(bot).SendMessage(ctx, chat, text, openApp(bot, chat, "📱 My overtime", "overtime"))
+		n.record(ctx, recipient{chatID: chat, employeeID: &ot.EmployeeID}, "overtime.reviewed", "overtime", ot.ID, msg, err)
+	})
+}
+
 // ---------- broadcast ----------
 
 // BranchGroup posts to a branch's own group (its daily report), if it has one.

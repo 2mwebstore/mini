@@ -530,6 +530,8 @@ export interface DayRow {
   check_out_at: string | null
   check_in_reason?: string // why late (asked when late)
   check_out_reason?: string // why early (asked when leaving early)
+  overtime_minutes?: number // approved overtime that day
+  overtime_pending_minutes?: number
   check_in_place?: Place // where they were (when shared)
   check_out_place?: Place
   working_minutes: number
@@ -564,6 +566,26 @@ export interface Summary {
   late_minutes: number
   working_minutes: number
   avg_minutes_per_day: number
+  overtime_minutes: number // approved overtime in the period
+  overtime_pending_minutes: number // asked for, not yet reviewed
+}
+
+/** Extra time an employee asked to work on a date (from the Mini App). */
+export interface OvertimeRequest {
+  id: number
+  employee_id: number
+  work_date: string
+  start_at: string
+  end_at: string // may be the next day
+  minutes: number
+  reason: string
+  status: LeaveStatus // PENDING | APPROVED | REJECTED | CANCELLED
+  reviewed_by: number | null
+  reviewed_at: string | null
+  review_note: string
+  created_at: string
+  employee?: Employee
+  reviewer?: Employee
 }
 
 export interface Report {

@@ -23,7 +23,7 @@ type Cleared struct {
 // account(s) and the audit log (append-only by design).
 var clearTables = []string{
 	"attendance_confirmations", "attendance_locations", "attendance_photos", "attendance",
-	"leave_requests", "leave_balances", "roster_shifts", "schedule_overrides", "notifications",
+	"leave_requests", "leave_balances", "overtime_requests", "roster_shifts", "schedule_overrides", "notifications",
 	"user_branches", "employee_managers", "holidays", "work_schedules", "leave_types", "departments", "positions",
 }
 

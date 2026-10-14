@@ -41,6 +41,7 @@ import (
 	"attendance/backend/internal/leave"
 	"attendance/backend/internal/models"
 	"attendance/backend/internal/notification"
+	"attendance/backend/internal/overtime"
 	"attendance/backend/internal/report"
 	"attendance/backend/internal/schedule"
 	"attendance/backend/internal/scheduler"
@@ -366,12 +367,14 @@ func TestIntegration(t *testing.T) {
 	attSvc.Now = now
 	leaveSvc := leave.NewService(gdb, st, notifier)
 	leaveSvc.Now = now
+	otSvc := overtime.NewService(gdb, st, notifier)
+	otSvc.Now = now
 	repSvc := report.NewService(gdb, st)
 	repSvc.Now = now
 	schedSvc := schedule.NewService(gdb, st)
 	schedSvc.Now = now
 	srv := New(conf, Deps{DB: gdb, Redis: rdb, Store: store, Auth: authSvc, Settings: st, Employees: empSvc,
-		Branches: branch.NewService(gdb), Attendance: attSvc, Leave: leaveSvc, Reports: repSvc, Schedules: schedSvc, Access: access.NewService(gdb), Telegram: tgc, Bots: botReg})
+		Branches: branch.NewService(gdb), Attendance: attSvc, Leave: leaveSvc, Overtime: otSvc, Reports: repSvc, Schedules: schedSvc, Access: access.NewService(gdb), Telegram: tgc, Bots: botReg})
 	h := &harness{t: t, srv: srv.Router(), db: rawDB, clock: &clock}
 
 	// ---------- people ----------
@@ -1796,6 +1799,96 @@ func TestIntegration(t *testing.T) {
 	}
 	if _, body, _ := h.admin("GET", "/employees", ownerJWT, nil); !strings.Contains(fmt.Sprint(body["items"]), fmt.Sprintf("manager_ids:[%d]", second)) {
 		t.Fatal("the list carries each person's manager_ids")
+	}
+
+	// ---------- overtime: from the shift's end, reviewed by the line manager ----------
+	const twoTG, secondTG = 1091, 1090
+	code, body, _ = h.app("GET", "/overtime/plan?date=2026-11-10", twoTG, nil)
+	if code != 200 || body["work"] != true || body["default_from"] != body["shift_end"] || body["default_to"] == "" {
+		t.Fatalf("overtime plan: from the shift's end: %d %v", code, body)
+	}
+	from, to := fmt.Sprint(body["default_from"]), fmt.Sprint(body["default_to"])
+	if fa, _ := time.Parse("15:04", from); fa.Add(time.Hour).Format("15:04") != to {
+		t.Fatalf("…to an hour later: %s–%s", from, to)
+	}
+	otReq := func(date, a, b, reason string) (int, map[string]any) {
+		code, body, _ := h.app("POST", "/overtime", twoTG, map[string]any{"date": date, "start_time": a, "end_time": b, "reason": reason})
+		return code, body
+	}
+	if code, body := otReq("2026-11-10", from, to, ""); code != 400 || errCode(body) != "REASON_REQUIRED" {
+		t.Fatalf("overtime needs a reason: %d %v", code, body)
+	}
+	if code, body := otReq("2026-11-10", fmt.Sprint(body["shift_start"]), from, "During the day"); code != 400 || errCode(body) != "OVERLAPS_SHIFT" {
+		t.Fatalf("overtime is outside the shift: %d %v", code, body)
+	}
+	otSent := len(ftg.calls("sendMessage", secondTG))
+	code, body = otReq("2026-11-10", from, to, "Month-end closing")
+	if code != 201 || body["status"] != "PENDING" || num(body, "minutes") != 60 {
+		t.Fatalf("overtime request: %d %v", code, body)
+	}
+	otID := uint64(num(body, "id"))
+	if len(ftg.calls("sendMessage", secondTG)) != otSent+1 || !strings.Contains(fmt.Sprint(ftg.calls("sendMessage", secondTG)), "NEW OVERTIME REQUEST") {
+		t.Fatal("the line manager is told about the request")
+	}
+	if code, body := otReq("2026-11-10", from, to, "Again"); code != 409 || errCode(body) != "OVERLAP" {
+		t.Fatalf("no overlapping overtime: %d %v", code, body)
+	}
+	if code, body := otReq("2026-11-11", "23:30", "01:00", "Server migration overnight"); code != 201 || num(body, "minutes") != 90 {
+		t.Fatalf("overtime past midnight ends the next day: %d %v", code, body)
+	}
+	if code, _, _ := h.app("GET", "/overtime/pending", sokhaTG, nil); code != 403 {
+		t.Fatalf("staff don't review overtime: %d", code)
+	}
+	code, body, _ = h.app("GET", "/overtime/pending", secondTG, nil)
+	if code != 200 || len(body["items"].([]any)) != 2 {
+		t.Fatalf("the line manager's pending overtime: %d %v", code, body)
+	}
+	if code, _, _ := h.app("POST", fmt.Sprintf("/overtime/%d/approve", otID), mgrTG, nil); code != 403 {
+		t.Fatalf("a manager who isn't theirs can't approve: %d", code)
+	}
+	code, body, _ = h.app("POST", fmt.Sprintf("/overtime/%d/approve", otID), secondTG, map[string]any{"note": "Thanks"})
+	if code != 200 || body["status"] != "APPROVED" {
+		t.Fatalf("approve overtime: %d %v", code, body)
+	}
+	if !strings.Contains(fmt.Sprint(ftg.calls("sendMessage", twoTG)), "OVERTIME APPROVED") {
+		t.Fatal("the employee is told it was approved")
+	}
+	if code, _, _ := h.app("POST", fmt.Sprintf("/overtime/%d/approve", otID), secondTG, nil); code != 409 {
+		t.Fatalf("reviewed once: %d", code)
+	}
+	code, body, _ = h.app("GET", "/overtime/mine", twoTG, nil)
+	if code != 200 || len(body["items"].([]any)) != 2 {
+		t.Fatalf("my overtime: %d %v", code, body)
+	}
+	// Reports: approved and pending overtime, per person and per day.
+	code, body, _ = h.admin("GET", fmt.Sprintf("/reports/summary?employee_id=%d&from=2026-11-01&to=2026-11-30", twoID), ownerJWT, nil)
+	if code != 200 {
+		t.Fatalf("report: %d %v", code, body)
+	}
+	sum := body["summaries"].([]any)[0].(map[string]any)
+	if num(sum, "overtime_minutes") != 60 || num(sum, "overtime_pending_minutes") != 90 || num(body["totals"].(map[string]any), "overtime_minutes") != 60 {
+		t.Fatalf("report overtime: approved 60, pending 90: %v", sum)
+	}
+	// The employee cancels: a pending request, or approved one that hasn't started.
+	if code, body, _ := h.app("POST", fmt.Sprintf("/overtime/%d/cancel", otID), sokhaTG, nil); code != 404 {
+		t.Fatalf("only their own: %d %v", code, body)
+	}
+	if code, body, _ := h.app("POST", fmt.Sprintf("/overtime/%d/cancel", otID), twoTG, nil); code != 200 || body["status"] != "CANCELLED" {
+		t.Fatalf("cancel approved future overtime: %d %v", code, body)
+	}
+	if code, body, _ := h.app("POST", fmt.Sprintf("/overtime/%d/cancel", otID), twoTG, nil); code != 409 {
+		t.Fatalf("cancelled once: %d %v", code, body)
+	}
+	// The admin panel lists them, a page at a time, filtered by status.
+	code, body, _ = h.admin("GET", fmt.Sprintf("/overtime?employee_id=%d&status=pending", twoID), ownerJWT, nil)
+	if code != 200 || num(body, "total") != 1 {
+		t.Fatalf("admin overtime list: %d %v", code, body)
+	}
+	if code, _, _ := h.admin("GET", fmt.Sprintf("/overtime?employee_id=%d", twoID), clientJWT, nil); code != 200 {
+		t.Fatalf("a client admin may list (their own staff only): %d", code)
+	}
+	if _, body, _ := h.admin("GET", fmt.Sprintf("/overtime?employee_id=%d", twoID), clientJWT, nil); num(body, "total") != 0 {
+		t.Fatalf("…and doesn't see other branches' overtime: %v", body["total"])
 	}
 
 	// ---------- lists come 10 at a time ----------

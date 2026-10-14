@@ -55,6 +55,9 @@ const totals = computed(() => {
     { label: 'Absent days', value: t.absent_days, tone: 'danger' as const },
     { label: 'Leave days', value: t.leave_days, tone: 'info' as const },
     { label: 'Worked', value: formatMinutes(t.working_minutes) },
+    // Overtime by the date it is for: approved, and asked for but not yet reviewed.
+    { label: 'Overtime approved', value: formatMinutes(t.overtime_minutes), tone: 'success' as const },
+    { label: 'Overtime pending', value: formatMinutes(t.overtime_pending_minutes), hint: 'waiting for the line manager', tone: 'warning' as const },
   ]
 })
 </script>
@@ -85,7 +88,7 @@ const totals = computed(() => {
 
     <StateView :loading="report.loading.value && !report.data.value" :error="report.error.value" @retry="report.load">
       <template v-if="report.data.value">
-        <div class="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-6" :class="{ 'opacity-60': report.loading.value }">
+        <div class="grid grid-cols-2 gap-3 sm:grid-cols-4" :class="{ 'opacity-60': report.loading.value }">
           <StatTile v-for="t in totals" :key="t.label" v-bind="t" />
         </div>
 
@@ -96,6 +99,7 @@ const totals = computed(() => {
               <tr>
                 <th>Employee</th><th>Branch</th><th>Department</th><th class="text-right">Present</th><th class="text-right">Late</th><th class="text-right">Early</th>
                 <th class="text-right">Absent</th><th class="text-right">Leave</th><th class="text-right">No out</th><th class="text-right">Worked</th><th class="text-right">Avg/day</th>
+                <th class="text-right">OT approved</th><th class="text-right">OT pending</th>
               </tr>
             </thead>
             <tbody>
@@ -111,6 +115,14 @@ const totals = computed(() => {
                 <td class="text-right tabular-nums">{{ s.missing_checkout }}</td>
                 <td class="text-right tabular-nums">{{ formatMinutes(s.working_minutes) }}</td>
                 <td class="text-right tabular-nums">{{ formatMinutes(s.avg_minutes_per_day) }}</td>
+                <td class="text-right tabular-nums" :class="s.overtime_minutes ? 'font-medium text-success' : 'text-muted'">{{ s.overtime_minutes ? formatMinutes(s.overtime_minutes) : '—' }}</td>
+                <td class="text-right tabular-nums">
+                  <NuxtLink
+                    v-if="s.overtime_pending_minutes" class="text-warning hover:underline"
+                    :to="{ path: '/overtime', query: { status: 'PENDING' } }"
+                  >{{ formatMinutes(s.overtime_pending_minutes) }}</NuxtLink>
+                  <span v-else class="text-muted">—</span>
+                </td>
               </tr>
             </tbody>
           </table>

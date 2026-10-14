@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { attendanceService } from '~/services/attendance.service'
 import { leaveService } from '~/services/leave.service'
+import { overtimeService } from '~/services/overtime.service'
 import { reportService } from '~/services/report.service'
 import { useAuthStore } from '~/stores/auth'
 import type { DayRow } from '~/types/api'
@@ -15,8 +16,8 @@ const daily = useResource(() => reportService.daily(undefined, Number(branchId.v
 watch(branchId, () => daily.load())
 const pending = useResource(async () => {
   if (!auth.isReviewer) return null
-  const [a, l] = await Promise.all([attendanceService.pending(), leaveService.pending()])
-  return { attendance: a.length, leave: l.length }
+  const [a, l, o] = await Promise.all([attendanceService.pending(), leaveService.pending(), overtimeService.pending()])
+  return { attendance: a.length, leave: l.length, overtime: o.length }
 })
 
 const tiles = computed(() => {
@@ -52,13 +53,14 @@ const pager = usePager(rows) // who needs attention first
     </PageHeader>
 
     <div
-      v-if="pending.data.value && pending.data.value.attendance + pending.data.value.leave > 0"
+      v-if="pending.data.value && pending.data.value.attendance + pending.data.value.leave + pending.data.value.overtime > 0"
       class="card mb-6 flex flex-wrap items-center justify-between gap-x-4 gap-y-2 border-warning/40 bg-warning/5 px-4 py-3"
     >
-      <span class="text-sm"><b>{{ pending.data.value.attendance + pending.data.value.leave }}</b> waiting for review</span>
+      <span class="text-sm"><b>{{ pending.data.value.attendance + pending.data.value.leave + pending.data.value.overtime }}</b> waiting for review</span>
       <span class="flex gap-4 text-sm font-medium text-warning">
         <NuxtLink v-if="pending.data.value.attendance" :to="pendingAttendanceLink" class="hover:underline">{{ pending.data.value.attendance }} attendance →</NuxtLink>
         <NuxtLink v-if="pending.data.value.leave" to="/leave?status=PENDING" class="hover:underline">{{ pending.data.value.leave }} leave →</NuxtLink>
+        <NuxtLink v-if="pending.data.value.overtime" to="/overtime?status=PENDING" class="hover:underline">{{ pending.data.value.overtime }} overtime →</NuxtLink>
       </span>
     </div>
 

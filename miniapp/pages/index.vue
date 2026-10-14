@@ -31,6 +31,7 @@ const shortcuts = [
   { to: '/leave/new', icon: 'calendar-plus', tint: 'bg-success/15 text-success', title: 'Request leave', sub: 'Annual, sick, personal…' },
   { to: '/history', icon: 'chart', tint: 'bg-primary/15 text-accent', title: 'My attendance', sub: 'Days, hours and late arrivals' },
   { to: '/leave', icon: 'leave', tint: 'bg-info/15 text-info', title: 'My leave', sub: 'Status of your requests' },
+  { to: '/overtime', icon: 'timer', tint: 'bg-warning/15 text-warning', title: 'Overtime', sub: 'Ask for extra hours after your shift' },
 ] as const
 
 // Check-in and check-out each have their own tile; the API's precheck decides which

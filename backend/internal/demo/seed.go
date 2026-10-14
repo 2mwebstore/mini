@@ -60,6 +60,7 @@ type Summary struct {
 	Employees        int
 	AttendanceDays   int
 	LeaveRequests    int
+	Overtime         int // overtime requests
 	Holidays         int
 	Logins           []Login
 }
@@ -204,7 +205,7 @@ func Seed(ctx context.Context, d Deps, o Options) (*Summary, error) {
 	}
 	s.isHol = s.holidayOn
 	steps := []func() error{s.ensureOwner, s.branches, s.roles, s.systemUsers, s.clientCompany, s.setup, s.staff, s.access, s.backdate,
-		s.schedules, s.leave, s.attendance, s.audit}
+		s.schedules, s.leave, s.overtime, s.attendance, s.audit}
 	for _, step := range steps {
 		if err := step(); err != nil {
 			return nil, err
@@ -602,6 +603,51 @@ func (s *seeder) workday(n int) time.Time {
 		}
 	}
 	return d
+}
+
+// overtime adds overtime requests — approved and rejected ones in the past days,
+// pending ones for today and the coming days, one cancelled — each from the end of
+// that day's shift, reviewed by the person's line manager (or branch admin).
+func (s *seeder) overtime() error {
+	plan := []struct {
+		code                 string
+		day, minutes         int // working day relative to today; length
+		status, reason, note string
+	}{
+		{"D-PP03", -3, 60, models.LeaveApproved, "Month-end sales report", ""},
+		{"D-PP06", -2, 120, models.LeaveApproved, "Release support for the new app version", ""},
+		{"D-SR03", -5, 90, models.LeaveApproved, "Late check-in of a tour group", ""},
+		{"D-BB02", -4, 60, models.LeaveRejected, "Stock count", "The stock count is planned for Saturday."},
+		{"D-PP04", 0, 60, models.LeavePending, "Preparing the client presentation", ""},
+		{"D-SR05", 1, 120, models.LeavePending, "Hotel partner meeting", ""},
+		{"D-KC02", 1, 60, models.LeavePending, "Deep-cleaning the coffee machines", ""},
+		{"D-PP07", 2, 60, models.LeaveCancelled, "Customer call-backs", ""},
+	}
+	return s.d.DB.WithContext(s.ctx).Transaction(func(tx *gorm.DB) error {
+		for _, p := range plan {
+			emp, date := s.emps[p.code], s.workday(p.day)
+			day := s.plan.Day(emp, date)
+			if !day.Work {
+				continue
+			}
+			start, err := day.EndAt(date, s.loc)
+			if err != nil {
+				return err
+			}
+			requested := s.o.Now.Add(-time.Duration(30+10*len(p.reason)%40) * time.Hour).UTC()
+			ot := models.OvertimeRequest{EmployeeID: emp.ID, WorkDate: date, StartAt: start, EndAt: start.Add(time.Duration(p.minutes) * time.Minute),
+				Minutes: p.minutes, Reason: p.reason, Status: p.status, ReviewNote: p.note, CreatedAt: requested, UpdatedAt: requested}
+			if p.status == models.LeaveApproved || p.status == models.LeaveRejected {
+				r, at := s.reviewerOf(p.code), requested.Add(5*time.Hour)
+				ot.ReviewedBy, ot.ReviewedAt = &r.ID, &at
+			}
+			if err := tx.Omit(clause.Associations).Create(&ot).Error; err != nil {
+				return err
+			}
+			s.sum.Overtime++
+		}
+		return nil
+	})
 }
 
 func (s *seeder) leave() error {

@@ -13,7 +13,7 @@ import (
 
 var exportHeader = []string{"Employee ID", "Employee Name", "Branch", "Department", "Date", "Shift", "Check-In", "Check-Out",
 	"Working Hours", "Working Minutes", "Late Minutes", "Early Leave Minutes", "Status", "Leave Type",
-	"Confirmation Status", "Confirmed By", "Check-In Reason", "Check-Out Reason"}
+	"Confirmation Status", "Confirmed By", "Check-In Reason", "Check-Out Reason", "Overtime Approved (min)", "Overtime Pending (min)"}
 
 // exportCol returns a column's index in exportHeader (so cell positions follow the header).
 func exportCol(name string) int {
@@ -31,6 +31,7 @@ func exportRow(rep *Report, r DayRow) []string {
 		dash(timeutil.FormatClock24(r.CheckInAt, rep.Loc)), dash(timeutil.FormatClock24(r.CheckOutAt, rep.Loc)),
 		timeutil.FormatMinutes(r.WorkingMinutes), fmt.Sprint(r.WorkingMinutes), fmt.Sprint(r.LateMinutes),
 		fmt.Sprint(r.EarlyMinutes), r.Status, r.LeaveType, r.Confirmation, r.ConfirmedBy, r.CheckInReason, r.CheckOutReason,
+		fmt.Sprint(r.OvertimeMinutes), fmt.Sprint(r.OvertimePendingMinutes),
 	}
 }
 
@@ -95,6 +96,7 @@ func XLSX(rep *Report) ([]byte, error) {
 	_ = sw.SetColWidth(3, 4, 18)
 	_ = sw.SetColWidth(5, len(exportHeader), 14)
 	iWork, iLate, iEarly := exportCol("Working Minutes"), exportCol("Late Minutes"), exportCol("Early Leave Minutes")
+	iOT, iOTPending := exportCol("Overtime Approved (min)"), exportCol("Overtime Pending (min)")
 	head := make([]any, len(exportHeader))
 	for i, h := range exportHeader {
 		head[i] = excelize.Cell{Value: h, StyleID: bold}
@@ -110,6 +112,7 @@ func XLSX(rep *Report) ([]byte, error) {
 		}
 		// numeric columns as numbers
 		row[iWork], row[iLate], row[iEarly] = r.WorkingMinutes, r.LateMinutes, r.EarlyMinutes
+		row[iOT], row[iOTPending] = r.OvertimeMinutes, r.OvertimePendingMinutes
 		cell, _ := excelize.CoordinatesToCellName(1, i+2)
 		if err := sw.SetRow(cell, row); err != nil {
 			return nil, err
@@ -124,7 +127,8 @@ func XLSX(rep *Report) ([]byte, error) {
 		return nil, err
 	}
 	sh := []string{"Employee ID", "Employee Name", "Branch", "Department", "Working Days", "Present", "Late Days", "Late Minutes",
-		"Early Leave Days", "Absent", "Leave", "Pending", "Rejected", "Missing Check-Out", "Working Hours", "Working Minutes", "Avg / Day"}
+		"Early Leave Days", "Absent", "Leave", "Pending", "Rejected", "Missing Check-Out", "Working Hours", "Working Minutes", "Avg / Day",
+		"Overtime Approved", "Overtime Pending"}
 	for i, h := range sh {
 		c, _ := excelize.CoordinatesToCellName(i+1, 1)
 		_ = f.SetCellValue(summary, c, h)
@@ -136,7 +140,8 @@ func XLSX(rep *Report) ([]byte, error) {
 	for i, s := range rep.Summaries {
 		vals := []any{safeCell(s.EmployeeCode), safeCell(s.FullName), safeCell(s.Branch), safeCell(s.Department), s.WorkingDays, s.PresentDays, s.LateDays, s.LateMinutes,
 			s.EarlyLeaveDays, s.AbsentDays, s.LeaveDays, s.PendingDays, s.RejectedDays, s.MissingCheckout,
-			timeutil.FormatMinutes(s.WorkingMinutes), s.WorkingMinutes, timeutil.FormatMinutes(s.AvgMinutes)}
+			timeutil.FormatMinutes(s.WorkingMinutes), s.WorkingMinutes, timeutil.FormatMinutes(s.AvgMinutes),
+			timeutil.FormatMinutes(s.OvertimeMinutes), timeutil.FormatMinutes(s.OvertimePendingMinutes)}
 		for j, v := range vals {
 			c, _ := excelize.CoordinatesToCellName(j+1, i+2)
 			_ = f.SetCellValue(summary, c, v)

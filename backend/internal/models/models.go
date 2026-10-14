@@ -422,6 +422,27 @@ type LeaveRequest struct {
 	Reviewer  *Employee  `gorm:"foreignKey:ReviewedBy" json:"reviewer,omitempty"`
 }
 
+// OvertimeRequest is extra time an employee asks to work on a date (statuses as
+// leave: PENDING, APPROVED, REJECTED, CANCELLED).
+type OvertimeRequest struct {
+	ID         uint64     `gorm:"primaryKey" json:"id"`
+	EmployeeID uint64     `json:"employee_id"`
+	WorkDate   time.Time  `gorm:"type:date" json:"work_date"`
+	StartAt    time.Time  `json:"start_at"`
+	EndAt      time.Time  `json:"end_at"`
+	Minutes    int        `json:"minutes"`
+	Reason     string     `json:"reason"`
+	Status     string     `json:"status"`
+	ReviewedBy *uint64    `json:"reviewed_by"`
+	ReviewedAt *time.Time `json:"reviewed_at"`
+	ReviewNote string     `json:"review_note"`
+	CreatedAt  time.Time  `json:"created_at"`
+	UpdatedAt  time.Time  `json:"updated_at"`
+
+	Employee *Employee `gorm:"foreignKey:EmployeeID" json:"employee,omitempty"`
+	Reviewer *Employee `gorm:"foreignKey:ReviewedBy" json:"reviewer,omitempty"`
+}
+
 // Leave day types: a whole day (or range), or one half of a single working day.
 const (
 	LeaveFullDay    = "FULL"

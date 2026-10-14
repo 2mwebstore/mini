@@ -44,28 +44,30 @@ type Place struct {
 }
 
 type DayRow struct {
-	AttendanceID   uint64     `json:"attendance_id,omitempty"`
-	EmployeeID     uint64     `json:"employee_id"`
-	EmployeeCode   string     `json:"employee_code"`
-	FullName       string     `json:"full_name"`
-	Department     string     `json:"department"`
-	BranchID       uint64     `json:"branch_id,omitempty"`
-	Branch         string     `json:"branch"`
-	Date           time.Time  `json:"date"`
-	CheckInAt      *time.Time `json:"check_in_at"`
-	CheckOutAt     *time.Time `json:"check_out_at"`
-	CheckInReason  string     `json:"check_in_reason,omitempty"`
-	CheckOutReason string     `json:"check_out_reason,omitempty"`
-	CheckInPlace   *Place     `json:"check_in_place,omitempty"` // where they were (when shared)
-	CheckOutPlace  *Place     `json:"check_out_place,omitempty"`
-	WorkingMinutes int        `json:"working_minutes"`
-	LateMinutes    int        `json:"late_minutes"`
-	EarlyMinutes   int        `json:"early_leave_minutes"`
-	Status         string     `json:"status"`
-	Confirmation   string     `json:"confirmation_status"`
-	ConfirmedBy    string     `json:"confirmed_by"`
-	LeaveType      string     `json:"leave_type"`
-	LeaveHalf      string     `json:"leave_half,omitempty"` // FIRST_HALF | SECOND_HALF: half the day was leave
+	AttendanceID           uint64     `json:"attendance_id,omitempty"`
+	EmployeeID             uint64     `json:"employee_id"`
+	EmployeeCode           string     `json:"employee_code"`
+	FullName               string     `json:"full_name"`
+	Department             string     `json:"department"`
+	BranchID               uint64     `json:"branch_id,omitempty"`
+	Branch                 string     `json:"branch"`
+	Date                   time.Time  `json:"date"`
+	CheckInAt              *time.Time `json:"check_in_at"`
+	CheckOutAt             *time.Time `json:"check_out_at"`
+	CheckInReason          string     `json:"check_in_reason,omitempty"`
+	CheckOutReason         string     `json:"check_out_reason,omitempty"`
+	OvertimeMinutes        int        `json:"overtime_minutes"`         // approved overtime on that date
+	OvertimePendingMinutes int        `json:"overtime_pending_minutes"` // asked for, not yet reviewed
+	CheckInPlace           *Place     `json:"check_in_place,omitempty"` // where they were (when shared)
+	CheckOutPlace          *Place     `json:"check_out_place,omitempty"`
+	WorkingMinutes         int        `json:"working_minutes"`
+	LateMinutes            int        `json:"late_minutes"`
+	EarlyMinutes           int        `json:"early_leave_minutes"`
+	Status                 string     `json:"status"`
+	Confirmation           string     `json:"confirmation_status"`
+	ConfirmedBy            string     `json:"confirmed_by"`
+	LeaveType              string     `json:"leave_type"`
+	LeaveHalf              string     `json:"leave_half,omitempty"` // FIRST_HALF | SECOND_HALF: half the day was leave
 	// The day's scheduled shift (empty on days off).
 	Shift      string `json:"shift,omitempty"`
 	ShiftStart string `json:"shift_start,omitempty"`
@@ -92,6 +94,9 @@ type Summary struct {
 	LateMinutes     int     `json:"late_minutes"`
 	WorkingMinutes  int     `json:"working_minutes"`
 	AvgMinutes      int     `json:"avg_minutes_per_day"`
+	// Overtime in the period (by the date it belongs to): approved, and still pending.
+	OvertimeMinutes        int `json:"overtime_minutes"`
+	OvertimePendingMinutes int `json:"overtime_pending_minutes"`
 }
 
 type Report struct {
@@ -189,6 +194,32 @@ func (s *Service) Build(ctx context.Context, actor *auth.Actor, f Filter) (*Repo
 		}
 		for _, l := range locs {
 			places[fmt.Sprintf("%d|%s", l.AttendanceID, l.Type)] = &Place{Latitude: l.Latitude, Longitude: l.Longitude, DistanceMeters: l.DistanceMeters, InsideOffice: l.InsideOffice}
+		}
+	}
+
+	// overtime by person and date: approved and pending minutes
+	type otSum struct {
+		EmployeeID uint64
+		WorkDate   time.Time
+		Status     string
+		Minutes    int
+	}
+	var ots []otSum
+	if err := s.db.WithContext(ctx).Model(&models.OvertimeRequest{}).
+		Select("employee_id, work_date, status, SUM(minutes) AS minutes").
+		Where("employee_id IN ? AND work_date BETWEEN ? AND ? AND status IN ?", ids, f.From, f.To, []string{models.LeaveApproved, models.LeavePending}).
+		Group("employee_id, work_date, status").Scan(&ots).Error; err != nil {
+		return nil, err
+	}
+	otApproved, otPending := map[string]int{}, map[string]int{}
+	otEmpApproved, otEmpPending := map[uint64]int{}, map[uint64]int{}
+	for _, o := range ots {
+		if o.Status == models.LeaveApproved {
+			otApproved[key(o.EmployeeID, o.WorkDate)] += o.Minutes
+			otEmpApproved[o.EmployeeID] += o.Minutes
+		} else {
+			otPending[key(o.EmployeeID, o.WorkDate)] += o.Minutes
+			otEmpPending[o.EmployeeID] += o.Minutes
 		}
 	}
 
@@ -306,9 +337,12 @@ func (s *Service) Build(ctx context.Context, actor *auth.Actor, f Filter) (*Repo
 			if expected && !d.After(today) && !d.Before(startDate) {
 				sum.WorkingDays++
 			}
+			row.OvertimeMinutes, row.OvertimePendingMinutes = otApproved[key(e.ID, d)], otPending[key(e.ID, d)]
 			accumulate(&sum, row)
 			rep.Rows = append(rep.Rows, row)
 		}
+		// every overtime day counts, also one with no attendance row (a day off)
+		sum.OvertimeMinutes, sum.OvertimePendingMinutes = otEmpApproved[e.ID], otEmpPending[e.ID]
 		if sum.PresentDays > 0 {
 			withOut := sum.PresentDays - sum.MissingCheckout
 			if withOut > 0 {
@@ -375,6 +409,8 @@ func addTotals(t *Summary, s Summary) {
 	t.MissingCheckout += s.MissingCheckout
 	t.LateMinutes += s.LateMinutes
 	t.WorkingMinutes += s.WorkingMinutes
+	t.OvertimeMinutes += s.OvertimeMinutes
+	t.OvertimePendingMinutes += s.OvertimePendingMinutes
 }
 
 func key(id uint64, d time.Time) string { return d.Format("2006-01-02") + "#" + itoa(id) }

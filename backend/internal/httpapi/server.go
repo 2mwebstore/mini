@@ -16,6 +16,7 @@ import (
 	"attendance/backend/internal/config"
 	"attendance/backend/internal/employee"
 	"attendance/backend/internal/leave"
+	"attendance/backend/internal/overtime"
 	"attendance/backend/internal/report"
 	"attendance/backend/internal/schedule"
 	"attendance/backend/internal/settings"
@@ -38,6 +39,7 @@ type Deps struct {
 	Branches   *branch.Service
 	Attendance *attendance.Service
 	Leave      *leave.Service
+	Overtime   *overtime.Service
 	Reports    *report.Service
 	Schedules  *schedule.Service
 	Access     *access.Service
@@ -56,6 +58,7 @@ type Server struct {
 	branches   *branch.Service
 	attendance *attendance.Service
 	leave      *leave.Service
+	overtime   *overtime.Service
 	reports    *report.Service
 	schedules  *schedule.Service
 	access     *access.Service
@@ -65,7 +68,7 @@ type Server struct {
 
 func New(cfg *config.Config, d Deps) *Server {
 	return &Server{cfg: cfg, db: d.DB, rdb: d.Redis, store: d.Store, auth: d.Auth, settings: d.Settings, employees: d.Employees,
-		branches: d.Branches, attendance: d.Attendance, leave: d.Leave, reports: d.Reports, schedules: d.Schedules, access: d.Access, tg: d.Telegram, bots: d.Bots}
+		branches: d.Branches, attendance: d.Attendance, leave: d.Leave, overtime: d.Overtime, reports: d.Reports, schedules: d.Schedules, access: d.Access, tg: d.Telegram, bots: d.Bots}
 }
 
 func (s *Server) Router() *gin.Engine {
@@ -167,6 +170,12 @@ func (s *Server) Router() *gin.Engine {
 	api.GET("/leave/:id", s.getLeave)
 	api.POST("/leave/:id/approve", requireReviewer(), s.reviewLeave(true))
 	api.POST("/leave/:id/reject", requireReviewer(), s.reviewLeave(false))
+
+	api.GET("/overtime", s.listOvertime)
+	api.GET("/overtime/pending", requireReviewer(), s.pendingOvertime)
+	api.GET("/overtime/:id", s.getOvertime)
+	api.POST("/overtime/:id/approve", requireReviewer(), s.reviewOvertime(true))
+	api.POST("/overtime/:id/reject", requireReviewer(), s.reviewOvertime(false))
 
 	api.GET("/reports/daily", s.dailyReport)
 	api.GET("/reports/summary", s.summaryReport)
