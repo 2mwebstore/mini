@@ -5,7 +5,7 @@ import { api, apiUrl } from './api'
 
 export const scheduleService = {
   // shifts
-  shifts: () => api.get<Items<WorkSchedule>>('/work-schedules').then(r => r.items ?? []),
+  shifts: (branchId?: number) => api.get<Items<WorkSchedule>>('/work-schedules', { branch_id: branchId || undefined }).then(r => r.items ?? []),
   createShift: (input: ShiftInput) => api.post<WorkSchedule>('/work-schedules', input),
   updateShift: (id: number, input: ShiftInput) => api.put<WorkSchedule>(`/work-schedules/${id}`, input),
   deleteShift: (id: number) => api.del(`/work-schedules/${id}`),

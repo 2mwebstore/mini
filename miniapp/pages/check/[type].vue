@@ -49,21 +49,38 @@ let tick: ReturnType<typeof setInterval> | undefined
 onMounted(() => (tick = setInterval(() => (now.value = new Date().toISOString()), 1000)))
 onBeforeUnmount(() => clearInterval(tick))
 
+// Checking in late or out early asks why. The server decides at the moment of
+// submitting (it may become late while this page is open), so it can ask too.
+const reason = ref('')
+const serverAsked = ref(false)
+const needReason = computed(() => !!precheck.value?.reason_required || serverAsked.value)
+const reasonReady = computed(() => !needReason.value || reason.value.trim().length > 0)
+const reasonTitle = computed(() => {
+  const m = isIn.value ? precheck.value?.late_minutes : precheck.value?.early_minutes
+  const by = m ? ` (${formatMinutes(m)})` : ''
+  return isIn.value ? `Why are you late?${by}` : `Why are you leaving early?${by}`
+})
+const presets = computed(() => isIn.value
+  ? ['Traffic', 'Vehicle problem', 'Feeling unwell', 'Family matter', 'Approved by my manager']
+  : ['Feeling unwell', 'Family matter', 'Appointment', 'Work outside the office', 'Approved by my manager'])
+
 const submitting = ref(false)
 const problem = ref('')
 const result = ref<SubmitResult | null>(null)
+const ready = computed(() => locationReady.value && reasonReady.value)
 
 async function submit() {
-  if (!locationReady.value || submitting.value) return
+  if (!ready.value || submitting.value) return
   submitting.value = true
   problem.value = ''
   try {
-    result.value = await attendanceService.submit(type.value, location.coords.value)
+    result.value = await attendanceService.submit(type.value, location.coords.value, needReason.value ? reason.value.trim() : '')
     haptic('success')
   } catch (e) {
     haptic('error')
     const err = e as ApiError
     problem.value = err.message
+    if (err.code === 'REASON_REQUIRED') serverAsked.value = true
     if (err.code === 'OUTSIDE_OFFICE' || err.code === 'LOCATION_REQUIRED') location.state.value = 'idle'
     if (err.code === 'NOT_ALLOWED' || err.status === 409) loadPrecheck()
   } finally {
@@ -75,7 +92,7 @@ const label = computed(() => (isIn.value ? 'Check in now' : 'Check out now'))
 const { native } = useMainButton({
   text: () => (result.value ? 'Done' : label.value),
   visible: () => !!result.value || !!precheck.value?.allowed,
-  disabled: () => !result.value && !locationReady.value,
+  disabled: () => !result.value && !ready.value,
   loading: submitting,
   onClick: () => (result.value ? goHome() : submit()),
 })
@@ -123,6 +140,9 @@ const locationText = computed(() => {
         <p class="text-hint">Worked {{ formatMinutes(result.attendance.working_minutes) }}</p>
         <StatusBadge v-if="result.attendance.early_leave_minutes" tone="warning" :label="`Left ${formatMinutes(result.attendance.early_leave_minutes)} early`" />
       </template>
+      <p v-if="isIn ? result.attendance.check_in_reason : result.attendance.check_out_reason" class="max-w-xs text-sm text-hint">
+        “{{ isIn ? result.attendance.check_in_reason : result.attendance.check_out_reason }}”
+      </p>
       <p v-if="result.location_label !== 'Not provided'" class="flex items-center gap-1 text-sm text-hint">
         <AppIcon name="pin" class="size-4" />{{ result.location_label }}
       </p>
@@ -177,12 +197,37 @@ const locationText = computed(() => {
           >{{ location.state.value === 'idle' ? 'Share' : 'Retry' }}</AppButton>
         </div>
 
+        <section v-if="needReason" class="rounded-2xl bg-surface px-4 py-3" aria-labelledby="reason-title">
+          <h2 id="reason-title" class="flex items-center gap-2 text-[15px] font-medium">
+            <AppIcon name="clock" class="size-4 shrink-0 text-warning" />{{ reasonTitle }}
+          </h2>
+          <div class="mt-2 flex flex-wrap gap-1.5" role="group" aria-label="Common reasons">
+            <button
+              v-for="p in presets" :key="p" type="button"
+              class="rounded-full border px-3 py-1.5 text-[13px] transition"
+              :class="reason === p ? 'border-primary bg-primary/10 text-accent' : 'border-separator text-hint'"
+              :aria-pressed="reason === p"
+              @click="reason = reason === p ? '' : p"
+            >{{ p }}</button>
+          </div>
+          <textarea
+            v-model="reason"
+            rows="2"
+            maxlength="255"
+            required
+            aria-labelledby="reason-title"
+            placeholder="Or write your reason"
+            class="mt-2 w-full rounded-xl border border-separator bg-surface p-3 text-[15px] outline-none focus:border-primary"
+          />
+        </section>
+
         <p v-if="problem" class="rounded-2xl bg-danger/10 px-4 py-3 text-[15px] text-danger" role="alert">{{ problem }}</p>
 
-        <AppButton v-if="!native" block :variant="isIn ? 'success' : 'primary'" class="py-4 text-[17px]" :disabled="!locationReady" :loading="submitting" @click="submit">
+        <AppButton v-if="!native" block :variant="isIn ? 'success' : 'primary'" class="py-4 text-[17px]" :disabled="!ready" :loading="submitting" @click="submit">
           {{ label }}
         </AppButton>
         <p v-else-if="!locationReady" class="text-center text-[13px] text-hint">Share your location to {{ noun.replace('-', ' ') }}.</p>
+        <p v-else-if="!reasonReady" class="text-center text-[13px] text-hint">Say why to {{ noun.replace('-', ' ') }}.</p>
       </template>
     </StateView>
   </div>

@@ -79,6 +79,13 @@ const employeeOptions = computed((): SelectOption[] => {
 })
 const people = computed(() => (form.id ? (form.employee_id ? [form.employee_id] : []) : form.employee_ids))
 const chosenShift = computed(() => lookups.schedules?.find(s => String(s.id) === form.work_schedule_id))
+// A shift belongs to one branch: "Another shift" offers the shifts of the people's branch.
+const peopleBranches = computed(() => [...new Set(people.value.map(id => lookups.employees?.find(e => String(e.id) === id)?.branch_id ?? 0))])
+const shiftBranch = computed(() => (peopleBranches.value.length === 1 ? peopleBranches.value[0]! : 0))
+const shiftOptions = computed(() => (shiftBranch.value ? lookups.shiftOptions(shiftBranch.value) : []))
+watch(shiftBranch, (b) => {
+  if (!lookups.fits('schedules', form.work_schedule_id, b) || (!b && form.work_schedule_id)) form.work_schedule_id = ''
+})
 // Picking a shift starts from its usual days.
 watch(() => form.work_schedule_id, () => {
   if (chosenShift.value && !form.id) form.work_days = parseWorkDays(chosenShift.value.work_days)
@@ -90,6 +97,7 @@ watch(() => [form.start_time, form.end_time], ([s, e]) => {
 const problem = computed(() => {
   if (!people.value.length) return form.id ? 'Choose an employee.' : 'Choose at least one employee.'
   if (form.end_date < form.start_date) return 'The end date is before the start date.'
+  if (form.kind === 'SHIFT' && peopleBranches.value.length > 1) return 'Shifts belong to one branch: choose people of one branch, or use custom hours.'
   if (form.kind === 'SHIFT' && !form.work_schedule_id) return 'Choose the shift to work.'
   if (form.kind !== 'OFF' && !form.work_days.length) return 'Choose at least one work day.'
   return ''
@@ -162,7 +170,7 @@ async function remove(o: ScheduleOverride) {
               <tr v-for="o in list.data.value ?? []" :key="o.id">
                 <td>
                   <span class="font-medium">{{ o.employee?.full_name }}</span>
-                  <span class="block text-xs text-muted">{{ o.employee?.employee_code }}<template v-if="o.employee?.branch && auth.can('all.view')"> · {{ o.employee.branch.name }}</template></span>
+                  <span class="block text-xs text-muted">{{ o.employee?.employee_code }}<template v-if="o.employee?.branch && auth.multiBranch"> · {{ o.employee.branch.name }}</template></span>
                 </td>
                 <td class="whitespace-nowrap">
                   {{ o.start_date === o.end_date ? formatDate(o.start_date) : `${formatDayMonth(o.start_date)} – ${formatDate(o.end_date)}` }}
@@ -200,7 +208,10 @@ async function remove(o: ScheduleOverride) {
         </FormField>
 
         <FormField v-if="form.kind === 'SHIFT'" label="Shift" for="sp-shift" class="sm:col-span-2">
-          <SearchSelect id="sp-shift" v-model="form.work_schedule_id" :options="lookups.shiftOptions" placeholder="Choose a shift…" required />
+          <SearchSelect
+            id="sp-shift" v-model="form.work_schedule_id" :options="shiftOptions" required :disabled="!shiftBranch"
+            :placeholder="shiftBranch ? 'Choose a shift…' : peopleBranches.length > 1 ? 'People of several branches chosen' : 'Choose employees first'"
+          />
         </FormField>
         <template v-if="form.kind === 'CUSTOM'">
           <FormField label="Start" for="sp-start"><input id="sp-start" v-model="form.start_time" type="time" class="input" required /></FormField>

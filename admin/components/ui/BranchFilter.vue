@@ -2,13 +2,14 @@
 import { useAuthStore } from '~/stores/auth'
 import { useLookupsStore } from '~/stores/lookups'
 
-// Branch picker for company-wide users (owner/HR). Branch admins never see it:
-// the API already limits them to their own branch.
+// Branch picker for admins who see several branches (the owner, HR, a company
+// admin with several branches). An admin of one branch never sees it: the API
+// already limits them to that branch.
 const model = defineModel<string>({ required: true })
 defineProps<{ id: string }>()
 const auth = useAuthStore()
 const lookups = useLookupsStore()
-const visible = computed(() => auth.can('all.view'))
+const visible = computed(() => auth.multiBranch)
 onMounted(() => visible.value && lookups.loadBranches().catch(() => {}))
 </script>
 

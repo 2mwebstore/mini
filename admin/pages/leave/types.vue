@@ -1,11 +1,16 @@
 <script setup lang="ts">
 import { leaveService } from '~/services/leave.service'
 import { useAuthStore } from '~/stores/auth'
+import { useLookupsStore } from '~/stores/lookups'
 import type { LeaveApproval, LeaveType } from '~/types/api'
 
 const auth = useAuthStore()
+const lookups = useLookupsStore()
 const canEdit = computed(() => auth.can('leave.manage'))
-const types = useResource(() => leaveService.allTypes())
+// Each branch has its own leave types (and allowances).
+const { branchId, target, showBranch, branchName, picker } = useBranchPick()
+const types = useResource(() => leaveService.allTypes(Number(branchId.value) || undefined))
+watch(branchId, () => types.load())
 const { busy, run } = useAction()
 const { confirm } = useConfirm()
 
@@ -15,14 +20,14 @@ const approvalOptions = [
   { value: 'AUTO', label: 'Approved automatically' },
 ]
 const blank = () => ({
-  id: 0, code: '', name: '', annual_days: 0, is_paid: true, approval: 'MANUAL' as LeaveApproval, allow_exceed: false,
+  id: 0, branch_id: target.value, code: '', name: '', annual_days: 0, is_paid: true, approval: 'MANUAL' as LeaveApproval, allow_exceed: false,
   max_days_per_request: 0, min_notice_days: 0, color: palette[0]!, description: '', active: true,
 })
 const form = reactive(blank())
 const open = ref(false)
 function edit(t?: LeaveType) {
   Object.assign(form, blank(), t
-    ? { id: t.id, code: t.code, name: t.name, annual_days: t.annual_days, is_paid: t.is_paid, approval: t.approval, allow_exceed: t.allow_exceed,
+    ? { id: t.id, branch_id: String(t.branch_id), code: t.code, name: t.name, annual_days: t.annual_days, is_paid: t.is_paid, approval: t.approval, allow_exceed: t.allow_exceed,
         max_days_per_request: t.max_days_per_request, min_notice_days: t.min_notice_days, color: t.color, description: t.description, active: t.active }
     : { color: palette.find(c => !types.data.value?.some(t => t.color === c)) ?? palette[0] })
   open.value = true
@@ -33,12 +38,14 @@ watch(() => form.name, n => {
 })
 
 async function save() {
-  const { id, ...input } = form
-  const body = { ...input, annual_days: Number(input.annual_days), max_days_per_request: Number(input.max_days_per_request), min_notice_days: Number(input.min_notice_days) }
+  const { id, branch_id, ...input } = form
+  if (!branch_id) return
+  const body = { ...input, ...(id ? {} : { branch_id: Number(branch_id) }), annual_days: Number(input.annual_days), max_days_per_request: Number(input.max_days_per_request), min_notice_days: Number(input.min_notice_days) }
   const ok = await run('save', () => (id ? leaveService.updateType(id, body) : leaveService.createType(body)), id ? 'Leave type saved' : 'Leave type added')
   if (ok) {
     open.value = false
     types.load()
+    lookups.leaveTypes = null
   }
 }
 async function toggle(t: LeaveType) {
@@ -53,15 +60,20 @@ const days = (n: number) => `${n % 1 ? n.toFixed(1) : n} day${n === 1 ? '' : 's'
 
 <template>
   <div>
-    <PageHeader title="Leave types" subtitle="Leave categories, their yearly allowance and approval policy. Employees choose from the active types in the Mini App.">
+    <PageHeader title="Leave types" subtitle="Each branch's leave categories, yearly allowance and approval policy. Staff choose from their branch's active types in the Mini App.">
       <AppButton v-if="canEdit" @click="edit()">New leave type</AppButton>
     </PageHeader>
+    <div v-if="picker" class="mb-4 max-w-xs">
+      <FormField label="Branch" for="lt-branch">
+        <SearchSelect id="lt-branch" v-model="branchId" :options="lookups.branchOptions" empty-label="All my branches" />
+      </FormField>
+    </div>
 
     <StateView :loading="types.loading.value && !types.data.value" :error="types.error.value" :empty="types.data.value?.length === 0" empty-text="No leave types yet." @retry="types.load">
       <div class="card overflow-hidden">
         <div class="overflow-x-auto">
           <table class="table">
-            <thead><tr><th>Leave type</th><th>Allowance / year</th><th>Approval</th><th>Rules</th><th>Requests</th><th>Active</th><th v-if="canEdit" class="text-right">Actions</th></tr></thead>
+            <thead><tr><th>Leave type</th><th v-if="showBranch">Branch</th><th>Allowance / year</th><th>Approval</th><th>Rules</th><th>Requests</th><th>Active</th><th v-if="canEdit" class="text-right">Actions</th></tr></thead>
             <tbody>
               <tr v-for="t in types.data.value ?? []" :key="t.id" :class="!t.active && 'opacity-60'">
                 <td>
@@ -70,6 +82,7 @@ const days = (n: number) => `${n % 1 ? n.toFixed(1) : n} day${n === 1 ? '' : 's'
                   </span>
                   <span class="block text-xs text-muted">{{ t.code }}<template v-if="!t.is_paid"> · unpaid</template><template v-if="t.description"> · {{ t.description }}</template></span>
                 </td>
+                <td v-if="showBranch" class="text-muted">{{ branchName(t.branch_id) }}</td>
                 <td class="whitespace-nowrap">
                   <template v-if="t.annual_days > 0">{{ days(t.annual_days) }}</template>
                   <span v-else class="text-muted">Not counted</span>
@@ -113,6 +126,9 @@ const days = (n: number) => `${n % 1 ? n.toFixed(1) : n} day${n === 1 ? '' : 's'
 
     <AppModal v-model="open" :title="form.id ? `Edit ${form.name}` : 'New leave type'" wide>
       <form id="lt-form" class="grid gap-4 sm:grid-cols-2" @submit.prevent="save">
+        <FormField v-if="picker" label="Branch" for="lt-form-branch" class="sm:col-span-2" :hint="form.id ? 'A leave type stays in its branch.' : undefined">
+          <SearchSelect id="lt-form-branch" v-model="form.branch_id" :options="lookups.branchOptions" placeholder="Choose a branch…" required :disabled="!!form.id" />
+        </FormField>
         <FormField label="Name" for="lt-name"><input id="lt-name" v-model="form.name" class="input" required maxlength="100" placeholder="e.g. Maternity Leave" /></FormField>
         <FormField label="Code" for="lt-code" :hint="form.id ? 'Cannot be changed.' : 'Capital letters, digits and _'">
           <input id="lt-code" v-model="form.code" class="input font-mono uppercase" required pattern="[A-Za-z0-9_]{2,32}" :disabled="!!form.id" />
@@ -149,7 +165,7 @@ const days = (n: number) => `${n % 1 ? n.toFixed(1) : n} day${n === 1 ? '' : 's'
       </form>
       <template #footer>
         <AppButton variant="secondary" @click="open = false">Cancel</AppButton>
-        <AppButton type="submit" form="lt-form" :loading="busy === 'save'">Save</AppButton>
+        <AppButton type="submit" form="lt-form" :loading="busy === 'save'" :disabled="!form.branch_id">Save</AppButton>
       </template>
     </AppModal>
   </div>

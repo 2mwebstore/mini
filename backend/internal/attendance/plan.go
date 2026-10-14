@@ -39,7 +39,7 @@ const (
 	PlanSpecial = "SPECIAL" // a special / temporary schedule
 )
 
-// DefaultShift is used when the company has no default shift in the database.
+// DefaultShift is used when a branch has no shift of its own yet.
 func DefaultShift() models.WorkSchedule {
 	return models.WorkSchedule{Name: "Office Hours", StartTime: "09:00", EndTime: "17:30", WorkType: models.WorkNormal,
 		GraceMinutes: 10, WorkDays: "1,2,3,4,5", Color: "#2563eb"}
@@ -105,8 +105,9 @@ func ParseWorkDays(csv string) map[int]bool {
 // Planner answers Day() for a set of employees over a date range from a few queries.
 type Planner struct {
 	shifts    map[uint64]*models.WorkSchedule
-	fallback  *models.WorkSchedule
-	roster    map[string]*uint64 // employee|date -> shift (nil = day off); no key = not on the roster
+	defaults  map[uint64]*models.WorkSchedule // each branch's default shift
+	fallback  *models.WorkSchedule            // built in, for a branch without shifts
+	roster    map[string]*uint64              // employee|date -> shift (nil = day off); no key = not on the roster
 	overrides map[uint64][]models.ScheduleOverride
 }
 
@@ -116,7 +117,9 @@ func planKey(empID uint64, d time.Time) string {
 
 // LoadPlanner reads shifts, roster entries and special schedules for empIDs in [from, to].
 func LoadPlanner(ctx context.Context, db *gorm.DB, empIDs []uint64, from, to time.Time) (*Planner, error) {
-	p := &Planner{shifts: map[uint64]*models.WorkSchedule{}, roster: map[string]*uint64{}, overrides: map[uint64][]models.ScheduleOverride{}}
+	d := DefaultShift()
+	p := &Planner{shifts: map[uint64]*models.WorkSchedule{}, defaults: map[uint64]*models.WorkSchedule{}, fallback: &d,
+		roster: map[string]*uint64{}, overrides: map[uint64][]models.ScheduleOverride{}}
 	var shifts []models.WorkSchedule
 	if err := db.WithContext(ctx).Order("id").Find(&shifts).Error; err != nil {
 		return nil, err
@@ -124,13 +127,9 @@ func LoadPlanner(ctx context.Context, db *gorm.DB, empIDs []uint64, from, to tim
 	for i := range shifts {
 		s := &shifts[i]
 		p.shifts[s.ID] = s
-		if s.IsDefault && p.fallback == nil {
-			p.fallback = s
+		if s.IsDefault && p.defaults[s.BranchID] == nil {
+			p.defaults[s.BranchID] = s
 		}
-	}
-	if p.fallback == nil {
-		d := DefaultShift()
-		p.fallback = &d
 	}
 	if len(empIDs) == 0 {
 		return p, nil
@@ -153,10 +152,15 @@ func LoadPlanner(ctx context.Context, db *gorm.DB, empIDs []uint64, from, to tim
 	return p, nil
 }
 
-// Usual is the employee's regular shift (the company default if none is set).
+// Usual is the employee's regular shift (their branch's default if none is set).
 func (p *Planner) Usual(emp *models.Employee) *models.WorkSchedule {
 	if emp.WorkScheduleID != nil {
 		if ws := p.shifts[*emp.WorkScheduleID]; ws != nil {
+			return ws
+		}
+	}
+	if emp.BranchID != nil {
+		if ws := p.defaults[*emp.BranchID]; ws != nil {
 			return ws
 		}
 	}

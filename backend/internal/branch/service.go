@@ -1,11 +1,14 @@
-// Package branch manages company branches and their branch admins. The owner
-// (super admin) creates branches and assigns exactly one admin to each; a branch
-// admin may adjust their own branch's office location and Telegram chats.
+// Package branch manages branches — each runs on its own: its Telegram bot and
+// chats, GPS rules and office, and (elsewhere) its own setup lists. The owner
+// creates any branch and assigns one admin to each; admins with "Create branches"
+// create their own (added to their branch access) and edit those they reach; a
+// branch admin adjusts their branch's office, GPS and Telegram.
 package branch
 
 import (
 	"context"
 	"errors"
+	"net/url"
 	"regexp"
 	"strings"
 
@@ -29,7 +32,10 @@ type Service struct{ db *gorm.DB }
 
 func NewService(db *gorm.DB) *Service { return &Service{db: db} }
 
-var codeRe = regexp.MustCompile(`^[A-Za-z0-9_-]{2,32}$`)
+var (
+	codeRe     = regexp.MustCompile(`^[A-Za-z0-9_-]{2,32}$`)
+	botTokenRe = regexp.MustCompile(`^\d{5,15}:[A-Za-z0-9_-]{30,64}$`)
+)
 
 // Input is a create/update body; nil fields are left unchanged on update.
 type Input struct {
@@ -40,18 +46,57 @@ type Input struct {
 	OfficeLatitude       *float64  `json:"office_latitude"`
 	OfficeLongitude      *float64  `json:"office_longitude"`
 	AllowedRadiusMeters  *float64  `json:"allowed_radius_meters"`
-	UseCompanyOffice     bool      `json:"use_company_office"` // clears the branch's own office location
+	ClearOffice          bool      `json:"clear_office"`       // removes the office location
+	GPS                  *GPSInput `json:"gps"`                // the branch's GPS rules
+	TelegramBotToken     *string   `json:"telegram_bot_token"` // "" removes the bot; checked with Telegram by the handler
+	MiniAppURL           *string   `json:"miniapp_url"`
 	TelegramGroupID      *int64    `json:"telegram_group_id"`
 	TelegramReviewChatID *int64    `json:"telegram_review_chat_id"`
-	GPS                  *GPSInput `json:"gps"` // the branch's GPS rules
+	Starter              bool      `json:"starter"` // create: start with a default shift and the usual leave types
+
+	// Set by the handler once Telegram accepted the token: the sealed token and the bot's @username.
+	BotSealed   *string `json:"-"`
+	BotUsername *string `json:"-"`
 }
 
-// GPSInput: Inherit uses the company's GPS settings; otherwise the three rules apply.
+// GPSInput: whether check-ins ask for the location, require it, and refuse it
+// outside the office radius.
 type GPSInput struct {
-	Inherit       bool `json:"inherit"`
 	Enabled       bool `json:"enabled"`
 	Required      bool `json:"required"`
 	RejectOutside bool `json:"reject_outside"`
+}
+
+// ValidBotToken: the shape of a token from @BotFather ("" = remove the bot).
+func ValidBotToken(v string) error {
+	if v != "" && !botTokenRe.MatchString(v) {
+		return apperr.BadRequest("INVALID_BOT_TOKEN", "The bot token must look like 123456789:AA… (copy it from @BotFather).")
+	}
+	return nil
+}
+
+// ValidMiniAppURL: Telegram only opens Mini Apps over HTTPS ("" = none).
+func ValidMiniAppURL(v string) error {
+	if v == "" {
+		return nil
+	}
+	u, err := url.Parse(v)
+	if err != nil || u.Scheme != "https" || u.Host == "" {
+		return apperr.BadRequest("INVALID_MINIAPP_URL", "The Mini App URL must be an https:// address (Telegram only opens Mini Apps over HTTPS).")
+	}
+	return nil
+}
+
+// reaches: the branch is the actor's own, or within their branch access.
+func reaches(actor *auth.Actor, id uint64) bool {
+	return actor.InBranch(id) || (actor.Employee.BranchID != nil && *actor.Employee.BranchID == id)
+}
+
+// fill sets the fields computed for clients.
+func fill(bs []models.Branch) {
+	for i := range bs {
+		bs[i].TelegramBotSet = bs[i].TelegramBotToken != ""
+	}
 }
 
 // List returns the branches the actor may see: all for company-wide staff
@@ -71,11 +116,12 @@ func (s *Service) List(ctx context.Context, actor *auth.Actor) ([]models.Branch,
 	if err := q.Find(&out).Error; err != nil {
 		return nil, err
 	}
+	fill(out)
 	return out, s.countStaff(ctx, out)
 }
 
 func (s *Service) Get(ctx context.Context, actor *auth.Actor, id uint64) (*models.Branch, error) {
-	if !actor.InBranch(id) && (actor.Employee.BranchID == nil || *actor.Employee.BranchID != id) {
+	if !reaches(actor, id) {
 		return nil, apperr.NotFound("BRANCH_NOT_FOUND", "Branch not found.")
 	}
 	var b models.Branch
@@ -83,20 +129,24 @@ func (s *Service) Get(ctx context.Context, actor *auth.Actor, id uint64) (*model
 		return nil, apperr.NotFound("BRANCH_NOT_FOUND", "Branch not found.")
 	}
 	list := []models.Branch{b}
+	fill(list)
 	if err := s.countStaff(ctx, list); err != nil {
 		return nil, err
 	}
 	return &list[0], nil
 }
 
+// Create adds a branch. Someone limited to some branches (e.g. a Company Admin)
+// gets the new branch added to their branch access, so they reach it.
 func (s *Service) Create(ctx context.Context, actor *auth.Actor, in Input) (*models.Branch, error) {
-	if !actor.Has(auth.PermBranchesManage) {
-		return nil, apperr.Forbidden("Only the owner can create branches.")
+	if !actor.Has(auth.PermBranchesManage) && !actor.Has(auth.PermBranchesCreate) {
+		return nil, apperr.Forbidden("You cannot create branches.")
 	}
 	if in.Code == nil || in.Name == nil {
 		return nil, apperr.BadRequest("INVALID_BRANCH", "Code and name are required.")
 	}
-	b := models.Branch{Status: models.EmployeeActive}
+	off := false
+	b := models.Branch{Status: models.EmployeeActive, GPSEnabled: &off, GPSRequired: &off, GPSRejectOutside: &off}
 	if err := apply(&b, in); err != nil {
 		return nil, err
 	}
@@ -107,25 +157,60 @@ func (s *Service) Create(ctx context.Context, actor *auth.Actor, in Input) (*mod
 			}
 			return err
 		}
+		if !actor.AllBranches() && actor.ID() != 0 {
+			if err := tx.Create(&models.UserBranch{EmployeeID: actor.ID(), BranchID: b.ID}).Error; err != nil {
+				return err
+			}
+		}
+		if in.Starter {
+			if err := starter(tx, b.ID); err != nil {
+				return err
+			}
+		}
 		return audit.Write(ctx, tx, actor, audit.Entry{Action: ActionCreate, EntityType: "branch", EntityID: b.ID,
-			Details: map[string]any{"code": b.Code, "name": b.Name}})
+			Details: map[string]any{"code": b.Code, "name": b.Name, "starter": in.Starter}})
 	})
 	if err != nil {
 		return nil, err
 	}
+	if !actor.AllBranches() {
+		actor.Branches = append(actor.Branches, b.ID) // this request sees it too
+	}
 	return s.Get(ctx, actor, b.ID)
 }
 
-// Update: the owner may change anything; a branch admin only their own branch's
-// office location and Telegram chats.
+// starter gives a new branch what it needs to run at once — a default shift and
+// the usual leave types — all of it editable afterwards on the branch's lists.
+func starter(tx *gorm.DB, branchID uint64) error {
+	shift := models.WorkSchedule{BranchID: branchID, Name: "Office Hours", StartTime: "09:00", EndTime: "17:30", WorkType: models.WorkNormal,
+		GraceMinutes: 10, WorkDays: "1,2,3,4,5", Color: "#2563eb", IsDefault: true}
+	if err := tx.Create(&shift).Error; err != nil {
+		return err
+	}
+	types := []models.LeaveType{
+		{Code: "ANNUAL", Name: "Annual Leave", AnnualDays: 18, IsPaid: true, Color: "#16a34a"},
+		{Code: "SICK", Name: "Sick Leave", AnnualDays: 7, IsPaid: true, AllowExceed: true, Color: "#dc2626"},
+		{Code: "PERSONAL", Name: "Personal Leave", AnnualDays: 5, IsPaid: true, Color: "#7c3aed"},
+		{Code: "EMERGENCY", Name: "Emergency Leave", AnnualDays: 3, IsPaid: true, AllowExceed: true, Color: "#ea580c"},
+		{Code: "UNPAID", Name: "Unpaid Leave", Color: "#64748b"},
+	}
+	for i := range types {
+		t := &types[i]
+		t.BranchID, t.Approval, t.Active, t.SortOrder = branchID, models.LeaveApprovalManual, true, i+1
+	}
+	return tx.Create(&types).Error
+}
+
+// Update: the owner — or someone who creates branches, for those they reach — may
+// change anything; a branch admin only their branch's office, GPS and Telegram.
 func (s *Service) Update(ctx context.Context, actor *auth.Actor, id uint64, in Input) (*models.Branch, error) {
-	owner := actor.Has(auth.PermBranchesManage)
-	own := actor.Has(auth.PermBranchSettings) && ((actor.Employee.BranchID != nil && *actor.Employee.BranchID == id) || actor.InBranch(id))
-	if !owner && !own {
+	full := (actor.Has(auth.PermBranchesManage) || actor.Has(auth.PermBranchesCreate)) && reaches(actor, id)
+	own := actor.Has(auth.PermBranchSettings) && reaches(actor, id)
+	if !full && !own {
 		return nil, apperr.ErrForbidden
 	}
-	if !owner && (in.Code != nil || in.Name != nil || in.Address != nil || in.Status != nil) {
-		return nil, apperr.Forbidden("Only the owner can rename, move or close a branch.")
+	if !full && (in.Code != nil || in.Name != nil || in.Address != nil || in.Status != nil) {
+		return nil, apperr.Forbidden("You cannot rename, move or close this branch.")
 	}
 	var b models.Branch
 	if err := s.db.WithContext(ctx).First(&b, id).Error; err != nil {
@@ -240,15 +325,11 @@ func apply(b *models.Branch, in Input) error {
 		b.Status = st
 	}
 	if g := in.GPS; g != nil {
-		if g.Inherit {
-			b.GPSEnabled, b.GPSRequired, b.GPSRejectOutside = nil, nil, nil
-		} else {
-			// Required / reject-outside only make sense with GPS on.
-			on, req, rej := g.Enabled, g.Enabled && g.Required, g.Enabled && g.RejectOutside
-			b.GPSEnabled, b.GPSRequired, b.GPSRejectOutside = &on, &req, &rej
-		}
+		// Required / reject-outside only make sense with GPS on.
+		on, req, rej := g.Enabled, g.Enabled && g.Required, g.Enabled && g.RejectOutside
+		b.GPSEnabled, b.GPSRequired, b.GPSRejectOutside = &on, &req, &rej
 	}
-	if in.UseCompanyOffice {
+	if in.ClearOffice {
 		b.OfficeLatitude, b.OfficeLongitude, b.AllowedRadiusMeters = nil, nil, nil
 	} else if in.OfficeLatitude != nil || in.OfficeLongitude != nil || in.AllowedRadiusMeters != nil {
 		if in.OfficeLatitude == nil || in.OfficeLongitude == nil || in.AllowedRadiusMeters == nil {
@@ -262,6 +343,23 @@ func apply(b *models.Branch, in Input) error {
 		}
 		b.OfficeLatitude, b.OfficeLongitude, b.AllowedRadiusMeters = in.OfficeLatitude, in.OfficeLongitude, in.AllowedRadiusMeters
 	}
+	if b.GPSRejectOutside != nil && *b.GPSRejectOutside && !b.HasOffice() {
+		return apperr.BadRequest("OFFICE_REQUIRED", "Set the office location first: refusing check-ins outside the office needs it.")
+	}
+	if in.BotSealed != nil {
+		b.TelegramBotToken = *in.BotSealed
+		b.TelegramBotUsername = ""
+		if in.BotUsername != nil {
+			b.TelegramBotUsername = *in.BotUsername
+		}
+	}
+	if in.MiniAppURL != nil {
+		v := strings.TrimSpace(*in.MiniAppURL)
+		if err := ValidMiniAppURL(v); err != nil {
+			return err
+		}
+		b.MiniAppURL = v
+	}
 	if in.TelegramGroupID != nil {
 		b.TelegramGroupID = *in.TelegramGroupID
 	}
@@ -274,6 +372,7 @@ func apply(b *models.Branch, in Input) error {
 func snapshot(b *models.Branch) map[string]any {
 	return map[string]any{"code": b.Code, "name": b.Name, "address": b.Address, "status": b.Status,
 		"office_latitude": b.OfficeLatitude, "office_longitude": b.OfficeLongitude, "allowed_radius_meters": b.AllowedRadiusMeters,
+		"telegram_bot": b.TelegramBotUsername, "telegram_bot_set": b.TelegramBotToken != "", "miniapp_url": b.MiniAppURL,
 		"telegram_group_id": b.TelegramGroupID, "telegram_review_chat_id": b.TelegramReviewChatID,
 		"gps_enabled": b.GPSEnabled, "gps_required": b.GPSRequired, "gps_reject_outside": b.GPSRejectOutside}
 }

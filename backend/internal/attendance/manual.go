@@ -69,7 +69,7 @@ func (s *Service) Manual(ctx context.Context, actor *auth.Actor, in ManualInput)
 	}
 	day := plan.Day(&emp, date)
 	scheduled := day.Work
-	if hol, _ := s.isHoliday(ctx, date); hol {
+	if hol, _ := s.isHoliday(ctx, emp.BranchID, date); hol {
 		scheduled = false
 	}
 
@@ -317,15 +317,37 @@ func WorkingDays(ctx context.Context, db *gorm.DB, emp *models.Employee, from, t
 	return plan.WorkingDays(emp, from, to, isHoliday), nil
 }
 
-// HolidaySet loads holidays in a range into a lookup function.
-func HolidaySet(ctx context.Context, db *gorm.DB, from, to time.Time) (func(time.Time) bool, error) {
-	var hs []models.Holiday
-	if err := db.WithContext(ctx).Where("date BETWEEN ? AND ?", from, to).Find(&hs).Error; err != nil {
-		return nil, err
-	}
+// HolidaySet loads a branch's holidays in a range into a lookup function (no
+// branch: no holidays).
+func HolidaySet(ctx context.Context, db *gorm.DB, branchID *uint64, from, to time.Time) (func(time.Time) bool, error) {
 	set := map[string]bool{}
-	for _, h := range hs {
-		set[h.Date.Format("2006-01-02")] = true
+	if branchID != nil {
+		var hs []models.Holiday
+		if err := db.WithContext(ctx).Where("branch_id = ? AND date BETWEEN ? AND ?", *branchID, from, to).Find(&hs).Error; err != nil {
+			return nil, err
+		}
+		for _, h := range hs {
+			set[h.Date.Format("2006-01-02")] = true
+		}
 	}
 	return func(d time.Time) bool { return set[d.Format("2006-01-02")] }, nil
+}
+
+// Holidays loads the holidays of several branches in a range: branch -> date -> name.
+func Holidays(ctx context.Context, db *gorm.DB, branchIDs []uint64, from, to time.Time) (map[uint64]map[string]string, error) {
+	out := map[uint64]map[string]string{}
+	if len(branchIDs) == 0 {
+		return out, nil
+	}
+	var hs []models.Holiday
+	if err := db.WithContext(ctx).Where("branch_id IN ? AND date BETWEEN ? AND ?", branchIDs, from, to).Find(&hs).Error; err != nil {
+		return nil, err
+	}
+	for _, h := range hs {
+		if out[h.BranchID] == nil {
+			out[h.BranchID] = map[string]string{}
+		}
+		out[h.BranchID][h.Date.Format("2006-01-02")] = h.Name
+	}
+	return out, nil
 }

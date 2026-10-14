@@ -44,7 +44,7 @@ const rows = computed(() => [...(daily.data.value?.rows ?? [])].sort((a, b) => w
   <div>
     <PageHeader
       title="Today"
-      :subtitle="[daily.data.value ? formatDate(daily.data.value.date, true) : '', auth.can('all.view') ? '' : auth.employee?.branch?.name].filter(Boolean).join(' · ')"
+      :subtitle="[daily.data.value ? formatDate(daily.data.value.date, true) : '', auth.multiBranch ? '' : auth.employee?.branch?.name].filter(Boolean).join(' · ')"
     >
       <div class="w-48"><BranchFilter id="d-branch" v-model="branchId" /></div>
       <AppButton variant="secondary" @click="daily.load(); pending.load()">Refresh</AppButton>
@@ -72,7 +72,7 @@ const rows = computed(() => [...(daily.data.value?.rows ?? [])].sort((a, b) => w
         <div v-else class="overflow-x-auto">
           <table class="table">
             <thead>
-              <tr><th>Employee</th><th>{{ auth.can('all.view') ? 'Branch' : 'Department' }}</th><th>Shift</th><th>In</th><th>Out</th><th>Worked</th><th>Status</th><th>Review</th></tr>
+              <tr><th>Employee</th><th>{{ auth.multiBranch ? 'Branch' : 'Department' }}</th><th>Shift</th><th>In</th><th>Out</th><th>Worked</th><th>Status</th><th>Review</th></tr>
             </thead>
             <tbody>
               <tr v-for="r in rows" :key="r.employee_id">
@@ -81,7 +81,7 @@ const rows = computed(() => [...(daily.data.value?.rows ?? [])].sort((a, b) => w
                   <span v-else class="font-medium">{{ r.full_name }}</span>
                   <span class="block text-xs text-muted">{{ r.employee_code }}</span>
                 </td>
-                <td class="text-muted">{{ (auth.can('all.view') ? r.branch : r.department) || '—' }}</td>
+                <td class="text-muted">{{ (auth.multiBranch ? r.branch : r.department) || '—' }}</td>
                 <td class="whitespace-nowrap text-xs">
                   <template v-if="r.shift_start">
                     <span class="block">{{ r.shift }}</span>

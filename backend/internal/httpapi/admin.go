@@ -176,11 +176,13 @@ func (s *Server) setUserBranches(c *gin.Context) {
 // ---------- departments & positions ----------
 
 type orgName struct {
-	Name string `json:"name"`
+	Name     string `json:"name"`
+	BranchID uint64 `json:"branch_id"` // create: the branch it belongs to
 }
 
 func (s *Server) listPositions(c *gin.Context) {
-	out, err := s.employees.PositionList(c.Request.Context())
+	branchID, _ := strconv.ParseUint(c.Query("branch_id"), 10, 64)
+	out, err := s.employees.PositionList(c.Request.Context(), actorFrom(c), branchID)
 	if err != nil {
 		fail(c, err)
 		return
@@ -197,7 +199,7 @@ func (s *Server) savePosition(c *gin.Context) {
 }
 
 // saveOrg creates (POST) or renames (PUT /:id) a department or position.
-func (s *Server) saveOrg(c *gin.Context, save func(context.Context, *auth.Actor, uint64, string) (*employee.OrgItem, error)) {
+func (s *Server) saveOrg(c *gin.Context, save func(context.Context, *auth.Actor, uint64, uint64, string) (*employee.OrgItem, error)) {
 	var id uint64
 	if c.Param("id") != "" {
 		var ok bool
@@ -209,7 +211,7 @@ func (s *Server) saveOrg(c *gin.Context, save func(context.Context, *auth.Actor,
 	if !bind(c, &in) {
 		return
 	}
-	item, err := save(c.Request.Context(), actorFrom(c), id, in.Name)
+	item, err := save(c.Request.Context(), actorFrom(c), id, in.BranchID, in.Name)
 	if err != nil {
 		fail(c, err)
 		return

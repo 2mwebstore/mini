@@ -5,7 +5,7 @@
 export type Permission =
   | 'attendance.self' | 'leave.self' | 'team.view' | 'team.review' | 'all.view' | 'all.review'
   | 'attendance.edit' | 'staff.manage' | 'report.export' | 'settings.view' | 'settings.edit'
-  | 'audit.view' | 'roles.assign_admin' | 'branch.view' | 'branch.review' | 'branch.settings' | 'branches.manage'
+  | 'audit.view' | 'roles.assign_admin' | 'branch.view' | 'branch.review' | 'branch.settings' | 'branches.manage' | 'branches.create'
   | 'schedules.manage' | 'leave.manage' | 'users.manage'
 
 /** Built-in: super_admin, hr_admin, branch_admin, manager, staff — plus roles created in Role management. */
@@ -17,6 +17,7 @@ export type DayStatus =
   | 'PRESENT' | 'LATE' | 'EARLY_LEAVE' | 'ABSENT' | 'LEAVE' | 'HOLIDAY' | 'WEEKEND' | 'NOT_CHECKED_IN'
 export type LeaveStatus = 'PENDING' | 'APPROVED' | 'REJECTED' | 'CANCELLED'
 
+/** A branch runs on its own: its Telegram bot and chats, GPS rules and office. */
 export interface Branch {
   id: number
   code: string
@@ -26,9 +27,12 @@ export interface Branch {
   office_latitude: number | null
   office_longitude: number | null
   allowed_radius_meters: number | null
-  gps_enabled: boolean | null // null = the company setting
+  gps_enabled: boolean | null // null = off
   gps_required: boolean | null
   gps_reject_outside: boolean | null
+  telegram_bot_set: boolean // the token itself is write-only
+  telegram_bot_username: string
+  miniapp_url: string
   telegram_group_id: number
   telegram_review_chat_id: number
   status: 'ACTIVE' | 'INACTIVE'
@@ -36,7 +40,7 @@ export interface Branch {
   admin?: Employee
 }
 
-/** Owner: any field. A branch's own admin: office location and Telegram chats only. */
+/** Owner / branch creators: any field. A branch's own admin: office, GPS and Telegram only. */
 export interface BranchInput {
   code?: string
   name?: string
@@ -45,22 +49,28 @@ export interface BranchInput {
   office_latitude?: number
   office_longitude?: number
   allowed_radius_meters?: number
-  use_company_office?: boolean
+  clear_office?: boolean
+  gps?: { enabled: boolean; required?: boolean; reject_outside?: boolean }
+  telegram_bot_token?: string // write-only; "" removes the bot
+  miniapp_url?: string
   telegram_group_id?: number
   telegram_review_chat_id?: number
-  /** inherit: use the company's GPS settings. */
-  gps?: { inherit?: boolean; enabled?: boolean; required?: boolean; reject_outside?: boolean }
+  starter?: boolean // create: start with a default shift and the usual leave types
 }
 
 export interface Department {
   id: number
+  branch_id: number
+  branch_name: string
   name: string
   employees?: number
 }
 
-/** A department or position from the managed lists. */
+/** A department or position of one branch. */
 export interface OrgItem {
   id: number
+  branch_id: number
+  branch_name: string
   name: string
   employees: number
 }
@@ -131,6 +141,7 @@ export type WorkType = 'NORMAL' | 'CROSS_DAY'
 /** A shift (work schedule): hours, grace period and usual work days. */
 export interface WorkSchedule {
   id: number
+  branch_id: number
   name: string
   start_time: string
   end_time: string
@@ -143,6 +154,7 @@ export interface WorkSchedule {
 }
 
 export interface ShiftInput {
+  branch_id?: number // create: the branch it belongs to
   name?: string
   start_time?: string
   end_time?: string
@@ -176,6 +188,7 @@ export interface RosterCell extends PlanDay {
 
 export interface RosterRow {
   employee_id: number
+  branch_id: number // its shifts are the ones to offer
   employee_code: string
   full_name: string
   branch: string
@@ -349,6 +362,8 @@ export interface Attendance {
   work_date: string
   check_in_at: string | null
   check_out_at: string | null
+  check_in_reason: string // the employee's reason (required when late)
+  check_out_reason: string // (required when leaving early)
   working_minutes: number
   late_minutes: number
   early_leave_minutes: number
@@ -416,6 +431,7 @@ export type LeaveApproval = 'MANUAL' | 'AUTO'
 /** A leave category with its yearly allowance and approval policy. */
 export interface LeaveType {
   id: number
+  branch_id: number
   code: string
   name: string
   annual_days: number // 0 = not counted
@@ -498,6 +514,8 @@ export interface DayRow {
   date: string
   check_in_at: string | null
   check_out_at: string | null
+  check_in_reason?: string // why late (asked when late)
+  check_out_reason?: string // why early (asked when leaving early)
   working_minutes: number
   late_minutes: number
   early_leave_minutes: number
@@ -560,30 +578,18 @@ export interface DailyReport {
   rows: DayRow[]
 }
 
+/** Company settings. Telegram and GPS belong to each branch (Branch). */
 export interface CompanySettings {
   company_name: string
   timezone: string
   confirmation_required: boolean
-  gps_enabled: boolean
-  gps_required: boolean
-  gps_reject_outside: boolean
-  office_latitude: number
-  office_longitude: number
-  allowed_radius_meters: number
   daily_report_enabled: boolean
   daily_report_time: string
   missing_checkin_alert_time: string
   day_close_time: string
-  // Telegram (the bot token itself is write-only)
-  telegram_bot_token_set: boolean
-  telegram_bot_username: string
-  miniapp_url: string
-  telegram_group_id: number
-  telegram_review_chat_id: number
 }
 
-/** Editable keys; telegram_bot_token is write-only ("" clears it). */
-export type SettingsUpdate = Partial<Omit<CompanySettings, 'telegram_bot_token_set' | 'telegram_bot_username'>> & { telegram_bot_token?: string }
+export type SettingsUpdate = Partial<CompanySettings>
 
 export interface BackupStatus {
   ok: boolean
@@ -599,6 +605,7 @@ export interface SettingsResponse {
 
 export interface Holiday {
   id: number
+  branch_id: number
   date: string
   name: string
 }

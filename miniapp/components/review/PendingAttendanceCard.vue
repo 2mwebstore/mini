@@ -42,6 +42,9 @@ const timing = computed(() => {
         </p>
       </div>
     </div>
+    <p v-if="item.reason" class="mt-2.5 rounded-xl bg-page px-3 py-2 text-[14px]">
+      <span class="block text-[12px] text-hint">{{ isIn ? 'Why late' : 'Why early' }}</span>{{ item.reason }}
+    </p>
     <div class="mt-3 grid grid-cols-2 gap-2">
       <AppButton variant="danger" :disabled="busy" @click="$emit('reject')">Reject</AppButton>
       <AppButton variant="success" :loading="busy" @click="$emit('confirm')">Confirm</AppButton>

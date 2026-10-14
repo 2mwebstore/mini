@@ -18,6 +18,8 @@ export const useAuthStore = defineStore('auth', {
   getters: {
     signedIn: s => !!s.employee,
     isReviewer: s => s.permissions.includes('team.review') || s.permissions.includes('all.review'),
+    /** Sees more than one branch: every branch, or several assigned/created ones (shows branch pickers). */
+    multiBranch: s => s.allBranches || new Set([...s.branchIds, ...(s.employee?.branch_id ? [s.employee.branch_id] : [])]).size > 1,
   },
   actions: {
     can(p: Permission) {
@@ -40,6 +42,11 @@ export const useAuthStore = defineStore('auth', {
       }
       this.checked = true
       return this.signedIn
+    },
+    /** Reloads the session (e.g. after creating a branch, which widens the reach). */
+    async refresh() {
+      this.checked = false
+      await this.ensure()
     },
     async login(email: string, password: string) {
       await authService.login(email, password)

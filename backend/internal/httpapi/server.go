@@ -3,6 +3,7 @@
 package httpapi
 
 import (
+	"attendance/backend/internal/bots"
 	"context"
 	"net"
 	"net/http"
@@ -40,7 +41,8 @@ type Deps struct {
 	Reports    *report.Service
 	Schedules  *schedule.Service
 	Access     *access.Service
-	Telegram   *telegram.Client // verifies bot tokens and updates the bot's menu button
+	Telegram   *telegram.Client // verifies bot tokens and updates the bots' menu buttons
+	Bots       *bots.Registry   // each branch's Telegram bot
 }
 
 type Server struct {
@@ -58,11 +60,12 @@ type Server struct {
 	schedules  *schedule.Service
 	access     *access.Service
 	tg         *telegram.Client
+	bots       *bots.Registry
 }
 
 func New(cfg *config.Config, d Deps) *Server {
 	return &Server{cfg: cfg, db: d.DB, rdb: d.Redis, store: d.Store, auth: d.Auth, settings: d.Settings, employees: d.Employees,
-		branches: d.Branches, attendance: d.Attendance, leave: d.Leave, reports: d.Reports, schedules: d.Schedules, access: d.Access, tg: d.Telegram}
+		branches: d.Branches, attendance: d.Attendance, leave: d.Leave, reports: d.Reports, schedules: d.Schedules, access: d.Access, tg: d.Telegram, bots: d.Bots}
 }
 
 func (s *Server) Router() *gin.Engine {
@@ -105,9 +108,9 @@ func (s *Server) Router() *gin.Engine {
 	api.PUT("/employees/:id", require(auth.PermStaffManage), s.updateEmployee)
 	api.DELETE("/employees/:id", require(auth.PermStaffManage), s.deactivateEmployee)
 	api.GET("/branches", s.listBranches)
-	api.POST("/branches", require(auth.PermBranchesManage), s.createBranch)
+	api.POST("/branches", s.createBranch) // the owner, or admins who create branches (the service checks)
 	api.GET("/branches/:id", s.getBranch)
-	api.PUT("/branches/:id", s.updateBranch) // owner, or the branch's own admin (ops fields only)
+	api.PUT("/branches/:id", s.updateBranch) // owner / branch creators in reach; branch admins: office, GPS, Telegram
 	api.PUT("/branches/:id/admin", require(auth.PermBranchesManage), s.assignBranchAdmin)
 	api.GET("/departments", s.listDepartments)
 	api.POST("/departments", require(auth.PermStaffManage), s.saveDepartment)
@@ -172,8 +175,8 @@ func (s *Server) Router() *gin.Engine {
 	api.GET("/settings", require(auth.PermSettingsView), s.getSettings)
 	api.PUT("/settings", require(auth.PermSettingsEdit), s.updateSettings)
 	api.GET("/holidays", s.listHolidays)
-	api.POST("/holidays", require(auth.PermSettingsEdit), s.createHoliday)
-	api.DELETE("/holidays/:id", require(auth.PermSettingsEdit), s.deleteHoliday)
+	api.POST("/holidays", require(auth.PermSchedulesManage), s.createHoliday) // in the branches the actor reaches
+	api.DELETE("/holidays/:id", require(auth.PermSchedulesManage), s.deleteHoliday)
 	api.GET("/audit-logs", require(auth.PermAuditView), s.auditLogs)
 
 	app := v1.Group("/app", s.webAppAuth(), rateLimit(s.rdb, "app", 300, time.Minute, byActor))

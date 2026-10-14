@@ -5,9 +5,6 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
-	"net/url"
-	"regexp"
-	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -22,58 +19,30 @@ import (
 )
 
 type Settings struct {
-	CompanyName             string  `json:"company_name"`
-	Timezone                string  `json:"timezone"`
-	ConfirmationRequired    bool    `json:"confirmation_required"`
-	GPSEnabled              bool    `json:"gps_enabled"`
-	GPSRequired             bool    `json:"gps_required"`
-	GPSRejectOutside        bool    `json:"gps_reject_outside"`
-	OfficeLatitude          float64 `json:"office_latitude"`
-	OfficeLongitude         float64 `json:"office_longitude"`
-	AllowedRadiusMeters     float64 `json:"allowed_radius_meters"`
-	DailyReportEnabled      bool    `json:"daily_report_enabled"`
-	DailyReportTime         string  `json:"daily_report_time"`
-	MissingCheckinAlertTime string  `json:"missing_checkin_alert_time"`
-	DayCloseTime            string  `json:"day_close_time"`
-
-	// Telegram, managed in the admin panel. The token is never sent to clients.
-	TelegramBotToken     string `json:"-"`
-	TelegramBotTokenSet  bool   `json:"telegram_bot_token_set"`
-	TelegramBotUsername  string `json:"telegram_bot_username"`
-	MiniAppURL           string `json:"miniapp_url"`
-	TelegramGroupID      int64  `json:"telegram_group_id"`       // company daily report
-	TelegramReviewChatID int64  `json:"telegram_review_chat_id"` // 0 = DM reviewers
+	CompanyName             string `json:"company_name"`
+	Timezone                string `json:"timezone"`
+	ConfirmationRequired    bool   `json:"confirmation_required"`
+	DailyReportEnabled      bool   `json:"daily_report_enabled"`
+	DailyReportTime         string `json:"daily_report_time"`
+	MissingCheckinAlertTime string `json:"missing_checkin_alert_time"`
+	DayCloseTime            string `json:"day_close_time"`
+	// Telegram (bot, chats) and GPS (rules, office) belong to each branch: see the branch page.
 
 	Location *time.Location `json:"-"`
 }
 
-// TelegramReady reports whether notifications and the Mini App can work.
-func (s *Settings) TelegramReady() bool { return s.TelegramBotToken != "" }
-
 // SecretKeys are encrypted at rest and never echoed back or written to audit logs.
-var SecretKeys = map[string]bool{"telegram_bot_token": true}
-
-var botTokenRe = regexp.MustCompile(`^\d{5,15}:[A-Za-z0-9_-]{30,64}$`)
+var SecretKeys = map[string]bool{}
 
 // validators keep bad values out of the table; every editable key must be listed here.
 var validators = map[string]func(string) error{
 	"company_name":               nonEmpty,
 	"timezone":                   func(v string) error { _, err := time.LoadLocation(v); return err },
 	"confirmation_required":      isBool,
-	"gps_enabled":                isBool,
-	"gps_required":               isBool,
-	"gps_reject_outside":         isBool,
-	"office_latitude":            floatRange(-90, 90),
-	"office_longitude":           floatRange(-180, 180),
-	"allowed_radius_meters":      floatRange(10, 100000),
 	"daily_report_enabled":       isBool,
 	"daily_report_time":          isHHMM,
 	"missing_checkin_alert_time": isHHMM,
 	"day_close_time":             isHHMM,
-	"telegram_bot_token":         optional(matches(botTokenRe, "must look like 123456789:AA… (from @BotFather)")),
-	"miniapp_url":                optional(isHTTPSURL),
-	"telegram_group_id":          isInt,
-	"telegram_review_chat_id":    isInt,
 }
 
 type Service struct {
@@ -130,32 +99,14 @@ func (s *Service) Location(ctx context.Context) *time.Location {
 
 func FromMap(m map[string]string) *Settings {
 	b := func(k string) bool { return strings.EqualFold(m[k], "true") }
-	f := func(k string) float64 { v, _ := strconv.ParseFloat(m[k], 64); return v }
-	i := func(k string) int64 { v, _ := strconv.ParseInt(m[k], 10, 64); return v }
 	st := &Settings{
 		CompanyName:             m["company_name"],
 		Timezone:                or(m["timezone"], "Asia/Phnom_Penh"),
 		ConfirmationRequired:    b("confirmation_required"),
-		GPSEnabled:              b("gps_enabled"),
-		GPSRequired:             b("gps_required"),
-		GPSRejectOutside:        b("gps_reject_outside"),
-		OfficeLatitude:          f("office_latitude"),
-		OfficeLongitude:         f("office_longitude"),
-		AllowedRadiusMeters:     f("allowed_radius_meters"),
 		DailyReportEnabled:      b("daily_report_enabled"),
 		DailyReportTime:         or(m["daily_report_time"], "18:00"),
 		MissingCheckinAlertTime: or(m["missing_checkin_alert_time"], "10:00"),
 		DayCloseTime:            or(m["day_close_time"], "23:50"),
-		TelegramBotToken:        m["telegram_bot_token"],
-		TelegramBotUsername:     m["telegram_bot_username"],
-		MiniAppURL:              m["miniapp_url"],
-		TelegramGroupID:         i("telegram_group_id"),
-		TelegramReviewChatID:    i("telegram_review_chat_id"),
-	}
-	st.TelegramBotTokenSet = st.TelegramBotToken != ""
-	// GPS "required" only makes sense when GPS is enabled.
-	if !st.GPSEnabled {
-		st.GPSRequired, st.GPSRejectOutside = false, false
 	}
 	st.Location = timeutil.LoadLocation(st.Timezone)
 	return st
@@ -211,18 +162,6 @@ func (s *Service) Update(ctx context.Context, actorID uint64, changes map[string
 	return prev, nil
 }
 
-// SetBotUsername records the bot's @username (learned from Telegram, not user-editable).
-func (s *Service) SetBotUsername(ctx context.Context, username string) error {
-	err := s.db.WithContext(ctx).Clauses(clause.OnConflict{UpdateAll: true}).
-		Create(&models.CompanySetting{Key: "telegram_bot_username", Value: username}).Error
-	if err == nil {
-		s.mu.Lock()
-		s.cached = nil
-		s.mu.Unlock()
-	}
-	return err
-}
-
 func or(v, def string) string {
 	if strings.TrimSpace(v) == "" {
 		return def
@@ -245,47 +184,3 @@ func isBool(v string) error {
 }
 
 func isHHMM(v string) error { _, _, err := timeutil.ParseHHMM(v); return err }
-
-func isInt(v string) error {
-	if _, err := strconv.ParseInt(v, 10, 64); err != nil {
-		return fmt.Errorf("must be a whole number (Telegram chat IDs of groups start with -)")
-	}
-	return nil
-}
-
-func isHTTPSURL(v string) error {
-	u, err := url.Parse(v)
-	if err != nil || u.Scheme != "https" || u.Host == "" {
-		return fmt.Errorf("must be an https:// URL (Telegram only opens Mini Apps over HTTPS)")
-	}
-	return nil
-}
-
-func matches(re *regexp.Regexp, msg string) func(string) error {
-	return func(v string) error {
-		if !re.MatchString(v) {
-			return fmt.Errorf("%s", msg)
-		}
-		return nil
-	}
-}
-
-// optional allows "" (clears the setting) or a value passing check.
-func optional(check func(string) error) func(string) error {
-	return func(v string) error {
-		if v == "" {
-			return nil
-		}
-		return check(v)
-	}
-}
-
-func floatRange(min, max float64) func(string) error {
-	return func(v string) error {
-		f, err := strconv.ParseFloat(v, 64)
-		if err != nil || f < min || f > max {
-			return fmt.Errorf("must be a number between %v and %v", min, max)
-		}
-		return nil
-	}
-}

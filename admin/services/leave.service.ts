@@ -7,7 +7,7 @@ export const leaveService = {
   pending: () => api.get<Items<LeaveRequest>>('/leave/pending').then(r => r.items ?? []),
   types: () => api.get<Items<LeaveType>>('/leave/types').then(r => r.items ?? []),
   /** Every type, inactive too, with how many requests use it. */
-  allTypes: () => api.get<Items<LeaveType>>('/leave/types', { all: 1 }).then(r => r.items ?? []),
+  allTypes: (branchId?: number) => api.get<Items<LeaveType>>('/leave/types', { all: 1, branch_id: branchId || undefined }).then(r => r.items ?? []),
   createType: (input: LeaveTypeInput) => api.post<LeaveType>('/leave/types', input),
   updateType: (id: number, input: LeaveTypeInput) => api.put<LeaveType>(`/leave/types/${id}`, input),
   deleteType: (id: number) => api.del(`/leave/types/${id}`),

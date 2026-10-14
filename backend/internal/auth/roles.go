@@ -27,18 +27,19 @@ var Catalog = []PermissionInfo{
 	{PermTeamReview, "Team", "Review team", "Confirm check-ins and approve leave of people they manage."},
 	{PermBranchView, "Branch", "View own branch", "See everyone in their own branch (and branches assigned to them)."},
 	{PermBranchReview, "Branch", "Review own branch", "Confirm check-ins and approve leave in their branch."},
-	{PermBranchSettings, "Branch", "Branch settings", "Edit their branch's office location, GPS rules and Telegram chats."},
+	{PermBranchSettings, "Branch", "Branch settings", "Edit their branches' office location, GPS rules and Telegram bot and chats."},
+	{PermBranchesCreate, "Branch", "Create branches", "Create new branches (added to their own branch access) and rename or close the branches they reach."},
 	{PermAllView, "Company", "View all branches", "See everyone — limited to the branches assigned to the user, if any."},
 	{PermAllReview, "Company", "Review all branches", "Confirm check-ins and approve leave for everyone they can see."},
 	{PermAttendanceEdit, "Records", "Edit attendance", "Add and correct attendance records (audited, reason required)."},
 	{PermReportExport, "Records", "Export reports", "Download Excel / CSV reports and rosters."},
-	{PermStaffManage, "Records", "Manage staff", "Add and edit employees, departments, positions, the roster and special schedules."},
-	{PermSchedulesManage, "Records", "Manage shifts", "Create and edit shifts (hours, grace, work days)."},
-	{PermLeaveManage, "Records", "Manage leave policy", "Edit leave types, allowances and employees' leave balances."},
+	{PermStaffManage, "Records", "Manage staff", "Add and edit employees, departments, positions, the roster and special schedules of their branches."},
+	{PermSchedulesManage, "Records", "Manage shifts & holidays", "Create and edit their branches' shifts (hours, grace, work days) and holidays."},
+	{PermLeaveManage, "Records", "Manage leave policy", "Edit their branches' leave types, allowances and employees' leave balances."},
 	{PermSettingsView, "System", "View settings", "See company settings."},
-	{PermSettingsEdit, "System", "Edit settings", "Change company settings, Telegram, GPS defaults and holidays."},
+	{PermSettingsEdit, "System", "Edit settings", "Change company settings (name, time zone, review, scheduled jobs)."},
 	{PermAuditView, "System", "Audit log", "Read the audit log."},
-	{PermBranchesManage, "System", "Manage branches", "Create branches and assign branch admins."},
+	{PermBranchesManage, "System", "Manage all branches", "Create, edit and close any branch, and assign branch admins."},
 	{PermUsersManage, "System", "Manage system users", "Create panel logins, reset passwords, assign roles and branch access, edit roles."},
 	{PermAssignAdminRoles, "System", "Grant admin roles", "Give people roles with admin powers."},
 }
@@ -85,7 +86,7 @@ func builtinRoles() map[uint8]*roleInfo {
 		models.RoleHRAdmin: {id: models.RoleHRAdmin, code: "hr_admin", name: "HR / Admin", system: true, perms: set(append(team, PermAllView, PermAllReview,
 			PermAttendanceEdit, PermStaffManage, PermReportExport, PermSettingsView, PermSchedulesManage, PermLeaveManage)...)},
 		models.RoleBranchAdmin: {id: models.RoleBranchAdmin, code: "branch_admin", name: "Branch Admin", system: true, perms: set(append(team, PermBranchView,
-			PermBranchReview, PermAttendanceEdit, PermStaffManage, PermReportExport, PermBranchSettings)...)},
+			PermBranchReview, PermAttendanceEdit, PermStaffManage, PermReportExport, PermBranchSettings, PermSchedulesManage, PermLeaveManage)...)},
 		models.RoleSuperAdmin: {id: models.RoleSuperAdmin, code: "super_admin", name: "Super Admin", system: true, perms: map[Permission]bool{}},
 	}
 	for _, p := range Catalog {
@@ -193,6 +194,20 @@ func CompanyWideRoleIDs() []int {
 	if len(ids) == 0 {
 		ids = append(ids, int(models.RoleSuperAdmin))
 	}
+	return ids
+}
+
+// RolesWith lists the roles that have p (for SQL "IN ?"; []int, not []uint8).
+func RolesWith(p Permission) []int {
+	regMu.RLock()
+	defer regMu.RUnlock()
+	ids := []int{}
+	for id, r := range reg {
+		if r.perms[p] {
+			ids = append(ids, int(id))
+		}
+	}
+	sort.Ints(ids)
 	return ids
 }
 

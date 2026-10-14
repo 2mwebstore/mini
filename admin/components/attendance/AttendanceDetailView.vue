@@ -39,7 +39,8 @@ function side(type: 'CHECK_IN' | 'CHECK_OUT') {
   else if (isIn) status = a.late_minutes ? { label: `Late ${formatMinutes(a.late_minutes)}`, tone: 'warning' } : { label: 'On time', tone: 'success' }
   else status = a.early_leave_minutes ? { label: `Left ${formatMinutes(a.early_leave_minutes)} early`, tone: 'warning' } : { label: 'On time', tone: 'success' }
   const expected = plan.value.work ? (isIn ? plan.value.start : `${plan.value.end}${plan.value.cross_day ? ' (+1)' : ''}`) : ''
-  return { type, isIn, at, next: !isIn && nextDay(a.work_date, at, tz), review, location, photo, status, expected }
+  const reason = isIn ? a.check_in_reason : a.check_out_reason // the employee's: why late / early
+  return { type, isIn, at, next: !isIn && nextDay(a.work_date, at, tz), review, location, photo, status, expected, reason }
 }
 const sides = computed(() => [side('CHECK_IN'), side('CHECK_OUT')])
 const history = computed(() => [...(att.value.confirmations ?? [])].sort((a, b) => b.id - a.id))
@@ -117,6 +118,10 @@ async function reject(reason: string) {
           <StatusBadge :tone="s.status.tone" :label="s.status.label" />
           <span v-if="s.expected" class="ml-1.5 text-xs text-muted">{{ s.isIn ? 'expected' : 'ends' }} {{ s.expected }}</span>
         </p>
+        <blockquote v-if="s.reason" class="mt-2 rounded-md border-l-2 border-warning bg-warning/5 px-2.5 py-1.5 text-sm">
+          <span class="block text-xs font-medium text-muted">{{ s.isIn ? 'Reason for checking in late' : 'Reason for leaving early' }}</span>
+          {{ s.reason }}
+        </blockquote>
 
         <dl class="mt-3 grid gap-1.5 text-sm">
           <div v-if="s.review?.reviewed_at" class="flex justify-between gap-3">
@@ -124,7 +129,7 @@ async function reject(reason: string) {
             <dd class="text-right">{{ s.review.reviewer?.full_name ?? 'Automatic' }} · {{ formatDateTime(s.review.reviewed_at, tz) }}</dd>
           </div>
           <div v-if="s.review?.reason" class="flex justify-between gap-3">
-            <dt class="text-muted">Reason</dt><dd class="text-right">{{ s.review.reason }}</dd>
+            <dt class="text-muted">Review note</dt><dd class="text-right">{{ s.review.reason }}</dd>
           </div>
           <div v-if="s.at" class="flex justify-between gap-3">
             <dt class="text-muted">Location</dt>

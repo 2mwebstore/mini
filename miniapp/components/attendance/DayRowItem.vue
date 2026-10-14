@@ -21,6 +21,9 @@ defineProps<{ row: DayRow; timezone: string; showName?: boolean }>()
         <template v-else-if="row.leave_type">{{ row.leave_type }}</template>
         <template v-else-if="showName">{{ row.employee_code }}</template>
       </p>
+      <p v-if="row.check_in_reason || row.check_out_reason" class="mt-0.5 truncate text-[12px] text-hint">
+        “{{ [row.check_in_reason, row.check_out_reason].filter(Boolean).join(' · ') }}”
+      </p>
     </div>
     <div class="flex flex-col items-end gap-1">
       <StatusBadge v-bind="dayStatus[row.status]" />

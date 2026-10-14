@@ -73,12 +73,7 @@ func (s *Service) Create(ctx context.Context, actor *auth.Actor, in Input) (*mod
 		if err := s.resolveDepartment(tx, &emp, in); err != nil {
 			return err
 		}
-		if emp.WorkScheduleID == nil {
-			var ws models.WorkSchedule
-			if tx.Where("is_default = 1").First(&ws).Error == nil {
-				emp.WorkScheduleID = &ws.ID
-			}
-		}
+		defaultShift(tx, &emp)
 		if err := tx.Omit(clause.Associations).Create(&emp).Error; err != nil {
 			if isDuplicate(err) {
 				return apperr.Conflict("DUPLICATE_CODE", "Employee ID "+emp.EmployeeCode+" already exists.")
@@ -140,8 +135,13 @@ func (s *Service) Update(ctx context.Context, actor *auth.Actor, id uint64, in I
 		if branchIn == nil {
 			branchIn = emp.BranchID
 		}
+		prevBranch := emp.BranchID
 		if err := s.resolveBranch(ctx, actor, emp, branchIn); err != nil {
 			return nil, err
+		}
+		if prevBranch == nil || emp.BranchID == nil || *prevBranch != *emp.BranchID {
+			// Departments, positions and shifts belong to a branch: a move drops the old ones.
+			emp.DepartmentID, emp.PositionID, emp.Position, emp.WorkScheduleID = nil, nil, "", nil
 		}
 	}
 	if in.Status != "" {
@@ -164,6 +164,7 @@ func (s *Service) Update(ctx context.Context, actor *auth.Actor, id uint64, in I
 		if err := s.resolveDepartment(tx, emp, in); err != nil {
 			return err
 		}
+		defaultShift(tx, emp) // after a move to another branch
 		if err := tx.Omit(clause.Associations).Save(emp).Error; err != nil {
 			return err
 		}
@@ -233,9 +234,9 @@ func (s *Service) apply(ctx context.Context, emp *models.Employee, in Input) err
 	}
 	if in.WorkScheduleID != nil {
 		var n int64
-		s.db.WithContext(ctx).Model(&models.WorkSchedule{}).Where("id = ?", *in.WorkScheduleID).Count(&n)
+		s.db.WithContext(ctx).Model(&models.WorkSchedule{}).Where("id = ? AND branch_id = ?", *in.WorkScheduleID, branchOf(emp)).Count(&n)
 		if n == 0 {
-			return apperr.BadRequest("INVALID_SCHEDULE", "Unknown work schedule.")
+			return apperr.BadRequest("INVALID_SCHEDULE", "Choose a shift of the employee's branch.")
 		}
 		emp.WorkScheduleID = in.WorkScheduleID
 	}
@@ -260,8 +261,8 @@ func (s *Service) resolveDepartment(tx *gorm.DB, emp *models.Employee, in Input)
 			return nil
 		}
 		var d models.Department
-		if err := tx.First(&d, *in.DepartmentID).Error; err != nil {
-			return apperr.BadRequest("INVALID_DEPARTMENT", "Unknown department.")
+		if err := tx.Where("branch_id = ?", branchOf(emp)).First(&d, *in.DepartmentID).Error; err != nil {
+			return apperr.BadRequest("INVALID_DEPARTMENT", "Choose a department of the employee's branch.")
 		}
 		emp.DepartmentID = &d.ID
 		return nil
@@ -273,8 +274,8 @@ func (s *Service) resolveDepartment(tx *gorm.DB, emp *models.Employee, in Input)
 	if len(name) > 100 {
 		return apperr.BadRequest("INVALID_DEPARTMENT", "Department name is too long.")
 	}
-	d := models.Department{Name: name}
-	if err := tx.Where("name = ?", name).FirstOrCreate(&d).Error; err != nil {
+	d := models.Department{BranchID: branchOf(emp), Name: name}
+	if err := tx.Where("branch_id = ? AND name = ?", d.BranchID, name).FirstOrCreate(&d).Error; err != nil {
 		return err
 	}
 	emp.DepartmentID = &d.ID
@@ -289,8 +290,8 @@ func (s *Service) resolvePosition(ctx context.Context, emp *models.Employee, in 
 		emp.PositionID, emp.Position = nil, ""
 	case in.PositionID != nil:
 		var p models.Position
-		if err := s.db.WithContext(ctx).First(&p, *in.PositionID).Error; err != nil {
-			return apperr.BadRequest("INVALID_POSITION", "Unknown position.")
+		if err := s.db.WithContext(ctx).Where("branch_id = ?", branchOf(emp)).First(&p, *in.PositionID).Error; err != nil {
+			return apperr.BadRequest("INVALID_POSITION", "Choose a position of the employee's branch.")
 		}
 		emp.PositionID, emp.Position = &p.ID, p.Name
 	case in.Position != nil:
@@ -302,8 +303,8 @@ func (s *Service) resolvePosition(ctx context.Context, emp *models.Employee, in 
 		if len([]rune(name)) > 100 {
 			return apperr.BadRequest("INVALID_POSITION", "Position name is too long.")
 		}
-		p := models.Position{Name: name}
-		if err := s.db.WithContext(ctx).Where("name = ?", name).FirstOrCreate(&p).Error; err != nil {
+		p := models.Position{BranchID: branchOf(emp), Name: name}
+		if err := s.db.WithContext(ctx).Where("branch_id = ? AND name = ?", p.BranchID, name).FirstOrCreate(&p).Error; err != nil {
 			return err
 		}
 		emp.PositionID, emp.Position = &p.ID, p.Name
@@ -335,7 +336,10 @@ func (s *Service) resolveBranch(ctx context.Context, actor *auth.Actor, emp *mod
 	}
 	if actor.BranchOnly() {
 		if branchID == nil || *branchID == 0 {
-			branchID = actor.Employee.BranchID // default: the actor's own branch
+			branchID = actor.Employee.BranchID // default: the actor's own branch…
+			if _, ids := actor.Reach(); branchID == nil && len(ids) == 1 {
+				branchID = &ids[0] // …or the only branch they reach
+			}
 		}
 		if branchID != nil && !actor.InBranch(*branchID) {
 			return apperr.Forbidden("You can only manage staff in your assigned branches.")
@@ -353,6 +357,25 @@ func (s *Service) resolveBranch(ctx context.Context, actor *auth.Actor, emp *mod
 	}
 	emp.BranchID = &b.ID
 	return nil
+}
+
+// defaultShift gives someone without a usual shift their branch's default one.
+func defaultShift(tx *gorm.DB, emp *models.Employee) {
+	if emp.WorkScheduleID != nil || emp.BranchID == nil {
+		return
+	}
+	var ws models.WorkSchedule
+	if tx.Where("branch_id = ? AND is_default = 1", *emp.BranchID).First(&ws).Error == nil {
+		emp.WorkScheduleID = &ws.ID
+	}
+}
+
+// branchOf: the employee's branch id (0 if none — then nothing of a branch matches).
+func branchOf(e *models.Employee) uint64 {
+	if e.BranchID == nil {
+		return 0
+	}
+	return *e.BranchID
 }
 
 // LinkTelegram links a Telegram account to a person (an employee, or a system user

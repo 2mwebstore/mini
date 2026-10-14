@@ -12,9 +12,10 @@ export const attendanceService = {
 
   history: (month: string) => api.get<HistoryResponse>('/attendance/history', { query: { month } }),
 
-  // No photo: the location (when shared) is all a check-in/out sends.
-  submit(type: AttendanceType, location: Coordinates | null) {
+  // No photo: the location (when shared) and, when late or leaving early, the reason.
+  submit(type: AttendanceType, location: Coordinates | null, reason = '') {
     const form = new FormData()
+    if (reason) form.append('reason', reason)
     if (location) {
       form.append('latitude', String(location.latitude))
       form.append('longitude', String(location.longitude))

@@ -66,8 +66,12 @@ export function useMainButton(opts: {
     stop = watchEffect(() => {
       const b = tg.MainButton
       b.setText(toValue(opts.text))
-      toValue(opts.disabled) ? b.disable() : b.enable()
-      toValue(opts.loading) ? b.showProgress(false) : b.hideProgress()
+      // Progress first: Telegram's hideProgress() makes the button active again.
+      if (toValue(opts.loading)) b.showProgress(false)
+      else {
+        b.hideProgress()
+        toValue(opts.disabled) ? b.disable() : b.enable()
+      }
       toValue(opts.visible) ? b.show() : b.hide()
     })
   })

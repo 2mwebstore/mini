@@ -15,6 +15,10 @@ const today = todayISO(tz)
 // Filters live in the URL so a week can be bookmarked or shared.
 const q = (k: string) => (typeof route.query[k] === 'string' ? (route.query[k] as string) : '')
 const filter = reactive({ week: mondayOf(q('week') || today), branch_id: q('branch_id'), department_id: q('department_id'), q: q('q') })
+// Departments belong to one branch: drop a choice the new branch doesn't have.
+watch(() => filter.branch_id, (b) => {
+  if (!lookups.fits('departments', filter.department_id, b)) filter.department_id = ''
+}, { flush: 'sync' })
 const query = computed(() => ({
   from: filter.week,
   branch_id: filter.branch_id || undefined,
@@ -34,6 +38,8 @@ onMounted(() => lookups.loadDepartments().catch(() => {}))
 const rows = computed(() => roster.data.value?.rows ?? [])
 const days = computed(() => (roster.data.value?.days ?? []).map(d => d.slice(0, 10)))
 const shifts = computed(() => roster.data.value?.shifts ?? [])
+// Each branch has its own shifts: the legend lists each name/colour once.
+const legend = computed(() => [...new Map(shifts.value.map(s => [`${s.name}|${s.color}`, s])).values()])
 const weekLabel = computed(() => `${formatDayMonth(filter.week)} – ${formatDate(addDays(filter.week, 6))}`)
 const thisWeek = computed(() => filter.week === mondayOf(today))
 const canEditAny = computed(() => rows.value.some(r => r.can_edit))
@@ -59,6 +65,7 @@ const choice = ref('reset') // a shift id, 'off' or 'reset' (the usual pattern)
 const wholeWeek = ref(false)
 const editOpen = computed({ get: () => !!editing.value, set: v => !v && (editing.value = null) })
 const editCell = computed(() => (editing.value ? editing.value.row.cells[editing.value.index] ?? null : null))
+const rowShifts = computed(() => shifts.value.filter(s => s.branch_id === editing.value?.row.branch_id)) // the person's branch
 function openCell(row: RosterRow, i: number) {
   if (!row.can_edit) return
   const c = row.cells[i]!
@@ -122,7 +129,7 @@ const exportUrl = (format: 'xlsx' | 'csv') => scheduleService.exportUrl(query.va
       </FormField>
       <BranchFilter id="r-branch" v-model="filter.branch_id" />
       <FormField label="Department" for="r-dept">
-        <SearchSelect id="r-dept" v-model="filter.department_id" :options="lookups.departmentOptions" empty-label="All" />
+        <SearchSelect id="r-dept" v-model="filter.department_id" :options="lookups.departmentOptions(filter.branch_id)" empty-label="All" />
       </FormField>
       <FormField label="Search" for="r-q"><input id="r-q" v-model="filter.q" type="search" class="input" placeholder="Name or employee ID" /></FormField>
     </div>
@@ -133,7 +140,7 @@ const exportUrl = (format: 'xlsx' | 'csv') => scheduleService.exportUrl(query.va
         <button v-if="!thisWeek" type="button" class="ml-2 text-xs font-normal text-primary hover:underline" @click="filter.week = mondayOf(today)">This week</button>
       </p>
       <ul class="flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-muted" aria-label="Legend">
-        <li v-for="s in shifts" :key="s.id" class="flex items-center gap-1"><span class="size-2.5 rounded-sm" :style="{ background: s.color }" />{{ s.name }}</li>
+        <li v-for="s in legend" :key="s.id" class="flex items-center gap-1"><span class="size-2.5 rounded-sm" :style="{ background: s.color }" />{{ s.name }}</li>
         <li class="flex items-center gap-1"><span class="text-primary">●</span> set on roster</li>
         <li class="flex items-center gap-1"><span class="text-warning">★</span> special schedule</li>
       </ul>
@@ -162,7 +169,7 @@ const exportUrl = (format: 'xlsx' | 'csv') => scheduleService.exportUrl(query.va
               <tr v-for="row in rows" :key="row.employee_id">
                 <th scope="row" class="sticky left-0 z-10 border-b border-border bg-surface px-3 py-2 text-left font-normal">
                   <span class="block truncate font-medium">{{ row.full_name }}</span>
-                  <span class="block truncate text-xs text-muted">{{ row.employee_code }}<template v-if="row.branch && auth.can('all.view')"> · {{ row.branch }}</template> · {{ row.usual_shift }}</span>
+                  <span class="block truncate text-xs text-muted">{{ row.employee_code }}<template v-if="row.branch && auth.multiBranch"> · {{ row.branch }}</template> · {{ row.usual_shift }}</span>
                 </th>
                 <td v-for="(c, i) in row.cells" :key="c.date" class="border-b border-l border-border p-1" :class="days[i] === today && 'bg-primary/5'">
                   <button
@@ -212,7 +219,7 @@ const exportUrl = (format: 'xlsx' | 'csv') => scheduleService.exportUrl(query.va
         <p v-else-if="editCell.holiday" class="mb-3 rounded-lg bg-surface-2 p-3 text-sm">Public holiday: {{ editCell.holiday }}.</p>
         <fieldset class="flex flex-col gap-1.5">
           <legend class="label">Works</legend>
-          <label v-for="s in shifts" :key="s.id" class="flex cursor-pointer items-center gap-3 rounded-lg border border-border px-3 py-2 text-sm has-[:checked]:border-primary has-[:checked]:bg-primary/5">
+          <label v-for="s in rowShifts" :key="s.id" class="flex cursor-pointer items-center gap-3 rounded-lg border border-border px-3 py-2 text-sm has-[:checked]:border-primary has-[:checked]:bg-primary/5">
             <input v-model="choice" type="radio" name="roster-choice" :value="String(s.id)" class="accent-[var(--primary)]" />
             <span class="size-3 shrink-0 rounded-full" :style="{ background: s.color }" aria-hidden="true" />
             <span class="flex-1 font-medium">{{ s.name }}</span>

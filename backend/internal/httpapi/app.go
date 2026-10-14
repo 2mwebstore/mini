@@ -119,10 +119,9 @@ func (s *Server) appMe(c *gin.Context) {
 		profile["branch"] = e.Branch.Name
 	}
 	c.JSON(http.StatusOK, gin.H{
-		"me":      identify(a),
-		"profile": profile,
-		"settings": gin.H{"company_name": st.CompanyName, "timezone": st.Timezone, "gps_enabled": st.GPSEnabled,
-			"gps_required": st.GPSRequired, "confirmation_required": st.ConfirmationRequired},
+		"me":       identify(a),
+		"profile":  profile,
+		"settings": gin.H{"company_name": st.CompanyName, "timezone": st.Timezone, "confirmation_required": st.ConfirmationRequired},
 	})
 }
 
@@ -178,7 +177,7 @@ func (s *Server) appSubmit(typ string) gin.HandlerFunc {
 			fail(c, err)
 			return
 		}
-		in := attendance.SubmitInput{PhotoData: data}
+		in := attendance.SubmitInput{PhotoData: data, Reason: c.PostForm("reason")}
 		if loc, err := formLocation(c); err != nil {
 			fail(c, err)
 			return

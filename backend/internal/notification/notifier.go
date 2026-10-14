@@ -1,8 +1,8 @@
 // Package notification sends Telegram notifications to reviewers, employees and
-// the company/branch groups, and records each delivery in the notifications table.
-// Sends happen after the business transaction commits and never fail it. Chats,
-// links and the bot token come from settings (managed in the admin panel); until a
-// bot token is set, notifications are skipped.
+// branch groups, and records each delivery in the notifications table. Sends happen
+// after the business transaction commits and never fail it. Each branch has its own
+// bot (set on the branch page): messages about a person go through their branch's
+// bot, and are skipped while the branch has none.
 package notification
 
 import (
@@ -12,8 +12,9 @@ import (
 	"strings"
 	"time"
 
+	"attendance/backend/internal/auth"
+	"attendance/backend/internal/bots"
 	"attendance/backend/internal/models"
-	"attendance/backend/internal/settings"
 	"attendance/backend/internal/telegram"
 	"attendance/backend/internal/timeutil"
 
@@ -27,46 +28,45 @@ type Sender interface {
 }
 
 type Notifier struct {
-	db       *gorm.DB
-	tg       Sender
-	settings *settings.Service
-	async    bool
+	db    *gorm.DB
+	tg    *telegram.Client // its token is chosen per message (the branch's bot)
+	bots  *bots.Registry
+	async bool
 }
 
-func New(db *gorm.DB, tg Sender, st *settings.Service) *Notifier {
-	return &Notifier{db: db, tg: tg, settings: st, async: true}
+func New(db *gorm.DB, tg *telegram.Client, b *bots.Registry) *Notifier {
+	return &Notifier{db: db, tg: tg, bots: b, async: true}
 }
 
 // Sync makes sends blocking (tests).
 func (n *Notifier) Sync() *Notifier { n.async = false; return n }
 
-// config returns the current settings, or nil when Telegram isn't set up yet.
-func (n *Notifier) config(ctx context.Context) *settings.Settings {
-	st, err := n.settings.Get(ctx)
-	if err != nil {
-		slog.Error("notification: settings", "err", err)
+// sender sends through one branch's bot.
+func (n *Notifier) sender(b *bots.Bot) Sender { return n.tg.WithToken(b.Token) }
+
+// branchOfPerson is a person's branch id (nil: none, or not found).
+func (n *Notifier) branchOfPerson(ctx context.Context, employeeID uint64) *uint64 {
+	var e models.Employee
+	if n.db.WithContext(ctx).Select("id", "branch_id").First(&e, employeeID).Error != nil {
 		return nil
 	}
-	if !st.TelegramReady() {
-		return nil
-	}
-	return st
+	return e.BranchID
 }
 
 // openApp returns a one-button keyboard that opens the Mini App at page (e.g.
 // "team"), or nil if no Mini App URL is set. Telegram only allows web_app buttons
 // in private chats (positive chat IDs); groups get a t.me direct link, which needs
 // the bot's Main Mini App to be set in @BotFather.
-func openApp(st *settings.Settings, chatID int64, text, page string) *telegram.InlineKeyboard {
-	if st.MiniAppURL == "" {
+func openApp(bot *bots.Bot, chatID int64, text, page string) *telegram.InlineKeyboard {
+	if bot.MiniAppURL == "" {
 		return nil
 	}
 	b := telegram.InlineButton{Text: text}
 	switch {
 	case chatID > 0:
-		b.WebApp = &telegram.WebAppInfo{URL: strings.TrimSuffix(st.MiniAppURL, "/") + "/" + page}
-	case st.TelegramBotUsername != "":
-		b.URL = "https://t.me/" + st.TelegramBotUsername + "?startapp=" + page
+		b.WebApp = &telegram.WebAppInfo{URL: strings.TrimSuffix(bot.MiniAppURL, "/") + "/" + page}
+	case bot.Username != "":
+		b.URL = "https://t.me/" + bot.Username + "?startapp=" + page
 	default:
 		return nil
 	}
@@ -117,22 +117,20 @@ func (n *Notifier) branchOf(ctx context.Context, emp *models.Employee) *models.B
 }
 
 // reviewers decides who hears about emp's check-ins and leave requests:
-//  1. the branch's review chat, else 2. the company review chat, else
-//  3. DMs to the employee's manager and branch admin — or, when the branch has
-//     neither (or they haven't linked Telegram), to HR and super admins.
-func (n *Notifier) reviewers(ctx context.Context, st *settings.Settings, emp *models.Employee) []recipient {
-	br := n.branchOf(ctx, emp)
-	if br != nil && br.TelegramReviewChatID != 0 {
-		return []recipient{{chatID: br.TelegramReviewChatID}}
-	}
-	if st.TelegramReviewChatID != 0 {
-		return []recipient{{chatID: st.TelegramReviewChatID}}
+//  1. the branch's review chat, else
+//  2. DMs to the employee's manager and branch admin, else (none, or no Telegram)
+//  3. DMs to everyone who reviews the branch (company-wide admins whose access
+//     includes it, admins assigned to it).
+func (n *Notifier) reviewers(ctx context.Context, bot *bots.Bot, emp *models.Employee) []recipient {
+	if bot.ReviewChatID != 0 {
+		return []recipient{{chatID: bot.ReviewChatID}}
 	}
 	var ids []uint64
 	if emp.ManagerID != nil {
 		ids = append(ids, *emp.ManagerID)
 	}
-	if br != nil && br.AdminEmployeeID != nil {
+	var br models.Branch
+	if n.db.WithContext(ctx).Select("id", "admin_employee_id").First(&br, bot.BranchID).Error == nil && br.AdminEmployeeID != nil {
 		ids = append(ids, *br.AdminEmployeeID)
 	}
 	if len(ids) > 0 {
@@ -140,15 +138,38 @@ func (n *Notifier) reviewers(ctx context.Context, st *settings.Settings, emp *mo
 			return out
 		}
 	}
-	return n.companyAdmins(ctx, st, emp.ID)
+	return n.branchReviewers(ctx, bot.BranchID, emp.ID)
 }
 
-// companyAdmins: the company review chat, or DMs to HR and super admins.
-func (n *Notifier) companyAdmins(ctx context.Context, st *settings.Settings, exclude uint64) []recipient {
-	if st.TelegramReviewChatID != 0 {
-		return []recipient{{chatID: st.TelegramReviewChatID}}
+// branchReviewers: people whose role reviews and whose access reaches the branch —
+// company-wide reviewers with no branch limit or limited to include it, and
+// branch-level reviewers of (or assigned to) it.
+func (n *Notifier) branchReviewers(ctx context.Context, branchID, exclude uint64) []recipient {
+	wide := intersect(auth.RolesWith(auth.PermAllReview), auth.RolesWith(auth.PermAllView))
+	local := auth.RolesWith(auth.PermBranchReview)
+	return n.dms(ctx, exclude, `(e.role_id IN ? AND (NOT EXISTS (SELECT 1 FROM user_branches ub WHERE ub.employee_id = e.id)
+		OR EXISTS (SELECT 1 FROM user_branches ub WHERE ub.employee_id = e.id AND ub.branch_id = ?)))
+		OR (e.role_id IN ? AND (e.branch_id = ? OR EXISTS (SELECT 1 FROM user_branches ub WHERE ub.employee_id = e.id AND ub.branch_id = ?)))`,
+		wide, branchID, local, branchID, branchID)
+}
+
+// companyAdmins: company-wide admins who reach every branch (system alerts).
+func (n *Notifier) companyAdmins(ctx context.Context, exclude uint64) []recipient {
+	return n.dms(ctx, exclude, "e.role_id IN ? AND NOT EXISTS (SELECT 1 FROM user_branches ub WHERE ub.employee_id = e.id)", models.CompanyWideRoleIDs())
+}
+
+func intersect(a, b []int) []int {
+	in := map[int]bool{}
+	for _, x := range b {
+		in[x] = true
 	}
-	return n.dms(ctx, exclude, "e.role_id IN ?", models.CompanyWideRoleIDs())
+	out := []int{}
+	for _, x := range a {
+		if in[x] {
+			out = append(out, x)
+		}
+	}
+	return out
 }
 
 func (n *Notifier) employeeChat(ctx context.Context, employeeID uint64) (int64, bool) {
@@ -212,32 +233,33 @@ type AttendanceEvent struct {
 
 func (n *Notifier) AttendanceSubmitted(ev AttendanceEvent) {
 	n.run(func(ctx context.Context) {
-		st := n.config(ctx)
-		if st == nil {
+		bot := n.bots.ForBranch(ctx, ev.Employee.BranchID)
+		if bot == nil {
 			return
 		}
+		tg := n.sender(bot)
 		caption := AttendanceReviewCaption(ev)
 		typ := "attendance.submitted"
 		fileID := ""
-		for _, r := range n.reviewers(ctx, st, &ev.Employee) {
+		for _, r := range n.reviewers(ctx, bot, &ev.Employee) {
 			var kb *telegram.InlineKeyboard
 			if ev.Pending {
-				kb = openApp(st, r.chatID, "✅ Review in app", "team")
+				kb = openApp(bot, r.chatID, "✅ Review in app", "team")
 			}
 			var msg *telegram.Message
 			var err error
 			if len(ev.PhotoData) == 0 { // check-ins have no photo unless one was sent
-				msg, err = n.tg.SendMessage(ctx, r.chatID, caption, kb)
+				msg, err = tg.SendMessage(ctx, r.chatID, caption, kb)
 			} else if fileID == "" {
 				// The first send uploads the image; Telegram's file_id is reused for the
 				// other reviewers and saved on the photo row.
-				msg, err = n.tg.SendPhotoData(ctx, r.chatID, ev.PhotoData, caption, kb)
+				msg, err = tg.SendPhotoData(ctx, r.chatID, ev.PhotoData, caption, kb)
 				if p := msg.LargestPhoto(); err == nil && p != nil {
 					fileID = p.FileID
 					n.rememberPhotoFile(ctx, ev.PhotoID, p)
 				}
 			} else {
-				msg, err = n.tg.SendPhoto(ctx, r.chatID, fileID, caption, kb)
+				msg, err = tg.SendPhoto(ctx, r.chatID, fileID, caption, kb)
 			}
 			n.record(ctx, r, typ, "attendance", ev.Attendance.ID, msg, err)
 		}
@@ -269,11 +291,17 @@ func AttendanceReviewCaption(ev AttendanceEvent) string {
 		if ev.Attendance.LateMinutes > 0 {
 			fmt.Fprintf(&b, "⏰ Late: %d min\n", ev.Attendance.LateMinutes)
 		}
+		if ev.Attendance.CheckInReason != "" {
+			fmt.Fprintf(&b, "📝 Reason: %s\n", telegram.Esc(ev.Attendance.CheckInReason))
+		}
 	} else {
 		fmt.Fprintf(&b, "🔴 Check-Out: %s\n", timeutil.FormatClock(ev.Attendance.CheckOutAt, ev.Loc))
 		fmt.Fprintf(&b, "⏱️ Working Time: %s\n", timeutil.FormatMinutes(ev.Attendance.WorkingMinutes))
 		if ev.Attendance.EarlyLeaveMinutes > 0 {
 			fmt.Fprintf(&b, "⚠️ Early leave: %d min\n", ev.Attendance.EarlyLeaveMinutes)
+		}
+		if ev.Attendance.CheckOutReason != "" {
+			fmt.Fprintf(&b, "📝 Reason: %s\n", telegram.Esc(ev.Attendance.CheckOutReason))
 		}
 	}
 	if len(ev.PhotoData) > 0 {
@@ -292,8 +320,9 @@ func AttendanceReviewCaption(ev AttendanceEvent) string {
 
 func (n *Notifier) AttendanceReviewed(att models.Attendance, conf models.AttendanceConfirmation, reviewer models.Employee, loc *time.Location) {
 	n.run(func(ctx context.Context) {
-		st := n.config(ctx)
-		if st == nil {
+		branchID := n.branchOfPerson(ctx, att.EmployeeID)
+		bot := n.bots.ForBranch(ctx, branchID)
+		if bot == nil {
 			return
 		}
 		chat, ok := n.employeeChat(ctx, att.EmployeeID)
@@ -318,7 +347,7 @@ func (n *Notifier) AttendanceReviewed(att models.Attendance, conf models.Attenda
 				text += "\n\nOpen the app to check out again."
 			}
 		}
-		msg, err := n.tg.SendMessage(ctx, chat, text, openApp(st, chat, "📱 Open app", ""))
+		msg, err := n.sender(bot).SendMessage(ctx, chat, text, openApp(bot, chat, "📱 Open app", ""))
 		n.record(ctx, recipient{chatID: chat, employeeID: &att.EmployeeID}, "attendance.reviewed", "attendance", att.ID, msg, err)
 	})
 }
@@ -327,15 +356,15 @@ func (n *Notifier) AttendanceReviewed(att models.Attendance, conf models.Attenda
 
 func (n *Notifier) LeaveSubmitted(lr models.LeaveRequest, emp models.Employee, typeName string) {
 	n.run(func(ctx context.Context) {
-		st := n.config(ctx)
-		if st == nil {
+		bot := n.bots.ForBranch(ctx, emp.BranchID)
+		if bot == nil {
 			return
 		}
 		text := fmt.Sprintf("🏖️ <b>NEW LEAVE REQUEST</b>\n👤 %s (%s)\n📅 %s\n📌 %s\n📝 %s\nStatus: 🟡 Pending",
 			telegram.Esc(emp.FullName), telegram.Esc(emp.EmployeeCode), LeaveSpan(lr),
 			telegram.Esc(typeName), telegram.Esc(lr.Reason))
-		for _, r := range n.reviewers(ctx, st, &emp) {
-			msg, err := n.tg.SendMessage(ctx, r.chatID, text, openApp(st, r.chatID, "✅ Review in app", "team"))
+		for _, r := range n.reviewers(ctx, bot, &emp) {
+			msg, err := n.sender(bot).SendMessage(ctx, r.chatID, text, openApp(bot, r.chatID, "✅ Review in app", "team"))
 			n.record(ctx, r, "leave.submitted", "leave", lr.ID, msg, err)
 		}
 	})
@@ -343,8 +372,8 @@ func (n *Notifier) LeaveSubmitted(lr models.LeaveRequest, emp models.Employee, t
 
 func (n *Notifier) LeaveReviewed(lr models.LeaveRequest) {
 	n.run(func(ctx context.Context) {
-		st := n.config(ctx)
-		if st == nil {
+		bot := n.bots.ForBranch(ctx, n.branchOfPerson(ctx, lr.EmployeeID))
+		if bot == nil {
 			return
 		}
 		chat, ok := n.employeeChat(ctx, lr.EmployeeID)
@@ -360,76 +389,60 @@ func (n *Notifier) LeaveReviewed(lr models.LeaveRequest) {
 				text += "\nReason: " + telegram.Esc(lr.ReviewNote)
 			}
 		}
-		msg, err := n.tg.SendMessage(ctx, chat, text, openApp(st, chat, "📱 My leave", "leave"))
+		msg, err := n.sender(bot).SendMessage(ctx, chat, text, openApp(bot, chat, "📱 My leave", "leave"))
 		n.record(ctx, recipient{chatID: chat, employeeID: &lr.EmployeeID}, "leave.reviewed", "leave", lr.ID, msg, err)
 	})
 }
 
 // ---------- broadcast ----------
 
-// Group posts to the company group (daily report), falling back to the company review chat.
-func (n *Notifier) Group(typ, text string) {
-	n.run(func(ctx context.Context) {
-		st := n.config(ctx)
-		if st == nil {
-			return
-		}
-		target := st.TelegramGroupID
-		if target == 0 {
-			target = st.TelegramReviewChatID
-		}
-		if target == 0 {
-			slog.Info("no company Telegram group set; skipping group message", "type", typ)
-			return
-		}
-		msg, err := n.tg.SendMessage(ctx, target, text, nil)
-		n.record(ctx, recipient{chatID: target}, typ, "", 0, msg, err)
-	})
-}
-
 // BranchGroup posts to a branch's own group (its daily report), if it has one.
 func (n *Notifier) BranchGroup(b models.Branch, typ, text string) {
-	if b.TelegramGroupID == 0 {
-		return
-	}
 	n.run(func(ctx context.Context) {
-		if n.config(ctx) == nil {
+		bot := n.bots.ForBranch(ctx, &b.ID)
+		if bot == nil || bot.GroupID == 0 {
 			return
 		}
-		msg, err := n.tg.SendMessage(ctx, b.TelegramGroupID, text, nil)
-		n.record(ctx, recipient{chatID: b.TelegramGroupID}, typ, "branch", b.ID, msg, err)
+		msg, err := n.sender(bot).SendMessage(ctx, bot.GroupID, text, nil)
+		n.record(ctx, recipient{chatID: bot.GroupID}, typ, "branch", b.ID, msg, err)
 	})
 }
 
-// Admins sends an operational alert company-wide (company review chat, or HR/super admin DMs).
+// Admins sends a system alert (e.g. backups) by DM to the company-wide admins who
+// reach every branch, through any branch's bot (they must have started it).
 func (n *Notifier) Admins(typ, text string) {
 	n.run(func(ctx context.Context) {
-		st := n.config(ctx)
-		if st == nil {
+		bot := n.bots.Any(ctx, nil)
+		if bot == nil {
 			return
 		}
-		for _, r := range n.companyAdmins(ctx, st, 0) {
-			msg, err := n.tg.SendMessage(ctx, r.chatID, text, nil)
+		for _, r := range n.companyAdmins(ctx, 0) {
+			msg, err := n.sender(bot).SendMessage(ctx, r.chatID, text, nil)
 			n.record(ctx, r, typ, "", 0, msg, err)
 		}
 	})
 }
 
-// BranchAdmins sends an alert about one branch to its review chat, or its admin by DM.
+// BranchAdmins sends an alert about one branch to its review chat, or by DM to its
+// admin — or, without one, to everyone who reviews the branch.
 func (n *Notifier) BranchAdmins(b models.Branch, typ, text string) {
 	n.run(func(ctx context.Context) {
-		if n.config(ctx) == nil {
+		bot := n.bots.ForBranch(ctx, &b.ID)
+		if bot == nil {
 			return
 		}
 		var to []recipient
 		switch {
-		case b.TelegramReviewChatID != 0:
-			to = []recipient{{chatID: b.TelegramReviewChatID}}
+		case bot.ReviewChatID != 0:
+			to = []recipient{{chatID: bot.ReviewChatID}}
 		case b.AdminEmployeeID != nil:
 			to = n.dms(ctx, 0, "e.id = ?", *b.AdminEmployeeID)
 		}
+		if len(to) == 0 {
+			to = n.branchReviewers(ctx, b.ID, 0)
+		}
 		for _, r := range to {
-			msg, err := n.tg.SendMessage(ctx, r.chatID, text, nil)
+			msg, err := n.sender(bot).SendMessage(ctx, r.chatID, text, nil)
 			n.record(ctx, r, typ, "branch", b.ID, msg, err)
 		}
 	})

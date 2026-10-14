@@ -17,7 +17,8 @@ import (
 // ---------- shifts ----------
 
 func (s *Server) listShifts(c *gin.Context) {
-	out, err := s.schedules.Shifts(c.Request.Context())
+	branchID, _ := strconv.ParseUint(c.Query("branch_id"), 10, 64)
+	out, err := s.schedules.Shifts(c.Request.Context(), actorFrom(c), branchID)
 	if err != nil {
 		fail(c, err)
 		return

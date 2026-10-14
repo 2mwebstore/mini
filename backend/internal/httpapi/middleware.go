@@ -195,16 +195,19 @@ func (s *Server) webAppAuth() gin.HandlerFunc {
 			fail(c, apperr.ErrUnauthorized)
 			return
 		}
-		st, err := s.settings.Get(c.Request.Context())
-		if err != nil {
-			fail(c, err)
+		// Each branch has its own bot: the launch is genuine if any of them signed it.
+		tokens := s.bots.Tokens(c.Request.Context())
+		if len(tokens) == 0 {
+			fail(c, apperr.New(http.StatusServiceUnavailable, "TELEGRAM_NOT_CONFIGURED", "This app isn't set up yet. Ask your administrator to add the branch's Telegram bot on the Branches page."))
 			return
 		}
-		if !st.TelegramReady() {
-			fail(c, apperr.New(http.StatusServiceUnavailable, "TELEGRAM_NOT_CONFIGURED", "This app isn't set up yet. Ask your administrator to add the Telegram bot in Settings."))
-			return
+		var init *auth.WebAppInit
+		var err error
+		for _, tok := range tokens {
+			if init, err = auth.ValidateWebAppInitData(raw, tok, s.cfg.MiniAppSessionTTL, time.Now()); err == nil {
+				break
+			}
 		}
-		init, err := auth.ValidateWebAppInitData(raw, st.TelegramBotToken, s.cfg.MiniAppSessionTTL, time.Now())
 		if err != nil {
 			fail(c, err)
 			return

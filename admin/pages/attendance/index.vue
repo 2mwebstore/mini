@@ -28,6 +28,10 @@ const filter = reactive({
   confirmation: q('confirmation'),
   page: Number(q('page')) || 1,
 })
+// Departments belong to one branch: drop a choice the new branch doesn't have.
+watch(() => filter.branch_id, (b) => {
+  if (!lookups.fits('departments', filter.department_id, b)) filter.department_id = ''
+}, { flush: 'sync' })
 const query = computed<AttendanceFilter>(() => ({
   from: filter.from,
   to: filter.to,
@@ -118,7 +122,7 @@ const activeEmployeeOptions = computed(() => activeEmployees.value.map(e => ({ v
       </FormField>
       <BranchFilter id="f-branch" v-model="filter.branch_id" />
       <FormField label="Department" for="f-dept">
-        <SearchSelect id="f-dept" v-model="filter.department_id" :options="lookups.departmentOptions" empty-label="All" />
+        <SearchSelect id="f-dept" v-model="filter.department_id" :options="lookups.departmentOptions(filter.branch_id)" empty-label="All" />
       </FormField>
       <FormField label="Status" for="f-status">
         <SearchSelect id="f-status" v-model="filter.status" :options="dayStatusOptions" empty-label="All" />
@@ -132,13 +136,13 @@ const activeEmployeeOptions = computed(() => activeEmployees.value.map(e => ({ v
       <div v-if="list.data.value" class="card overflow-hidden" :class="{ 'opacity-60': list.loading.value }">
         <div class="overflow-x-auto">
           <table class="table">
-            <thead><tr><th>Date</th><th>Employee</th><th>Check in</th><th>Check out</th><th>Worked</th><th>Status</th><th class="text-right">Actions</th></tr></thead>
+            <thead><tr><th>Date</th><th>Employee</th><th>Check in</th><th>Check out</th><th>Worked</th><th>Reason</th><th class="text-right">Actions</th></tr></thead>
             <tbody>
               <tr v-for="a in list.data.value.items" :key="a.id" class="hover:bg-surface-2/60">
                 <td class="whitespace-nowrap">{{ formatDate(a.work_date, true) }}</td>
                 <td>
                   <span class="font-medium">{{ a.employee?.full_name }}</span>
-                  <span class="block text-xs text-muted">{{ a.employee?.employee_code }}<template v-if="auth.can('all.view') && a.employee?.branch"> · {{ a.employee.branch.name }}</template></span>
+                  <span class="block text-xs text-muted">{{ a.employee?.employee_code }}<template v-if="auth.multiBranch && a.employee?.branch"> · {{ a.employee.branch.name }}</template></span>
                 </td>
                 <td v-for="t in (['CHECK_IN', 'CHECK_OUT'] as const)" :key="t" class="whitespace-nowrap">
                   <template v-for="at in [t === 'CHECK_IN' ? a.check_in_at : a.check_out_at]" :key="t">
@@ -162,11 +166,14 @@ const activeEmployeeOptions = computed(() => activeEmployees.value.map(e => ({ v
                   </template>
                 </td>
                 <td class="tabular-nums">{{ formatMinutes(a.working_minutes) }}</td>
-                <td>
-                  <StatusBadge v-bind="dayStatus[a.status]" />
-                  <span v-if="a.check_in_at && a.confirmation_status !== 'CONFIRMED'" class="mt-0.5 block">
-                    <StatusBadge v-bind="confirmationStatus[a.confirmation_status]" />
-                  </span>
+                <!-- Why they were late / left early, in their words (asked in the Mini App). -->
+                <td class="min-w-48 max-w-xs text-sm">
+                  <template v-if="a.check_in_reason || a.check_out_reason">
+                    <p v-if="a.check_in_reason" class="line-clamp-2" :title="a.check_in_reason"><span class="text-xs font-medium text-muted">In:</span> {{ a.check_in_reason }}</p>
+                    <p v-if="a.check_out_reason" class="line-clamp-2" :title="a.check_out_reason"><span class="text-xs font-medium text-muted">Out:</span> {{ a.check_out_reason }}</p>
+                  </template>
+                  <span v-else-if="!a.check_in_at" class="text-muted">{{ dayStatus[a.status].label }}</span>
+                  <span v-else class="text-muted">—</span>
                 </td>
                 <td class="whitespace-nowrap text-right">
                   <div class="inline-flex items-center gap-1">

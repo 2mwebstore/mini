@@ -39,6 +39,7 @@ const reviewBadge = computed(() => {
   }
 })
 const again = computed(() => review.value?.status === 'REJECTED')
+const reason = computed(() => (isIn.value ? att.value?.check_in_reason : att.value?.check_out_reason) || '') // why late / early
 const label = computed(() => (isIn.value ? 'Check in' : 'Check out'))
 </script>
 
@@ -49,6 +50,7 @@ const label = computed(() => (isIn.value ? 'Check in' : 'Check out'))
     </p>
     <p class="mt-1 text-[26px] font-bold leading-tight tabular-nums" :class="!at && 'text-hint/60'">{{ at ? formatClock(at, timezone) : '--:--' }}</p>
     <p class="truncate text-[13px] font-medium" :class="status.tone">{{ status.text }}</p>
+    <p v-if="reason" class="truncate text-[12px] text-hint" :title="reason">“{{ reason }}”</p>
     <div class="mt-1 min-h-5">
       <StatusBadge v-if="reviewBadge" v-bind="reviewBadge" />
     </div>

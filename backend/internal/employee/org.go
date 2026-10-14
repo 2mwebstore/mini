@@ -15,39 +15,44 @@ import (
 	"gorm.io/gorm"
 )
 
-// OrgItem is a department or position with how many active employees have it.
+// OrgItem is a department or position of a branch, with how many active employees have it.
 type OrgItem struct {
-	ID        uint64 `json:"id"`
-	Name      string `json:"name"`
-	Employees int64  `json:"employees"`
+	ID         uint64 `json:"id"`
+	BranchID   uint64 `json:"branch_id"`
+	BranchName string `json:"branch_name"`
+	Name       string `json:"name"`
+	Employees  int64  `json:"employees"`
 }
 
 // orgList describes one managed list (departments or positions).
 type orgList struct {
 	table, column, label string
 	saveAction, delete   string
-	newRow               func(name string) any
+	newRow               func(branchID uint64, name string) any
 }
 
 var (
 	departments = orgList{table: "departments", column: "department_id", label: "department", saveAction: audit.ActionDepartmentSave,
-		delete: audit.ActionDepartmentDelete, newRow: func(n string) any { return &models.Department{Name: n} }}
+		delete: audit.ActionDepartmentDelete, newRow: func(b uint64, n string) any { return &models.Department{BranchID: b, Name: n} }}
 	positions = orgList{table: "positions", column: "position_id", label: "position", saveAction: audit.ActionPositionSave,
-		delete: audit.ActionPositionDelete, newRow: func(n string) any { return &models.Position{Name: n} }}
+		delete: audit.ActionPositionDelete, newRow: func(b uint64, n string) any { return &models.Position{BranchID: b, Name: n} }}
 )
 
-func (s *Service) DepartmentList(ctx context.Context) ([]OrgItem, error) {
-	return s.orgItems(ctx, departments)
+// DepartmentList / PositionList: the lists of the branches the actor reaches
+// (branchID narrows to one).
+func (s *Service) DepartmentList(ctx context.Context, actor *auth.Actor, branchID uint64) ([]OrgItem, error) {
+	return s.orgItems(ctx, actor, departments, branchID)
 }
-func (s *Service) PositionList(ctx context.Context) ([]OrgItem, error) {
-	return s.orgItems(ctx, positions)
+func (s *Service) PositionList(ctx context.Context, actor *auth.Actor, branchID uint64) ([]OrgItem, error) {
+	return s.orgItems(ctx, actor, positions, branchID)
 }
 
-func (s *Service) SaveDepartment(ctx context.Context, actor *auth.Actor, id uint64, name string) (*OrgItem, error) {
-	return s.saveOrg(ctx, actor, departments, id, name)
+// SaveDepartment / SavePosition create (id 0, in branchID) or rename an item.
+func (s *Service) SaveDepartment(ctx context.Context, actor *auth.Actor, id, branchID uint64, name string) (*OrgItem, error) {
+	return s.saveOrg(ctx, actor, departments, id, branchID, name)
 }
-func (s *Service) SavePosition(ctx context.Context, actor *auth.Actor, id uint64, name string) (*OrgItem, error) {
-	return s.saveOrg(ctx, actor, positions, id, name)
+func (s *Service) SavePosition(ctx context.Context, actor *auth.Actor, id, branchID uint64, name string) (*OrgItem, error) {
+	return s.saveOrg(ctx, actor, positions, id, branchID, name)
 }
 func (s *Service) DeleteDepartment(ctx context.Context, actor *auth.Actor, id uint64) error {
 	return s.deleteOrg(ctx, actor, departments, id)
@@ -56,33 +61,60 @@ func (s *Service) DeletePosition(ctx context.Context, actor *auth.Actor, id uint
 	return s.deleteOrg(ctx, actor, positions, id)
 }
 
-func (s *Service) orgItems(ctx context.Context, l orgList) ([]OrgItem, error) {
+func (s *Service) orgItems(ctx context.Context, actor *auth.Actor, l orgList, branchID uint64) ([]OrgItem, error) {
 	out := []OrgItem{}
-	err := s.db.WithContext(ctx).Table(l.table + " o").
-		Select("o.id, o.name, COUNT(e.id) AS employees").
-		Joins(fmt.Sprintf("LEFT JOIN employees e ON e.%s = o.id AND e.deleted_at IS NULL", l.column)).
-		Group("o.id, o.name").Order("o.name").Scan(&out).Error
+	q := s.db.WithContext(ctx).Table(l.table + " o").
+		Select("o.id, o.branch_id, b.name AS branch_name, o.name, COUNT(e.id) AS employees").
+		Joins("JOIN branches b ON b.id = o.branch_id").
+		Joins(fmt.Sprintf("LEFT JOIN employees e ON e.%s = o.id AND e.deleted_at IS NULL", l.column))
+	q = auth.InReach(q, actor, "o.branch_id")
+	if branchID != 0 {
+		q = q.Where("o.branch_id = ?", branchID)
+	}
+	err := q.Group("o.id, o.branch_id, b.name, o.name").Order("b.name, o.name").Scan(&out).Error
 	return out, err
 }
 
-// The lists are company-wide: only staff managers who reach every branch change them.
-func canEditOrg(actor *auth.Actor) bool {
-	return actor.Has(auth.PermStaffManage) && actor.Has(auth.PermAllView) && actor.AllBranches()
+// canEditOrg: staff managers edit the lists of the branches they reach.
+func canEditOrg(actor *auth.Actor, branchID uint64) bool {
+	return actor.Has(auth.PermStaffManage) && actor.Reaches(branchID)
 }
 
-func (s *Service) saveOrg(ctx context.Context, actor *auth.Actor, l orgList, id uint64, name string) (*OrgItem, error) {
-	if !canEditOrg(actor) {
-		return nil, apperr.ErrForbidden
+// orgBranch is an item's branch (0 = no such item).
+func orgBranch(tx *gorm.DB, l orgList, id uint64) (uint64, string) {
+	var row struct {
+		BranchID uint64
+		Name     string
 	}
+	tx.Table(l.table).Select("branch_id, name").Where("id = ?", id).Scan(&row)
+	return row.BranchID, row.Name
+}
+
+func (s *Service) saveOrg(ctx context.Context, actor *auth.Actor, l orgList, id, branchID uint64, name string) (*OrgItem, error) {
 	name = strings.TrimSpace(name)
 	if name == "" || len([]rune(name)) > 100 {
 		return nil, apperr.BadRequest("INVALID_NAME", "Name is required (up to 100 characters).")
 	}
-	item := OrgItem{ID: id, Name: name}
+	if id != 0 {
+		if branchID, _ = orgBranch(s.db.WithContext(ctx), l, id); branchID == 0 {
+			return nil, apperr.NotFound("NOT_FOUND", fmt.Sprintf("Unknown %s.", l.label))
+		}
+	}
+	if branchID == 0 {
+		return nil, apperr.BadRequest("BRANCH_REQUIRED", fmt.Sprintf("Choose the branch this %s belongs to.", l.label))
+	}
+	if !canEditOrg(actor, branchID) {
+		return nil, apperr.ErrForbidden
+	}
+	item := OrgItem{ID: id, BranchID: branchID, Name: name}
 	err := s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 		var before string
 		if id == 0 {
-			row := l.newRow(name)
+			var n int64
+			if tx.Model(&models.Branch{}).Where("id = ?", branchID).Count(&n); n == 0 {
+				return apperr.BadRequest("INVALID_BRANCH", "Unknown branch.")
+			}
+			row := l.newRow(branchID, name)
 			if err := tx.Table(l.table).Create(row).Error; err != nil {
 				return orgWriteErr(err, l)
 			}
@@ -106,8 +138,9 @@ func (s *Service) saveOrg(ctx context.Context, actor *auth.Actor, l orgList, id 
 			}
 		}
 		tx.Model(&models.Employee{}).Where(l.column+" = ? AND deleted_at IS NULL", item.ID).Count(&item.Employees)
+		tx.Model(&models.Branch{}).Select("name").Where("id = ?", branchID).Scan(&item.BranchName)
 		return audit.Write(ctx, tx, actor, audit.Entry{Action: l.saveAction, EntityType: l.label, EntityID: item.ID,
-			Details: map[string]any{"name": name, "before": before}})
+			Details: map[string]any{"name": name, "before": before, "branch_id": branchID}})
 	})
 	if err != nil {
 		return nil, err
@@ -116,13 +149,13 @@ func (s *Service) saveOrg(ctx context.Context, actor *auth.Actor, l orgList, id 
 }
 
 func (s *Service) deleteOrg(ctx context.Context, actor *auth.Actor, l orgList, id uint64) error {
-	if !canEditOrg(actor) {
-		return apperr.ErrForbidden
-	}
 	return s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
-		var name string
-		if err := tx.Table(l.table).Select("name").Where("id = ?", id).Scan(&name).Error; err != nil || name == "" {
+		branchID, name := orgBranch(tx, l, id)
+		if branchID == 0 {
 			return apperr.NotFound("NOT_FOUND", fmt.Sprintf("Unknown %s.", l.label))
+		}
+		if !canEditOrg(actor, branchID) {
+			return apperr.ErrForbidden
 		}
 		var n int64
 		tx.Model(&models.Employee{}).Where(l.column+" = ? AND deleted_at IS NULL", id).Count(&n)
@@ -143,7 +176,7 @@ func (s *Service) deleteOrg(ctx context.Context, actor *auth.Actor, l orgList, i
 func orgWriteErr(err error, l orgList) error {
 	var me *mysqldrv.MySQLError
 	if errors.As(err, &me) && me.Number == 1062 {
-		return apperr.Conflict("NAME_TAKEN", fmt.Sprintf("Another %s already has this name.", l.label))
+		return apperr.Conflict("NAME_TAKEN", fmt.Sprintf("Another %s in this branch already has this name.", l.label))
 	}
 	return err
 }

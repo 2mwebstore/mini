@@ -50,6 +50,7 @@ const (
 // ---------- shifts ----------
 
 type ShiftInput struct {
+	BranchID     *uint64 `json:"branch_id"` // create: the branch it belongs to
 	Name         *string `json:"name"`
 	StartTime    *string `json:"start_time"`
 	EndTime      *string `json:"end_time"`
@@ -57,7 +58,7 @@ type ShiftInput struct {
 	GraceMinutes *int    `json:"grace_minutes"`
 	WorkDays     []int   `json:"work_days"`
 	Color        *string `json:"color"`
-	IsDefault    *bool   `json:"is_default"` // true makes this the company default (for staff without a shift)
+	IsDefault    *bool   `json:"is_default"` // true makes this the branch's default (for its staff without a shift)
 }
 
 // ShiftView is a shift with how many active employees use it as their usual shift.
@@ -66,9 +67,14 @@ type ShiftView struct {
 	Employees int64 `json:"employees"`
 }
 
-func (s *Service) Shifts(ctx context.Context) ([]ShiftView, error) {
+// Shifts lists the shifts of the branches the actor reaches (branchID narrows to one).
+func (s *Service) Shifts(ctx context.Context, actor *auth.Actor, branchID uint64) ([]ShiftView, error) {
 	var shifts []models.WorkSchedule
-	if err := s.db.WithContext(ctx).Order("is_default DESC, start_time, name").Find(&shifts).Error; err != nil {
+	q := auth.InReach(s.db.WithContext(ctx), actor, "branch_id")
+	if branchID != 0 {
+		q = q.Where("branch_id = ?", branchID)
+	}
+	if err := q.Order("branch_id, is_default DESC, start_time, name").Find(&shifts).Error; err != nil {
 		return nil, err
 	}
 	var counts []struct {
@@ -83,25 +89,43 @@ func (s *Service) Shifts(ctx context.Context) ([]ShiftView, error) {
 	for _, c := range counts {
 		byID[c.WorkScheduleID] = c.N
 	}
-	var unassigned int64 // staff without a shift work the default one
-	if err := s.db.WithContext(ctx).Model(&models.Employee{}).Where("kind = ? AND deleted_at IS NULL AND work_schedule_id IS NULL", models.KindStaff).Count(&unassigned).Error; err != nil {
+	var unassigned []struct { // staff without a shift work their branch's default one
+		BranchID uint64
+		N        int64
+	}
+	if err := s.db.WithContext(ctx).Model(&models.Employee{}).Select("branch_id, COUNT(*) AS n").
+		Where("kind = ? AND deleted_at IS NULL AND work_schedule_id IS NULL AND branch_id IS NOT NULL", models.KindStaff).
+		Group("branch_id").Scan(&unassigned).Error; err != nil {
 		return nil, err
 	}
 	out := make([]ShiftView, len(shifts))
 	for i, sh := range shifts {
 		out[i] = ShiftView{WorkSchedule: sh, Employees: byID[sh.ID]}
 		if sh.IsDefault {
-			out[i].Employees += unassigned
+			for _, u := range unassigned {
+				if u.BranchID == sh.BranchID {
+					out[i].Employees += u.N
+				}
+			}
 		}
 	}
 	return out, nil
 }
 
+// canShift: shift managers edit the shifts of the branches they reach.
+func canShift(actor *auth.Actor, branchID uint64) bool {
+	return actor.Has(auth.PermSchedulesManage) && actor.Reaches(branchID)
+}
+
+// CreateShift adds a shift to a branch; a branch's first shift is its default.
 func (s *Service) CreateShift(ctx context.Context, actor *auth.Actor, in ShiftInput) (*models.WorkSchedule, error) {
-	if !actor.Has(auth.PermSchedulesManage) {
+	if in.BranchID == nil || *in.BranchID == 0 {
+		return nil, apperr.BadRequest("BRANCH_REQUIRED", "Choose the branch this shift belongs to.")
+	}
+	if !canShift(actor, *in.BranchID) {
 		return nil, apperr.ErrForbidden
 	}
-	ws := models.WorkSchedule{WorkType: models.WorkNormal, WorkDays: "1,2,3,4,5", Color: "#2563eb", GraceMinutes: 10}
+	ws := models.WorkSchedule{BranchID: *in.BranchID, WorkType: models.WorkNormal, WorkDays: "1,2,3,4,5", Color: "#2563eb", GraceMinutes: 10}
 	if in.Name == nil || in.StartTime == nil || in.EndTime == nil {
 		return nil, apperr.BadRequest("SHIFT_INCOMPLETE", "Name, start time and end time are required.")
 	}
@@ -109,11 +133,17 @@ func (s *Service) CreateShift(ctx context.Context, actor *auth.Actor, in ShiftIn
 		return nil, err
 	}
 	err := s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		var n int64
+		if tx.Model(&models.Branch{}).Where("id = ?", ws.BranchID).Count(&n); n == 0 {
+			return apperr.BadRequest("INVALID_BRANCH", "Unknown branch.")
+		}
+		var others int64
+		tx.Model(&models.WorkSchedule{}).Where("branch_id = ?", ws.BranchID).Count(&others)
 		if err := tx.Create(&ws).Error; err != nil {
 			return shiftWriteErr(err)
 		}
-		if in.IsDefault != nil && *in.IsDefault {
-			if err := makeDefault(tx, ws.ID); err != nil {
+		if (in.IsDefault != nil && *in.IsDefault) || others == 0 {
+			if err := makeDefault(tx, &ws); err != nil {
 				return err
 			}
 			ws.IsDefault = true
@@ -138,6 +168,9 @@ func (s *Service) UpdateShift(ctx context.Context, actor *auth.Actor, id uint64,
 			}
 			return err
 		}
+		if !canShift(actor, ws.BranchID) {
+			return apperr.NotFound("SHIFT_NOT_FOUND", "Shift not found.")
+		}
 		before := shiftAudit(&ws)
 		if err := applyShift(&ws, in); err != nil {
 			return err
@@ -146,7 +179,7 @@ func (s *Service) UpdateShift(ctx context.Context, actor *auth.Actor, id uint64,
 			return shiftWriteErr(err)
 		}
 		if in.IsDefault != nil && *in.IsDefault && !ws.IsDefault {
-			if err := makeDefault(tx, ws.ID); err != nil {
+			if err := makeDefault(tx, &ws); err != nil {
 				return err
 			}
 			ws.IsDefault = true
@@ -173,8 +206,13 @@ func (s *Service) DeleteShift(ctx context.Context, actor *auth.Actor, id uint64)
 			}
 			return err
 		}
-		if ws.IsDefault {
-			return apperr.Conflict("SHIFT_IS_DEFAULT", "This is the default shift. Make another shift the default first.")
+		if !canShift(actor, ws.BranchID) {
+			return apperr.NotFound("SHIFT_NOT_FOUND", "Shift not found.")
+		}
+		var siblings int64
+		tx.Model(&models.WorkSchedule{}).Where("branch_id = ? AND id <> ?", ws.BranchID, ws.ID).Count(&siblings)
+		if ws.IsDefault && siblings > 0 {
+			return apperr.Conflict("SHIFT_IS_DEFAULT", "This is the branch's default shift. Make another shift the default first.")
 		}
 		var staff, roster, special int64
 		tx.Model(&models.Employee{}).Where("work_schedule_id = ? AND deleted_at IS NULL", id).Count(&staff)
@@ -276,17 +314,18 @@ func workDays(days []int, allowEmpty bool) (string, error) {
 	return strings.Join(parts, ","), nil
 }
 
-func makeDefault(tx *gorm.DB, id uint64) error {
-	if err := tx.Model(&models.WorkSchedule{}).Where("id <> ?", id).Update("is_default", false).Error; err != nil {
+// makeDefault makes ws its branch's default shift.
+func makeDefault(tx *gorm.DB, ws *models.WorkSchedule) error {
+	if err := tx.Model(&models.WorkSchedule{}).Where("branch_id = ? AND id <> ?", ws.BranchID, ws.ID).Update("is_default", false).Error; err != nil {
 		return err
 	}
-	return tx.Model(&models.WorkSchedule{}).Where("id = ?", id).Update("is_default", true).Error
+	return tx.Model(&models.WorkSchedule{}).Where("id = ?", ws.ID).Update("is_default", true).Error
 }
 
 func shiftWriteErr(err error) error {
 	var me *mysqldrv.MySQLError
 	if errors.As(err, &me) && me.Number == 1062 {
-		return apperr.Conflict("SHIFT_NAME_TAKEN", "Another shift already has this name.")
+		return apperr.Conflict("SHIFT_NAME_TAKEN", "Another shift in this branch already has this name.")
 	}
 	return err
 }
@@ -344,6 +383,7 @@ type RosterCell struct {
 
 type RosterRow struct {
 	EmployeeID   uint64       `json:"employee_id"`
+	BranchID     uint64       `json:"branch_id"` // its shifts are the ones to offer
 	EmployeeCode string       `json:"employee_code"`
 	FullName     string       `json:"full_name"`
 	Branch       string       `json:"branch"`
@@ -358,7 +398,7 @@ type Roster struct {
 	To     time.Time             `json:"to"`
 	Days   []time.Time           `json:"days"`
 	Rows   []RosterRow           `json:"rows"`
-	Shifts []models.WorkSchedule `json:"shifts"`
+	Shifts []models.WorkSchedule `json:"shifts"` // of the rows' branches (each row offers its branch's)
 	Loc    *time.Location        `json:"-"`
 }
 
@@ -382,24 +422,28 @@ func (s *Service) Roster(ctx context.Context, actor *auth.Actor, from, to time.T
 	for d := from; !d.After(to); d = d.AddDate(0, 0, 1) {
 		out.Days = append(out.Days, d)
 	}
-	if err := s.db.WithContext(ctx).Order("start_time, name").Find(&out.Shifts).Error; err != nil {
-		return nil, err
-	}
 	ids := make([]uint64, len(emps))
+	branchSet := map[uint64]bool{}
+	branchIDs := []uint64{}
 	for i, e := range emps {
 		ids[i] = e.ID
+		if e.BranchID != nil && !branchSet[*e.BranchID] {
+			branchSet[*e.BranchID] = true
+			branchIDs = append(branchIDs, *e.BranchID)
+		}
+	}
+	if len(branchIDs) > 0 {
+		if err := s.db.WithContext(ctx).Where("branch_id IN ?", branchIDs).Order("branch_id, start_time, name").Find(&out.Shifts).Error; err != nil {
+			return nil, err
+		}
 	}
 	plan, err := attendance.LoadPlanner(ctx, s.db, ids, from, to)
 	if err != nil {
 		return nil, err
 	}
-	holidays := map[string]string{}
-	var hs []models.Holiday
-	if err := s.db.WithContext(ctx).Where("date BETWEEN ? AND ?", from, to).Find(&hs).Error; err != nil {
+	holidays, err := attendance.Holidays(ctx, s.db, branchIDs, from, to)
+	if err != nil {
 		return nil, err
-	}
-	for _, h := range hs {
-		holidays[h.Date.Format("2006-01-02")] = h.Name
 	}
 	var leaves []models.LeaveRequest
 	if len(ids) > 0 {
@@ -413,13 +457,13 @@ func (s *Service) Roster(ctx context.Context, actor *auth.Actor, from, to time.T
 		row := RosterRow{EmployeeID: e.ID, EmployeeCode: e.EmployeeCode, FullName: e.FullName, UsualShift: plan.Usual(e).Name,
 			CanEdit: actor.CanManage(e), Cells: make([]RosterCell, 0, len(out.Days))}
 		if e.Branch != nil {
-			row.Branch = e.Branch.Name
+			row.Branch, row.BranchID = e.Branch.Name, e.Branch.ID
 		}
 		if e.Department != nil {
 			row.Department = e.Department.Name
 		}
 		for _, d := range out.Days {
-			cell := RosterCell{Date: d, Day: plan.Day(e, d), Holiday: holidays[d.Format("2006-01-02")]}
+			cell := RosterCell{Date: d, Day: plan.Day(e, d), Holiday: holidays[row.BranchID][d.Format("2006-01-02")]}
 			for _, l := range leaves {
 				if l.EmployeeID == e.ID && !d.Before(l.StartDate) && !d.After(l.EndDate) {
 					cell.Leave = "Leave"
@@ -459,7 +503,7 @@ func (s *Service) SetRoster(ctx context.Context, actor *auth.Actor, items []Rost
 	}
 	changes := make([]change, 0, len(items))
 	emps := map[uint64]*models.Employee{}
-	shifts := map[uint64]bool{}
+	shifts := map[uint64]uint64{} // shift -> its branch
 	for _, it := range items {
 		emp, ok := emps[it.EmployeeID]
 		if !ok {
@@ -485,13 +529,18 @@ func (s *Service) SetRoster(ctx context.Context, actor *auth.Actor, items []Rost
 		if chosen != 1 {
 			return 0, apperr.BadRequest("INVALID_ITEM", "Each change sets exactly one of: a shift, a day off, or reset.")
 		}
-		if it.WorkScheduleID != nil && !shifts[*it.WorkScheduleID] {
-			var n int64
-			s.db.WithContext(ctx).Model(&models.WorkSchedule{}).Where("id = ?", *it.WorkScheduleID).Count(&n)
-			if n == 0 {
-				return 0, apperr.BadRequest("SHIFT_NOT_FOUND", "Shift not found.")
+		if it.WorkScheduleID != nil {
+			b, ok := shifts[*it.WorkScheduleID]
+			if !ok {
+				var ws models.WorkSchedule
+				if s.db.WithContext(ctx).Select("id", "branch_id").First(&ws, *it.WorkScheduleID).Error != nil {
+					return 0, apperr.BadRequest("SHIFT_NOT_FOUND", "Shift not found.")
+				}
+				b, shifts[*it.WorkScheduleID] = ws.BranchID, ws.BranchID
 			}
-			shifts[*it.WorkScheduleID] = true
+			if emp.BranchID == nil || *emp.BranchID != b {
+				return 0, apperr.BadRequest("SHIFT_OTHER_BRANCH", fmt.Sprintf("%s works in another branch: choose one of their branch's shifts.", emp.FullName))
+			}
 		}
 		changes = append(changes, change{emp: emp, date: d, shift: it.WorkScheduleID, reset: it.Reset})
 	}
@@ -780,18 +829,25 @@ func (s *Service) override(ctx context.Context, id uint64) (*models.ScheduleOver
 }
 
 func (s *Service) canManage(ctx context.Context, actor *auth.Actor, empID uint64) error {
+	_, err := s.managed(ctx, actor, empID)
+	return err
+}
+
+// managed loads an employee the actor may schedule (system users have no schedule).
+func (s *Service) managed(ctx context.Context, actor *auth.Actor, empID uint64) (*models.Employee, error) {
 	var e models.Employee
-	if err := s.db.WithContext(ctx).First(&e, empID).Error; err != nil || e.IsSystemUser() { // system users have no schedule
-		return apperr.NotFound("EMPLOYEE_NOT_FOUND", "Employee not found.")
+	if err := s.db.WithContext(ctx).First(&e, empID).Error; err != nil || e.IsSystemUser() {
+		return nil, apperr.NotFound("EMPLOYEE_NOT_FOUND", "Employee not found.")
 	}
 	if !actor.CanManage(&e) {
-		return apperr.ErrForbidden
+		return nil, apperr.ErrForbidden
 	}
-	return nil
+	return &e, nil
 }
 
 func (s *Service) applyOverride(ctx context.Context, actor *auth.Actor, o *models.ScheduleOverride, in OverrideInput) error {
-	if err := s.canManage(ctx, actor, in.EmployeeID); err != nil {
+	emp, err := s.managed(ctx, actor, in.EmployeeID)
+	if err != nil {
 		return err
 	}
 	start, err := timeutil.ParseDate(in.StartDate)
@@ -824,6 +880,9 @@ func (s *Service) applyOverride(ctx context.Context, actor *auth.Actor, o *model
 		var ws models.WorkSchedule
 		if err := s.db.WithContext(ctx).First(&ws, *in.WorkScheduleID).Error; err != nil {
 			return apperr.BadRequest("SHIFT_NOT_FOUND", "Shift not found.")
+		}
+		if emp.BranchID == nil || *emp.BranchID != ws.BranchID {
+			return apperr.BadRequest("SHIFT_OTHER_BRANCH", fmt.Sprintf("%s works in another branch: choose one of their branch's shifts (or custom hours).", emp.FullName))
 		}
 		o.WorkScheduleID = &ws.ID
 		if o.WorkDays, err = workDays(in.WorkDays, true); err != nil {

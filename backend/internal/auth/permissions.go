@@ -26,9 +26,10 @@ const (
 	PermAssignAdminRoles Permission = "roles.assign_admin" // grant roles with admin powers
 	PermBranchView       Permission = "branch.view"        // view everyone in own (and assigned) branches
 	PermBranchReview     Permission = "branch.review"      // confirm attendance / approve leave in those branches
-	PermBranchSettings   Permission = "branch.settings"    // own branch's office location, GPS and Telegram chats
-	PermBranchesManage   Permission = "branches.manage"    // create branches, assign branch admins (owner)
-	PermSchedulesManage  Permission = "schedules.manage"   // define shifts (company-wide)
+	PermBranchSettings   Permission = "branch.settings"    // own branch's office location, GPS rules and Telegram bot
+	PermBranchesManage   Permission = "branches.manage"    // every branch: create, edit, close, assign branch admins (owner)
+	PermBranchesCreate   Permission = "branches.create"    // create branches (added to the creator's branch access) and edit those in reach
+	PermSchedulesManage  Permission = "schedules.manage"   // shifts and holidays of the branches in reach
 	PermLeaveManage      Permission = "leave.manage"       // leave types, allowances, balances
 	PermUsersManage      Permission = "users.manage"       // system users, roles, branch access
 )
@@ -86,6 +87,38 @@ func (a *Actor) BranchScope() (all bool, ids []uint64) {
 		return false, ids
 	}
 	return false, nil
+}
+
+// Reach is where the actor works: every branch (all), or their branch access plus
+// their own branch. Setup lists, branches and staff are limited to it.
+func (a *Actor) Reach() (all bool, ids []uint64) {
+	all, ids = a.BranchScope()
+	if all {
+		return true, nil
+	}
+	ids = slices.Clone(ids)
+	if b := a.Employee.BranchID; b != nil && !slices.Contains(ids, *b) {
+		ids = append(ids, *b)
+	}
+	return false, ids
+}
+
+// Reaches: the branch is within the actor's reach.
+func (a *Actor) Reaches(branchID uint64) bool {
+	all, ids := a.Reach()
+	return all || slices.Contains(ids, branchID)
+}
+
+// InReach limits q to rows whose column (a branch id) is within the actor's reach.
+func InReach(q *gorm.DB, a *Actor, column string) *gorm.DB {
+	all, ids := a.Reach()
+	if all {
+		return q
+	}
+	if len(ids) == 0 {
+		return q.Where("1 = 0")
+	}
+	return q.Where(column+" IN ?", ids)
 }
 
 // AllBranches: the actor's powers are not limited to some branches.

@@ -76,7 +76,7 @@ func TestSeed(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(sum.Branches) != 3 || sum.Employees != len(people) || len(sum.Logins) != 6 || sum.AttendanceDays < 250 || sum.LeaveRequests != 10 {
+	if len(sum.Branches) != 4 || sum.Employees != len(people) || len(sum.Logins) != 7 || sum.AttendanceDays < 250 || sum.LeaveRequests != 10 {
 		t.Fatalf("summary: %+v", sum)
 	}
 	if _, err := Seed(ctx, Deps{DB: db, Settings: st}, Options{Password: pw, Now: now}); !errors.Is(err, ErrAlreadySeeded) {
@@ -86,7 +86,8 @@ func TestSeed(t *testing.T) {
 	// Every login works and carries the intended role; branch admins own their branch.
 	authSvc := auth.NewService(db, strings.Repeat("j", 40), time.Hour)
 	wantRole := map[string]string{"owner@demo.local": "super_admin", "hr@demo.local": "hr_admin", "main.admin@demo.local": "branch_admin",
-		"siemreap.admin@demo.local": "branch_admin", "battambang.admin@demo.local": "branch_admin", "regional@demo.local": "regional_supervisor"}
+		"siemreap.admin@demo.local": "branch_admin", "battambang.admin@demo.local": "branch_admin", "regional@demo.local": "regional_supervisor",
+		clientEmail: "company_admin"}
 	for _, l := range sum.Logins {
 		res, err := authSvc.Login(ctx, l.Email, pw)
 		if err != nil {
@@ -107,6 +108,18 @@ func TestSeed(t *testing.T) {
 	var branches []models.Branch
 	db.Find(&branches)
 	for _, b := range branches {
+		// Every branch has its own setup: shifts (one default), leave types, holidays.
+		var shifts, defaults, types, hols int64
+		db.Model(&models.WorkSchedule{}).Where("branch_id = ?", b.ID).Count(&shifts)
+		db.Model(&models.WorkSchedule{}).Where("branch_id = ? AND is_default = 1", b.ID).Count(&defaults)
+		db.Model(&models.LeaveType{}).Where("branch_id = ?", b.ID).Count(&types)
+		db.Model(&models.Holiday{}).Where("branch_id = ?", b.ID).Count(&hols)
+		if shifts == 0 || defaults != 1 || types == 0 || hols != int64(len(holidayDefs)) {
+			t.Errorf("branch %s setup: %d shifts (%d default), %d leave types, %d holidays", b.Code, shifts, defaults, types, hols)
+		}
+		if b.Code == clientBranch.code {
+			continue // the client's branch is run by their Company Admin (no branch admin)
+		}
 		if b.AdminEmployeeID == nil || !b.HasOffice() {
 			t.Errorf("branch %s: admin %v, office %v", b.Code, b.AdminEmployeeID, b.HasOffice())
 			continue
@@ -120,7 +133,8 @@ func TestSeed(t *testing.T) {
 
 	// Attendance rows are internally consistent.
 	today := time.Date(2026, 9, 30, 0, 0, 0, 0, time.UTC)
-	isHol, _ := attendance.HolidaySet(ctx, db, today.AddDate(0, -2, 0), today.AddDate(0, 2, 0))
+	mainBranch := branches[0].ID
+	isHol, _ := attendance.HolidaySet(ctx, db, &mainBranch, today.AddDate(0, -2, 0), today.AddDate(0, 2, 0))
 	if !isHol(time.Date(2026, 9, 24, 0, 0, 0, 0, time.UTC)) {
 		t.Fatal("Constitution Day missing")
 	}
@@ -171,6 +185,10 @@ func TestSeed(t *testing.T) {
 		if a.LateMinutes > 0 {
 			late++
 		}
+		// Like the Mini App: late and early days say why; on-time ones don't.
+		if (a.LateMinutes > 0) != (a.CheckInReason != "") || (a.EarlyLeaveMinutes > 0) != (a.CheckOutReason != "") {
+			t.Errorf("attendance %d %s: late %d %q, early %d %q", a.ID, day, a.LateMinutes, a.CheckInReason, a.EarlyLeaveMinutes, a.CheckOutReason)
+		}
 		want := 1
 		if a.CheckOutAt != nil {
 			want = 2
@@ -203,7 +221,7 @@ func TestSeed(t *testing.T) {
 	if pending == 0 || rejected != 1 || absent == 0 || late == 0 || leave < 4 || todayRows < 8 || overnight < 10 {
 		t.Errorf("variety: pending %d rejected %d absent %d late %d leave %d today %d overnight %d", pending, rejected, absent, late, leave, todayRows, overnight)
 	}
-	if sum.Shifts != 2 || sum.RosterEntries < 10 || sum.SpecialSchedules != 3 {
+	if sum.Shifts < 9 || sum.RosterEntries < 10 || sum.SpecialSchedules != 3 { // 3 per company branch (Main may have Office Hours already) + the café's
 		t.Errorf("schedules: %+v", sum)
 	}
 	var leaveByStatus []struct {
@@ -272,5 +290,76 @@ func TestSeed(t *testing.T) {
 	}
 	if reg.StaffCount != 9 { // 5 Siem Reap + 4 Battambang (she is a system user, not staff)
 		t.Errorf("regional supervisor staff count %d", reg.StaffCount)
+	}
+
+	// The client's Company Admin created their branch and sees only it.
+	client := actor(clientEmail)
+	if all, ids := client.Reach(); all || len(ids) != 1 {
+		t.Fatalf("client admin reach: all=%v %v", all, ids)
+	}
+	cr, err := repSvc.Build(ctx, client, report.Filter{From: from, To: today})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, s := range cr.Summaries {
+		if s.Branch != clientBranch.name {
+			t.Errorf("client admin sees %s (%s)", s.EmployeeCode, s.Branch)
+		}
+	}
+	if cr.StaffCount != 3 {
+		t.Errorf("client staff count %d", cr.StaffCount)
+	}
+	if a := actor("owner@demo.local"); !a.Reaches(client.Branches[0]) {
+		t.Error("the owner reaches the client's branch too")
+	}
+}
+
+func TestClearThenSeed(t *testing.T) {
+	db := testDB(t)
+	ctx := context.Background()
+	box, _ := secret.New(strings.Repeat("j", 40))
+	st := settings.NewService(db, box)
+	now := time.Date(2026, 9, 30, 15, 0, 0, 0, time.FixedZone("ICT", 7*3600))
+	const pw = "Demo-pass-123"
+	if _, err := Seed(ctx, Deps{DB: db, Settings: st}, Options{Password: pw, Now: now}); err != nil {
+		t.Fatal(err)
+	}
+	out, err := Clear(ctx, db)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if out.Branches != 4 || out.Employees != int64(len(people)) || out.Attendance == 0 || len(out.Owners) != 1 {
+		t.Fatalf("cleared: %+v", out)
+	}
+	for _, table := range append([]string{"branches", "attendance", "leave_requests", "telegram_accounts"}, clearTables...) {
+		var n int64
+		db.Table(table).Count(&n)
+		if n != 0 && table != "telegram_accounts" {
+			t.Errorf("%s still has %d rows", table, n)
+		}
+	}
+	var people, logins int64
+	db.Model(&models.Employee{}).Count(&people)
+	db.Model(&models.User{}).Count(&logins)
+	if people != 1 || logins != 1 {
+		t.Fatalf("only the owner stays: %d people, %d logins", people, logins)
+	}
+	if _, err := auth.NewService(db, strings.Repeat("j", 40), time.Hour).Login(ctx, "owner@demo.local", pw); err != nil {
+		t.Fatalf("the owner still signs in: %v", err)
+	}
+	// Foreign key checks are back on for every connection.
+	var fk int
+	db.Raw("SELECT @@FOREIGN_KEY_CHECKS").Scan(&fk)
+	if fk != 1 {
+		t.Fatal("foreign key checks must be on again")
+	}
+	// An owner made by an older seed has a demo code; it must not count as demo data.
+	db.Model(&models.Employee{}).Where("kind = ?", models.KindSystem).Update("employee_code", "D-OWNER")
+	sum, err := Seed(ctx, Deps{DB: db, Settings: st}, Options{Password: pw, Now: now})
+	if err != nil {
+		t.Fatalf("seed after clear: %v", err)
+	}
+	if len(sum.Branches) != 4 || !sum.Logins[0].Existing {
+		t.Fatalf("seed after clear: %+v", sum)
 	}
 }

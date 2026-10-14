@@ -1,9 +1,10 @@
 package httpapi
 
 import (
-	"context"
 	"encoding/json"
 	"fmt"
+	"gorm.io/gorm"
+	"gorm.io/gorm/clause"
 	"io"
 	"log/slog"
 	"net/http"
@@ -18,10 +19,8 @@ import (
 	"attendance/backend/internal/employee"
 	"attendance/backend/internal/leave"
 	"attendance/backend/internal/models"
-	"attendance/backend/internal/notification"
 	"attendance/backend/internal/report"
 	"attendance/backend/internal/scheduler"
-	"attendance/backend/internal/settings"
 	"attendance/backend/internal/timeutil"
 
 	"github.com/gin-gonic/gin"
@@ -143,7 +142,8 @@ func (s *Server) deactivateEmployee(c *gin.Context) {
 }
 
 func (s *Server) listDepartments(c *gin.Context) {
-	out, err := s.employees.DepartmentList(c.Request.Context())
+	branchID, _ := strconv.ParseUint(c.Query("branch_id"), 10, 64)
+	out, err := s.employees.DepartmentList(c.Request.Context(), actorFrom(c), branchID)
 	if err != nil {
 		fail(c, err)
 		return
@@ -313,7 +313,8 @@ func (s *Server) listLeave(c *gin.Context) {
 // leaveTypes: active types; ?all=1 also inactive ones, with usage counts (admin panel).
 func (s *Server) leaveTypes(c *gin.Context) {
 	if c.Query("all") == "1" {
-		out, err := s.leave.AllTypes(c.Request.Context())
+		branchID, _ := strconv.ParseUint(c.Query("branch_id"), 10, 64)
+		out, err := s.leave.AllTypes(c.Request.Context(), actorFrom(c), branchID)
 		if err != nil {
 			fail(c, err)
 			return
@@ -321,7 +322,7 @@ func (s *Server) leaveTypes(c *gin.Context) {
 		c.JSON(http.StatusOK, gin.H{"items": out})
 		return
 	}
-	out, err := s.leave.Types(c.Request.Context())
+	out, err := s.leave.Types(c.Request.Context(), actorFrom(c))
 	if err != nil {
 		fail(c, err)
 		return
@@ -508,12 +509,12 @@ func (s *Server) getSettings(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"settings": st, "backup": backup})
 }
 
-// updateSettings applies {key: value} changes. A new Telegram bot token is checked
-// with Telegram before it is saved (encrypted); it is never echoed or audited.
+// updateSettings applies {key: value} changes to company settings (Telegram and
+// GPS are set per branch).
 func (s *Server) updateSettings(c *gin.Context) {
 	var in map[string]any
 	dec := json.NewDecoder(c.Request.Body)
-	dec.UseNumber() // keep chat IDs like -1001234567890 exact
+	dec.UseNumber()
 	if err := dec.Decode(&in); err != nil {
 		fail(c, apperr.BadRequest("INVALID_INPUT", "Invalid request body."))
 		return
@@ -523,51 +524,27 @@ func (s *Server) updateSettings(c *gin.Context) {
 		changes[k] = strings.TrimSpace(fmt.Sprint(v))
 	}
 	ctx := c.Request.Context()
-	var botUsername *string
-	if tok, ok := changes["telegram_bot_token"]; ok {
-		name := ""
-		if tok != "" {
-			me, err := s.tg.WithToken(tok).GetMe(ctx)
-			if err != nil {
-				fail(c, apperr.BadRequest("TELEGRAM_TOKEN_REJECTED", "Telegram rejected this bot token. Copy it again from @BotFather."))
-				return
-			}
-			name = me.Username
-		}
-		botUsername = &name
-	}
 	a := actorFrom(c)
 	prev, err := s.settings.Update(ctx, a.ID(), changes)
 	if err != nil {
 		fail(c, err)
 		return
 	}
-	if botUsername != nil {
-		if err := s.settings.SetBotUsername(ctx, *botUsername); err != nil {
-			slog.Error("save bot username", "err", err)
-		}
-	}
-	after := map[string]string{}
-	for k, v := range changes {
-		after[k] = v
-		if settings.SecretKeys[k] {
-			delete(prev, k)
-			after[k] = map[bool]string{true: "(cleared)", false: "(changed)"}[v == ""]
-		}
-	}
 	_ = audit.Write(ctx, s.db, a, audit.Entry{Action: audit.ActionSettingsUpdate, EntityType: "settings",
-		Details: map[string]any{"before": prev, "after": after}})
-	if _, ok := changes["miniapp_url"]; ok || botUsername != nil {
-		go notification.SyncBot(context.Background(), s.tg, s.settings) // menu button follows the new URL/bot
-	}
+		Details: map[string]any{"before": prev, "after": changes}})
 	s.getSettings(c)
 }
 
+// Holidays belong to branches: each lists, adds and removes its own.
+
 func (s *Server) listHolidays(c *gin.Context) {
 	var hs []models.Holiday
-	q := s.db.WithContext(c.Request.Context()).Order("date")
+	q := auth.InReach(s.db.WithContext(c.Request.Context()), actorFrom(c), "branch_id").Order("date, branch_id")
 	if y, err := strconv.Atoi(c.Query("year")); err == nil {
 		q = q.Where("YEAR(date) = ?", y)
+	}
+	if v, err := strconv.ParseUint(c.Query("branch_id"), 10, 64); err == nil && v != 0 {
+		q = q.Where("branch_id = ?", v)
 	}
 	if err := q.Find(&hs).Error; err != nil {
 		fail(c, err)
@@ -576,10 +553,13 @@ func (s *Server) listHolidays(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"items": hs})
 }
 
+// createHoliday adds a holiday to one or several branches ({branch_ids: [...]}),
+// skipping branches that already have one that day.
 func (s *Server) createHoliday(c *gin.Context) {
 	var in struct {
-		Date string `json:"date" binding:"required"`
-		Name string `json:"name" binding:"required,max=150"`
+		Date      string   `json:"date" binding:"required"`
+		Name      string   `json:"name" binding:"required,max=150"`
+		BranchIDs []uint64 `json:"branch_ids"`
 	}
 	if !bind(c, &in) {
 		return
@@ -589,14 +569,50 @@ func (s *Server) createHoliday(c *gin.Context) {
 		fail(c, apperr.BadRequest("INVALID_DATE", err.Error()))
 		return
 	}
-	h := models.Holiday{Date: d, Name: strings.TrimSpace(in.Name), CreatedAt: time.Now().UTC()}
-	if err := s.db.WithContext(c.Request.Context()).Create(&h).Error; err != nil {
-		fail(c, apperr.Conflict("HOLIDAY_EXISTS", "A holiday already exists on that date."))
+	a := actorFrom(c)
+	if len(in.BranchIDs) == 0 {
+		fail(c, apperr.BadRequest("BRANCH_REQUIRED", "Choose the branches that take this holiday."))
 		return
 	}
-	_ = audit.Write(c.Request.Context(), s.db, actorFrom(c), audit.Entry{Action: audit.ActionHolidayCreate, EntityType: "holiday", EntityID: h.ID,
-		Details: map[string]any{"date": in.Date, "name": h.Name}})
-	c.JSON(http.StatusCreated, h)
+	for _, b := range in.BranchIDs {
+		if !a.Reaches(b) {
+			fail(c, apperr.ErrForbidden)
+			return
+		}
+	}
+	name := strings.TrimSpace(in.Name)
+	created := []models.Holiday{}
+	err = s.db.WithContext(c.Request.Context()).Transaction(func(tx *gorm.DB) error {
+		for _, b := range in.BranchIDs {
+			var n int64
+			if tx.Model(&models.Branch{}).Where("id = ?", b).Count(&n); n == 0 {
+				return apperr.BadRequest("INVALID_BRANCH", "Unknown branch.")
+			}
+			h := models.Holiday{BranchID: b, Date: d, Name: name, CreatedAt: time.Now().UTC()}
+			res := tx.Clauses(clause.OnConflict{DoNothing: true}).Create(&h)
+			if res.Error != nil {
+				return res.Error
+			}
+			if res.RowsAffected == 0 {
+				continue // that branch already has a holiday that day
+			}
+			created = append(created, h)
+			if err := audit.Write(c.Request.Context(), tx, a, audit.Entry{Action: audit.ActionHolidayCreate, EntityType: "holiday", EntityID: h.ID,
+				Details: map[string]any{"date": in.Date, "name": name, "branch_id": b}}); err != nil {
+				return err
+			}
+		}
+		return nil
+	})
+	if err != nil {
+		fail(c, err)
+		return
+	}
+	if len(created) == 0 {
+		fail(c, apperr.Conflict("HOLIDAY_EXISTS", "These branches already have a holiday on that date."))
+		return
+	}
+	c.JSON(http.StatusCreated, gin.H{"items": created})
 }
 
 func (s *Server) deleteHoliday(c *gin.Context) {
@@ -605,7 +621,7 @@ func (s *Server) deleteHoliday(c *gin.Context) {
 		return
 	}
 	var h models.Holiday
-	if err := s.db.WithContext(c.Request.Context()).First(&h, id).Error; err != nil {
+	if err := s.db.WithContext(c.Request.Context()).First(&h, id).Error; err != nil || !actorFrom(c).Reaches(h.BranchID) {
 		fail(c, apperr.NotFound("NOT_FOUND", "Holiday not found."))
 		return
 	}
@@ -614,7 +630,7 @@ func (s *Server) deleteHoliday(c *gin.Context) {
 		return
 	}
 	_ = audit.Write(c.Request.Context(), s.db, actorFrom(c), audit.Entry{Action: audit.ActionHolidayDelete, EntityType: "holiday", EntityID: h.ID,
-		Details: map[string]any{"date": h.Date.Format("2006-01-02"), "name": h.Name}})
+		Details: map[string]any{"date": h.Date.Format("2006-01-02"), "name": h.Name, "branch_id": h.BranchID}})
 	c.Status(http.StatusNoContent)
 }
 

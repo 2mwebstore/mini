@@ -37,9 +37,13 @@ func NewService(db *gorm.DB, st *settings.Service, n *notification.Notifier) *Se
 	return &Service{db: db, settings: st, notify: n, Now: func() time.Time { return time.Now().UTC() }}
 }
 
-func (s *Service) Types(ctx context.Context) ([]models.LeaveType, error) {
-	var ts []models.LeaveType
-	return ts, s.db.WithContext(ctx).Where("active = 1").Order("sort_order").Find(&ts).Error
+// Types: the active leave types of the actor's branch (Mini App).
+func (s *Service) Types(ctx context.Context, actor *auth.Actor) ([]models.LeaveType, error) {
+	ts := []models.LeaveType{}
+	if actor.Employee.BranchID == nil {
+		return ts, nil
+	}
+	return ts, s.db.WithContext(ctx).Where("active = 1 AND branch_id = ?", *actor.Employee.BranchID).Order("sort_order").Find(&ts).Error
 }
 
 type SubmitInput struct {
@@ -90,7 +94,7 @@ func (s *Service) validate(ctx context.Context, tx *gorm.DB, actor *auth.Actor, 
 		return nil, apperr.ErrForbidden
 	}
 	var lt models.LeaveType
-	if err := tx.WithContext(ctx).Where("id = ? AND active = 1", in.LeaveTypeID).First(&lt).Error; err != nil {
+	if err := tx.WithContext(ctx).Where("id = ? AND active = 1 AND branch_id = ?", in.LeaveTypeID, branchOf(&actor.Employee)).First(&lt).Error; err != nil {
 		return nil, apperr.BadRequest("INVALID_LEAVE_TYPE", "Unknown leave type.")
 	}
 	dayType := strings.ToUpper(strings.TrimSpace(in.DayType))
@@ -119,7 +123,7 @@ func (s *Service) validate(ctx context.Context, tx *gorm.DB, actor *auth.Actor, 
 	if err != nil {
 		return nil, err
 	}
-	isHol, err := attendance.HolidaySet(ctx, tx, start, end)
+	isHol, err := attendance.HolidaySet(ctx, tx, actor.Employee.BranchID, start, end)
 	if err != nil {
 		return nil, err
 	}
@@ -277,7 +281,7 @@ func (s *Service) applyApproved(ctx context.Context, tx *gorm.DB, emp *models.Em
 		}
 		return attendance.ApplyHalfDayLeave(ctx, tx, emp, lr.StartDate, lr.DayType, st.Location, note)
 	}
-	isHol, err := attendance.HolidaySet(ctx, tx, lr.StartDate, lr.EndDate)
+	isHol, err := attendance.HolidaySet(ctx, tx, emp.BranchID, lr.StartDate, lr.EndDate)
 	if err != nil {
 		return err
 	}

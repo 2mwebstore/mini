@@ -52,7 +52,11 @@ type LocationInput struct {
 type SubmitInput struct {
 	PhotoData []byte
 	Location  *LocationInput
+	Reason    string // the employee's reason; required when late / leaving early
 }
+
+// maxReason caps the employee's reason for a check-in / check-out.
+const maxReason = 255
 
 // MaxUploadBytes caps uploaded photos.
 const MaxUploadBytes = 8 << 20
@@ -73,13 +77,21 @@ type PrecheckResult struct {
 	NeedGPS     bool   `json:"need_gps"`
 	GPSRequired bool   `json:"gps_required"`
 	Message     string `json:"message,omitempty"`
+	// Right now: how late a check-in / how early a check-out would be. Either needs a reason.
+	LateMinutes    int  `json:"late_minutes,omitempty"`
+	EarlyMinutes   int  `json:"early_minutes,omitempty"`
+	ReasonRequired bool `json:"reason_required"`
 }
 
 // ---------- calendar helpers ----------
 
-func (s *Service) isHoliday(ctx context.Context, date time.Time) (bool, string) {
+// isHoliday: date is a holiday of the branch (each branch keeps its own holidays).
+func (s *Service) isHoliday(ctx context.Context, branchID *uint64, date time.Time) (bool, string) {
+	if branchID == nil {
+		return false, ""
+	}
 	var h models.Holiday
-	if err := s.db.WithContext(ctx).Where("date = ?", date).First(&h).Error; err == nil {
+	if err := s.db.WithContext(ctx).Where("branch_id = ? AND date = ?", *branchID, date).First(&h).Error; err == nil {
 		return true, h.Name
 	}
 	return false, ""
@@ -121,25 +133,25 @@ func latestConfirmation(confs []models.AttendanceConfirmation, typ string) *mode
 
 // ---------- GPS rules ----------
 
-// GPSRules is the location policy for one person's check-ins.
+// GPSRules is the location policy for one person's check-ins: their branch's.
 type GPSRules struct {
 	Enabled, Required, RejectOutside bool
-	Source                           string // "branch" or "company"
 }
 
-// GPSRulesFor: a branch's own GPS rules, or the company's when the branch has none.
-func GPSRulesFor(st *settings.Settings, b *models.Branch) GPSRules {
-	if b != nil && b.GPSEnabled != nil {
-		r := GPSRules{Enabled: *b.GPSEnabled, Source: "branch"}
-		if b.GPSRequired != nil {
-			r.Required = r.Enabled && *b.GPSRequired
-		}
-		if b.GPSRejectOutside != nil {
-			r.RejectOutside = r.Enabled && *b.GPSRejectOutside
-		}
-		return r
+// GPSRulesFor: the branch's GPS rules (set on the branch page). No branch, or none
+// set: location is not asked for. Rejecting outside needs the branch's office.
+func GPSRulesFor(b *models.Branch) GPSRules {
+	if b == nil || b.GPSEnabled == nil || !*b.GPSEnabled {
+		return GPSRules{}
 	}
-	return GPSRules{Enabled: st.GPSEnabled, Required: st.GPSRequired, RejectOutside: st.GPSRejectOutside, Source: "company"}
+	r := GPSRules{Enabled: true}
+	if b.GPSRequired != nil {
+		r.Required = *b.GPSRequired
+	}
+	if b.GPSRejectOutside != nil {
+		r.RejectOutside = *b.GPSRejectOutside && b.HasOffice()
+	}
+	return r
 }
 
 // ---------- which work date an event belongs to ----------
@@ -219,12 +231,15 @@ func (s *Service) Precheck(ctx context.Context, actor *auth.Actor, typ string) (
 	if err != nil {
 		return nil, err
 	}
-	gps := GPSRulesFor(st, actor.Employee.Branch)
+	gps := GPSRulesFor(actor.Employee.Branch)
 	res := &PrecheckResult{Allowed: true, NeedGPS: gps.Enabled, GPSRequired: gps.Required}
-	date, _, err := s.shiftFor(ctx, s.db, &actor.Employee, s.Now(), st.Location, typ)
+	now := s.Now()
+	date, day, err := s.shiftFor(ctx, s.db, &actor.Employee, now, st.Location, typ)
 	if err != nil {
 		return nil, err
 	}
+	res.LateMinutes, res.EarlyMinutes = s.offSchedule(ctx, &actor.Employee, date, day, now, st.Location, typ)
+	res.ReasonRequired = res.LateMinutes > 0 || res.EarlyMinutes > 0
 	var att models.Attendance
 	err = s.db.WithContext(ctx).Preload("Confirmations").Where("employee_id = ? AND work_date = ?", actor.ID(), date).First(&att).Error
 	found := err == nil
@@ -251,6 +266,33 @@ func (s *Service) Precheck(ctx context.Context, actor *auth.Actor, typ string) (
 		return nil, apperr.BadRequest("INVALID_TYPE", "Type must be CHECK_IN or CHECK_OUT.")
 	}
 	return res, nil
+}
+
+// offSchedule: how late a check-in, or how early a check-out, made at now would be
+// (0 on days off and holidays).
+func (s *Service) offSchedule(ctx context.Context, emp *models.Employee, date time.Time, day Day, now time.Time, loc *time.Location, typ string) (late, early int) {
+	if !day.Work {
+		return 0, 0
+	}
+	if hol, _ := s.isHoliday(ctx, emp.BranchID, date); hol {
+		return 0, 0
+	}
+	if typ == models.TypeCheckIn {
+		return day.LateMinutes(date, now, loc), 0
+	}
+	return 0, day.EarlyLeaveMinutes(date, now, loc)
+}
+
+// minutesText: "15 min", "1 h", "2 h 5 min".
+func minutesText(m int) string {
+	h, r := m/60, m%60
+	switch {
+	case h == 0:
+		return fmt.Sprintf("%d min", r)
+	case r == 0:
+		return fmt.Sprintf("%d h", h)
+	}
+	return fmt.Sprintf("%d h %d min", h, r)
 }
 
 // TodayStatus is the employee's own day at a glance (Mini App home screen). Date
@@ -308,7 +350,7 @@ func (s *Service) Today(ctx context.Context, actor *auth.Actor) (*TodayStatus, e
 			out.Special = "Special schedule"
 		}
 	}
-	if hol, name := s.isHoliday(ctx, date); hol {
+	if hol, name := s.isHoliday(ctx, actor.Employee.BranchID, date); hol {
 		out.WorkDay, out.Holiday = false, name
 	}
 	if lr := HalfDayLeave(ctx, s.db, actor.ID(), date); lr != nil && out.WorkDay {
@@ -417,20 +459,20 @@ func (s *Service) submit(ctx context.Context, actor *auth.Actor, typ string, in 
 		return nil, err
 	}
 
-	// --- location policy (a branch may have its own office location) ---
-	officeLat, officeLng, radius := st.OfficeLatitude, st.OfficeLongitude, st.AllowedRadiusMeters
-	if emp.Branch.HasOffice() {
-		officeLat, officeLng, radius = *emp.Branch.OfficeLatitude, *emp.Branch.OfficeLongitude, *emp.Branch.AllowedRadiusMeters
-	}
+	// --- location policy: the branch's rules and office ---
 	var locRow *models.AttendanceLocation
 	label := "Not provided"
-	gps := GPSRulesFor(st, emp.Branch)
+	gps := GPSRulesFor(emp.Branch)
 	if gps.Enabled {
 		if in.Location == nil {
 			if gps.Required {
 				return nil, apperr.BadRequest("LOCATION_REQUIRED", "Please share your current location.")
 			}
+		} else if !emp.Branch.HasOffice() { // no office set: nothing to measure against
+			locRow = &models.AttendanceLocation{Type: typ, Latitude: in.Location.Latitude, Longitude: in.Location.Longitude, Accuracy: in.Location.Accuracy, CreatedAt: now}
+			label = "Received"
 		} else {
+			officeLat, officeLng, radius := *emp.Branch.OfficeLatitude, *emp.Branch.OfficeLongitude, *emp.Branch.AllowedRadiusMeters
 			dist := DistanceMeters(in.Location.Latitude, in.Location.Longitude, officeLat, officeLng)
 			inside := dist <= radius
 			if !inside && gps.RejectOutside {
@@ -454,6 +496,18 @@ func (s *Service) submit(ctx context.Context, actor *auth.Actor, typ string, in 
 		return nil, err
 	} else if !pre.Allowed {
 		return nil, apperr.Conflict("NOT_ALLOWED", pre.Message)
+	}
+
+	// --- the employee's reason: required when late / leaving early ---
+	reason := strings.TrimSpace(in.Reason)
+	if len([]rune(reason)) > maxReason {
+		return nil, apperr.BadRequest("REASON_TOO_LONG", fmt.Sprintf("The reason can be at most %d characters.", maxReason))
+	}
+	if late, early := s.offSchedule(ctx, &emp, date, day, now, loc, typ); reason == "" && (late > 0 || early > 0) {
+		if late > 0 {
+			return nil, apperr.BadRequest("REASON_REQUIRED", fmt.Sprintf("You are %s late. Please say why.", minutesText(late)))
+		}
+		return nil, apperr.BadRequest("REASON_REQUIRED", fmt.Sprintf("You are leaving %s early. Please say why.", minutesText(early)))
 	}
 
 	// --- optional photo: validate, reject re-used images, store ---
@@ -481,7 +535,7 @@ func (s *Service) submit(ctx context.Context, actor *auth.Actor, typ string, in 
 			return err
 		}
 		scheduled := day.Work
-		if hol, _ := s.isHoliday(ctx, date); hol {
+		if hol, _ := s.isHoliday(ctx, emp.BranchID, date); hol {
 			scheduled = false
 		}
 
@@ -499,7 +553,7 @@ func (s *Service) submit(ctx context.Context, actor *auth.Actor, typ string, in 
 				late = day.LateMinutes(date, now, loc)
 			}
 			t := now
-			att.EmployeeID, att.WorkDate, att.CheckInAt, att.LateMinutes = emp.ID, date, &t, late
+			att.EmployeeID, att.WorkDate, att.CheckInAt, att.LateMinutes, att.CheckInReason = emp.ID, date, &t, late, reason
 			att.Status = DeriveStatus(late, 0)
 			att.Source, att.ConfirmedBy, att.ConfirmedAt = models.SourceTelegram, nil, nil
 			if found {
@@ -526,7 +580,7 @@ func (s *Service) submit(ctx context.Context, actor *auth.Actor, typ string, in 
 			}
 			res.Resubmission = att.CheckOutAt != nil
 			t := now
-			att.CheckOutAt = &t
+			att.CheckOutAt, att.CheckOutReason = &t, reason
 			att.WorkingMinutes = WorkingMinutes(*att.CheckInAt, now)
 			att.EarlyLeaveMinutes = 0
 			if scheduled {
@@ -781,6 +835,7 @@ type PendingItem struct {
 	CheckOutAt     *time.Time `json:"check_out_at"`
 	LateMinutes    int        `json:"late_minutes"`
 	EarlyMinutes   int        `json:"early_leave_minutes"`
+	Reason         string     `json:"reason"`   // the employee's: why late (check-in) or early (check-out)
 	PhotoID        *uint64    `json:"photo_id"` // nil: no photo (the Mini App no longer takes one)
 	DistanceMeters *float64   `json:"distance_meters"`
 	InsideOffice   *bool      `json:"inside_office"`
@@ -798,6 +853,7 @@ func (s *Service) Pending(ctx context.Context, actor *auth.Actor, limit int) ([]
 	q := s.db.WithContext(ctx).Table("attendance_confirmations c").
 		Select(`c.id AS confirmation_id, a.id AS attendance_id, c.type, e.id AS employee_id, e.employee_code, e.full_name,
 			a.work_date, a.check_in_at, a.check_out_at, a.late_minutes, a.early_leave_minutes AS early_minutes,
+			CASE WHEN c.type = 'CHECK_IN' THEN a.check_in_reason ELSE a.check_out_reason END AS reason,
 			c.photo_id, l.distance_meters, l.inside_office, l.accuracy`).
 		Joins("JOIN attendance a ON a.id = c.attendance_id").
 		Joins("JOIN employees e ON e.id = a.employee_id").
@@ -850,7 +906,7 @@ func (s *Service) Detail(ctx context.Context, actor *auth.Actor, id uint64) (*De
 		return nil, err
 	}
 	out.Schedule = plan.Day(att.Employee, att.WorkDate)
-	if _, name := s.isHoliday(ctx, att.WorkDate); name != "" {
+	if _, name := s.isHoliday(ctx, att.Employee.BranchID, att.WorkDate); name != "" {
 		out.Holiday = name
 	}
 	var lr models.LeaveRequest

@@ -70,10 +70,16 @@ type branchDef struct {
 }
 
 var branchDefs = []branchDef{
-	{"MAIN", "", "", 11.5564, 104.9282, 150}, // created by migration 0003; name kept
+	{"MAIN", "Main branch", "", 11.5564, 104.9282, 150}, // created by migration 0003 if it ran on this database; name kept
 	{"SR", "Siem Reap", "Sivatha Blvd, Siem Reap", 13.3633, 103.8564, 200},
 	{"BB", "Battambang", "Street 1, Battambang", 13.0957, 103.2022, 200},
 }
+
+// The client demo: a Company Admin account that created its own branch and sees
+// only that (none of the company's other branches).
+var clientBranch = branchDef{"KCC", "Kampot Coffee Co.", "Riverside Road, Kampot", 10.6104, 104.1810, 150}
+
+const clientEmail = "client@demo.local"
 
 // person is a member of staff (an employee who checks in with the Mini App).
 type person struct {
@@ -100,6 +106,11 @@ var people = []person{
 	{"D-BB02", "Narin Seng", "staff", "Sales", "Sales Executive", "BB"},
 	{"D-BB03", "Phalla Touch", "staff", "Finance", "Cashier", "BB"},
 	{"D-BB04", "Ratha Chhim", "staff", "Operations", "Warehouse Officer", "BB"},
+
+	// The client's own branch, set up by their Company Admin.
+	{"D-KC01", "Dalin Sum", "manager", "Café", "Café Manager", "KCC"},
+	{"D-KC02", "Mony Prak", "staff", "Café", "Barista", "KCC"},
+	{"D-KC03", "Rotha Nov", "staff", "Kitchen", "Cook", "KCC"},
 }
 
 // sysUser is an admin panel account (Administration → System users), separate
@@ -142,9 +153,12 @@ type seeder struct {
 	loc    *time.Location
 	today  time.Time
 	rng    *rand.Rand
-	emps   map[string]*models.Employee // staff by code
-	admins map[string]*models.Employee // system users by key (A-…)
-	branch map[string]*models.Branch   // by code
+	emps   map[string]*models.Employee                // staff by code
+	admins map[string]*models.Employee                // system users by key (A-…)
+	branch map[string]*models.Branch                  // by code
+	shifts map[string]map[string]*models.WorkSchedule // branch code -> shift name -> shift
+	types  map[string]map[string]uint64               // branch code -> leave type code -> id
+	client *auth.Actor                                // the client's Company Admin
 	owner  *models.Employee
 	isHol  func(time.Time) bool
 	plan   *attendance.Planner // who works which shift, after roster and special schedules
@@ -162,7 +176,8 @@ func Seed(ctx context.Context, d Deps, o Options) (*Summary, error) {
 		o.Days = 27
 	}
 	var n int64
-	if err := d.DB.WithContext(ctx).Model(&models.Employee{}).Where("employee_code LIKE ?", codePrefix+"%").Count(&n).Error; err != nil {
+	// Demo staff, not system users: an owner an older seed created (D-OWNER) survives clear-data.
+	if err := d.DB.WithContext(ctx).Model(&models.Employee{}).Where("kind = ? AND employee_code LIKE ?", models.KindStaff, codePrefix+"%").Count(&n).Error; err != nil {
 		return nil, err
 	}
 	if n > 0 {
@@ -177,8 +192,11 @@ func Seed(ctx context.Context, d Deps, o Options) (*Summary, error) {
 		cli:  &auth.Actor{Employee: models.Employee{RoleID: models.RoleSuperAdmin, FullName: "Demo seed"}, Channel: auth.ChannelCLI},
 		rng:  rand.New(rand.NewPCG(2026, 10)), // fixed: the same demo every time
 		emps: map[string]*models.Employee{}, admins: map[string]*models.Employee{}, branch: map[string]*models.Branch{}, sum: &Summary{},
+		shifts: map[string]map[string]*models.WorkSchedule{}, types: map[string]map[string]uint64{},
 	}
-	steps := []func() error{s.ensureOwner, s.branches, s.roles, s.systemUsers, s.staff, s.access, s.backdate, s.holidays, s.schedules, s.leave, s.attendance, s.audit}
+	s.isHol = s.holidayOn
+	steps := []func() error{s.ensureOwner, s.branches, s.roles, s.systemUsers, s.clientCompany, s.setup, s.staff, s.access, s.backdate,
+		s.schedules, s.leave, s.attendance, s.audit}
 	for _, step := range steps {
 		if err := step(); err != nil {
 			return nil, err
@@ -247,6 +265,127 @@ func (s *seeder) systemUsers() error {
 	return nil
 }
 
+// clientCompany: the client's Company Admin (no branches yet) creates their own
+// branch — which adds it to their branch access, so it is all they see.
+func (s *seeder) clientCompany() error {
+	name, email, role := "Client Admin", clientEmail, "company_admin"
+	u, err := access.NewService(s.d.DB).CreateUser(s.ctx, s.cli, access.UserInput{FullName: &name, Email: &email, Password: &s.o.Password, Role: &role})
+	if err != nil {
+		return fmt.Errorf("client admin: %w", err)
+	}
+	var e models.Employee
+	if err := s.d.DB.WithContext(s.ctx).First(&e, u.PersonID).Error; err != nil {
+		return err
+	}
+	s.admins["A-CLIENT"] = &e
+	s.client = &auth.Actor{Employee: e, Channel: auth.ChannelCLI}
+	def := clientBranch
+	b, err := branch.NewService(s.d.DB).Create(s.ctx, s.client, branch.Input{Code: &def.code, Name: &def.name, Address: &def.address,
+		OfficeLatitude: &def.lat, OfficeLongitude: &def.lng, AllowedRadiusMeters: &def.radius})
+	if err != nil {
+		return fmt.Errorf("client branch: %w", err)
+	}
+	s.client.Branches = []uint64{b.ID}
+	s.branch[def.code] = b
+	s.sum.Branches = append(s.sum.Branches, b.Name)
+	s.sum.Logins = append(s.sum.Logins, Login{Email: email, Name: name, Role: "Company Admin — only " + b.Name + " (created it)"})
+	return nil
+}
+
+// holidayOn: the demo branches all keep Cambodia's fixed-date public holidays.
+func (s *seeder) holidayOn(d time.Time) bool {
+	for _, h := range holidayDefs {
+		if d.Month() == h.month && d.Day() == h.day {
+			return true
+		}
+	}
+	return false
+}
+
+// setup gives every branch its own shifts, leave types and holidays (nothing is
+// shared between branches). The client's branch is set up by its Company Admin.
+func (s *seeder) setup() error {
+	sched := schedule.NewService(s.d.DB, s.d.Settings)
+	lv := leave.NewService(s.d.DB, s.d.Settings, nil)
+	type shiftDef struct {
+		name, start, end, wt string
+		grace                int
+		days                 []int
+		color                string
+	}
+	type typeDef struct {
+		code, name   string
+		days         float64
+		exceed, paid bool
+		color        string
+	}
+	office := []shiftDef{
+		{"Office Hours", "09:00", "17:30", models.WorkNormal, 10, []int{1, 2, 3, 4, 5}, "#2563eb"},
+		{"Morning Shift", "07:00", "15:00", models.WorkNormal, 10, []int{1, 2, 3, 4, 5, 6}, "#0891b2"},
+		{"Night Shift", "22:00", "06:00", models.WorkCrossDay, 15, []int{1, 2, 3, 4, 5, 6}, "#4f46e5"},
+	}
+	officeTypes := []typeDef{{"ANNUAL", "Annual Leave", 18, false, true, "#16a34a"}, {"SICK", "Sick Leave", 7, true, true, "#dc2626"},
+		{"PERSONAL", "Personal Leave", 5, false, true, "#7c3aed"}, {"EMERGENCY", "Emergency Leave", 3, true, true, "#ea580c"},
+		{"OTHER", "Other", 0, false, false, "#64748b"}}
+	cafe := []shiftDef{{"Café Hours", "07:00", "16:00", models.WorkNormal, 5, []int{1, 2, 3, 4, 5, 6}, "#b45309"}}
+	cafeTypes := []typeDef{{"ANNUAL", "Annual Leave", 12, false, true, "#16a34a"}, {"SICK", "Sick Leave", 5, true, true, "#dc2626"}}
+
+	codes := append([]string{}, "MAIN", "SR", "BB", clientBranch.code)
+	for _, code := range codes {
+		b := s.branch[code]
+		actor, shifts, types := s.cli, office, officeTypes
+		if code == clientBranch.code {
+			actor, shifts, types = s.client, cafe, cafeTypes
+		}
+		s.shifts[code], s.types[code] = map[string]*models.WorkSchedule{}, map[string]uint64{}
+		// A branch that existed before (migration 0008 copied the old shared lists) keeps what it has.
+		var have []models.WorkSchedule
+		s.d.DB.WithContext(s.ctx).Where("branch_id = ?", b.ID).Find(&have)
+		for i := range have {
+			s.shifts[code][have[i].Name] = &have[i]
+		}
+		for _, d := range shifts {
+			if s.shifts[code][d.name] != nil {
+				continue
+			}
+			def := d
+			ws, err := sched.CreateShift(s.ctx, actor, schedule.ShiftInput{BranchID: &b.ID, Name: &def.name, StartTime: &def.start, EndTime: &def.end,
+				WorkType: &def.wt, GraceMinutes: &def.grace, WorkDays: def.days, Color: &def.color})
+			if err != nil {
+				return fmt.Errorf("shift %s in %s: %w", d.name, code, err)
+			}
+			s.shifts[code][d.name] = ws
+			s.sum.Shifts++
+		}
+		var haveTypes []models.LeaveType
+		s.d.DB.WithContext(s.ctx).Where("branch_id = ?", b.ID).Find(&haveTypes)
+		for _, t := range haveTypes {
+			s.types[code][t.Code] = t.ID
+		}
+		for _, d := range types {
+			if s.types[code][d.code] != 0 {
+				continue
+			}
+			def := d
+			t, err := lv.CreateType(s.ctx, actor, leave.TypeInput{BranchID: &b.ID, Code: &def.code, Name: &def.name, AnnualDays: &def.days,
+				AllowExceed: &def.exceed, IsPaid: &def.paid, Color: &def.color})
+			if err != nil {
+				return fmt.Errorf("leave type %s in %s: %w", d.code, code, err)
+			}
+			s.types[code][d.code] = t.ID
+		}
+		for _, h := range holidayDefs {
+			res := s.d.DB.WithContext(s.ctx).Clauses(clause.OnConflict{DoNothing: true}).Create(&models.Holiday{BranchID: b.ID,
+				Date: time.Date(s.today.Year(), h.month, h.day, 0, 0, 0, 0, time.UTC), Name: h.name, CreatedAt: time.Now().UTC()})
+			if res.Error != nil {
+				return res.Error
+			}
+			s.sum.Holidays += int(res.RowsAffected)
+		}
+	}
+	return nil
+}
+
 func (s *seeder) branches() error {
 	svc := branch.NewService(s.d.DB)
 	for _, def := range branchDefs {
@@ -291,7 +430,11 @@ func (s *seeder) staff() error {
 		if m, ok := managers[p.branch]; ok && p.role == "staff" && p.position != "Branch Manager" {
 			in.ManagerID = &m
 		}
-		e, err := empSvc.Create(s.ctx, s.cli, in)
+		actor := s.cli
+		if p.branch == clientBranch.code {
+			actor = s.client // the client adds their own staff
+		}
+		e, err := empSvc.Create(s.ctx, actor, in)
 		if err != nil {
 			return fmt.Errorf("create %s: %w", p.code, err)
 		}
@@ -326,20 +469,6 @@ func (s *seeder) backdate() error {
 	return nil
 }
 
-func (s *seeder) holidays() error {
-	for _, h := range holidayDefs {
-		res := s.d.DB.WithContext(s.ctx).Clauses(clause.OnConflict{DoNothing: true}).
-			Create(&models.Holiday{Date: time.Date(s.today.Year(), h.month, h.day, 0, 0, 0, 0, time.UTC), Name: h.name, CreatedAt: time.Now().UTC()})
-		if res.Error != nil {
-			return res.Error
-		}
-		s.sum.Holidays += int(res.RowsAffected)
-	}
-	var err error
-	s.isHol, err = attendance.HolidaySet(s.ctx, s.d.DB, s.today.AddDate(-1, 0, 0), s.today.AddDate(1, 0, 0))
-	return err
-}
-
 // ---------- roles, branch access, leave balances ----------
 
 // roles adds a custom role (view and review everyone, edit attendance, export) —
@@ -365,12 +494,8 @@ func (s *seeder) access() error {
 	if _, err := access.NewService(s.d.DB).SetBranches(s.ctx, s.cli, u.ID, []uint64{s.branch["SR"].ID, s.branch["BB"].ID}); err != nil {
 		return fmt.Errorf("branch access: %w", err)
 	}
-	var annual models.LeaveType
-	if err := s.d.DB.WithContext(s.ctx).Where("code = ?", "ANNUAL").First(&annual).Error; err != nil {
-		return err
-	}
 	return leave.NewService(s.d.DB, s.d.Settings, nil).SetBalance(s.ctx, s.cli, leave.BalanceInput{EmployeeID: s.emps["D-PP06"].ID,
-		LeaveTypeID: annual.ID, Year: s.today.Year(), Allocated: 20, Carried: 2, Note: "Long service (5 years) + 2 days from last year"})
+		LeaveTypeID: s.types["MAIN"]["ANNUAL"], Year: s.today.Year(), Allocated: 20, Carried: 2, Note: "Long service (5 years) + 2 days from last year"})
 }
 
 // ---------- shifts, roster, special schedules ----------
@@ -380,24 +505,10 @@ func (s *seeder) access() error {
 // creates special schedules (custom evening hours, a temporary night shift, days off).
 func (s *seeder) schedules() error {
 	svc := schedule.NewService(s.d.DB, s.d.Settings)
-	shift := func(name, start, end, wt string, grace int, days []int, color string) (*models.WorkSchedule, error) {
-		ws, err := svc.CreateShift(s.ctx, s.cli, schedule.ShiftInput{Name: &name, StartTime: &start, EndTime: &end, WorkType: &wt,
-			GraceMinutes: &grace, WorkDays: days, Color: &color})
-		if err != nil {
-			return nil, fmt.Errorf("shift %s: %w", name, err)
-		}
-		s.sum.Shifts++
-		return ws, nil
-	}
-	morning, err := shift("Morning Shift", "07:00", "15:00", models.WorkNormal, 10, []int{1, 2, 3, 4, 5, 6}, "#0891b2")
-	if err != nil {
-		return err
-	}
-	night, err := shift("Night Shift", "22:00", "06:00", models.WorkCrossDay, 15, []int{1, 2, 3, 4, 5, 6}, "#4f46e5")
-	if err != nil {
-		return err
-	}
-	for code, ws := range map[string]*models.WorkSchedule{"D-BB04": night, "D-SR04": morning} {
+	shift := func(branchCode, name string) *models.WorkSchedule { return s.shifts[branchCode][name] }
+	morning := func(b string) *models.WorkSchedule { return shift(b, "Morning Shift") }
+	night := func(b string) *models.WorkSchedule { return shift(b, "Night Shift") }
+	for code, ws := range map[string]*models.WorkSchedule{"D-BB04": night("BB"), "D-SR04": morning("SR")} {
 		e := s.emps[code]
 		if err := s.d.DB.WithContext(s.ctx).Model(&models.Employee{}).Where("id = ?", e.ID).Update("work_schedule_id", ws.ID).Error; err != nil {
 			return err
@@ -418,11 +529,11 @@ func (s *seeder) schedules() error {
 		return it
 	}
 	items := []schedule.RosterItem{
-		on("D-SR03", day(-1, 6), morning), on("D-SR03", day(0, 1), morning), on("D-SR03", day(0, 2), morning), on("D-SR03", day(0, 6), morning),
-		on("D-SR05", day(0, 5), nil), on("D-SR05", day(0, 6), morning),
-		on("D-PP07", day(0, 6), morning), on("D-PP07", day(1, 6), morning),
-		on("D-BB03", day(1, 1), night), on("D-BB03", day(1, 2), night),
-		on("D-SR03", day(1, 1), morning), on("D-SR03", day(1, 2), morning),
+		on("D-SR03", day(-1, 6), morning("SR")), on("D-SR03", day(0, 1), morning("SR")), on("D-SR03", day(0, 2), morning("SR")), on("D-SR03", day(0, 6), morning("SR")),
+		on("D-SR05", day(0, 5), nil), on("D-SR05", day(0, 6), morning("SR")),
+		on("D-PP07", day(0, 6), morning("MAIN")), on("D-PP07", day(1, 6), morning("MAIN")),
+		on("D-BB03", day(1, 1), night("BB")), on("D-BB03", day(1, 2), night("BB")),
+		on("D-SR03", day(1, 1), morning("SR")), on("D-SR03", day(1, 2), morning("SR")),
 	}
 	n, err := svc.SetRoster(s.ctx, s.cli, items)
 	if err != nil {
@@ -436,7 +547,7 @@ func (s *seeder) schedules() error {
 		{EmployeeID: s.emps["D-PP06"].ID, StartDate: s.workday(-5).Format("2006-01-02"), EndDate: s.workday(5).Format("2006-01-02"),
 			Kind: models.OverrideCustom, StartTime: str("13:00"), EndTime: str("21:00"), WorkType: str(models.WorkNormal), GraceMinutes: &grace,
 			WorkDays: []int{1, 2, 3, 4, 5}, Reason: "Release support — evening cover"},
-		{EmployeeID: s.emps["D-PP07"].ID, StartDate: day(2, 1), EndDate: day(2, 7), Kind: models.OverrideShift, WorkScheduleID: &night.ID,
+		{EmployeeID: s.emps["D-PP07"].ID, StartDate: day(2, 1), EndDate: day(2, 7), Kind: models.OverrideShift, WorkScheduleID: &night("MAIN").ID,
 			WorkDays: []int{1, 2, 3, 4, 5}, Reason: "Covering the night help desk"},
 		{EmployeeID: s.emps["D-PP04"].ID, StartDate: day(3, 1), EndDate: day(3, 3), Kind: models.OverrideOff,
 			Reason: "Company training course in Bangkok"},
@@ -452,7 +563,8 @@ func (s *seeder) schedules() error {
 	for _, e := range s.emps {
 		ids = append(ids, e.ID)
 	}
-	s.plan, err = attendance.LoadPlanner(s.ctx, s.d.DB, ids, s.today.AddDate(0, 0, -s.o.Days-7), s.today.AddDate(0, 0, 60))
+	plan, err := attendance.LoadPlanner(s.ctx, s.d.DB, ids, s.today.AddDate(0, 0, -s.o.Days-7), s.today.AddDate(0, 0, 60))
+	s.plan = plan
 	return err
 }
 
@@ -474,14 +586,8 @@ func (s *seeder) workday(n int) time.Time {
 }
 
 func (s *seeder) leave() error {
-	var types []models.LeaveType
-	if err := s.d.DB.WithContext(s.ctx).Find(&types).Error; err != nil {
-		return err
-	}
-	typeID := map[string]uint64{}
-	for _, t := range types {
-		typeID[t.Code] = t.ID
-	}
+	// Each branch has its own leave types: a person's request uses their branch's.
+	typeOf := func(code, typ string) uint64 { return s.types[branchCode(code)][typ] }
 	plan := []struct {
 		code, typ        string
 		start, length    int // first working day relative to today, number of working days
@@ -509,7 +615,7 @@ func (s *seeder) leave() error {
 			if requested.After(s.o.Now) {
 				requested = s.o.Now.Add(-26 * time.Hour)
 			}
-			lr := models.LeaveRequest{EmployeeID: emp.ID, LeaveTypeID: typeID[p.typ], StartDate: start, EndDate: end, DayType: models.LeaveFullDay,
+			lr := models.LeaveRequest{EmployeeID: emp.ID, LeaveTypeID: typeOf(p.code, p.typ), StartDate: start, EndDate: end, DayType: models.LeaveFullDay,
 				Days: float64(s.plan.WorkingDays(emp, start, end, s.isHol)), Reason: p.reason, Status: p.status, ReviewNote: p.note,
 				CreatedAt: requested.UTC(), UpdatedAt: requested.UTC()}
 			if r := s.admins[p.reviewer]; r != nil {
@@ -548,7 +654,7 @@ func (s *seeder) leave() error {
 				hours = second
 			}
 			requested := s.o.Now.Add(-30 * time.Hour).UTC()
-			lr := models.LeaveRequest{EmployeeID: emp.ID, LeaveTypeID: typeID[h.typ], StartDate: date, EndDate: date, DayType: h.half,
+			lr := models.LeaveRequest{EmployeeID: emp.ID, LeaveTypeID: typeOf(h.code, h.typ), StartDate: date, EndDate: date, DayType: h.half,
 				HalfFrom: &hours[0], HalfTo: &hours[1], Days: 0.5, Reason: h.reason, Status: h.status, CreatedAt: requested, UpdatedAt: requested}
 			if r := s.admins[h.reviewer]; r != nil {
 				at := requested.Add(4 * time.Hour)
@@ -574,9 +680,13 @@ func (s *seeder) nextWorkday(d time.Time) time.Time {
 
 // ---------- attendance ----------
 
-// reviewerOf: the employee's manager, else their branch admin (a system user), else the owner.
+// reviewerOf: the employee's manager, else their branch admin (a system user), else
+// the client's Company Admin for the client's branch, else the owner.
 func (s *seeder) reviewerOf(code string) *models.Employee {
 	e := s.emps[code]
+	if e.ManagerID == nil && branchCode(code) == clientBranch.code {
+		return s.admins["A-CLIENT"]
+	}
 	if e.ManagerID != nil {
 		for _, m := range s.emps {
 			if m.ID == *e.ManagerID {
@@ -669,6 +779,11 @@ func (s *seeder) attendance() error {
 	})
 }
 
+var (
+	lateReasons  = []string{"Heavy traffic on the way", "Motorbike had a flat tyre", "Took my child to the doctor", "Heavy rain", "Bank errand approved by my manager"}
+	earlyReasons = []string{"Feeling unwell", "Family matter", "Doctor's appointment", "Meeting a client outside the office", "Approved by my manager"}
+)
+
 // record writes one check-in (and maybe check-out) with GPS points and reviews.
 func (s *seeder) record(tx *gorm.DB, e *models.Employee, d time.Time, sched attendance.Day, in time.Time, out *time.Time,
 	pendingIn, pendingOut, rejectOut bool) error {
@@ -681,6 +796,14 @@ func (s *seeder) record(tx *gorm.DB, e *models.Employee, d time.Time, sched atte
 		a.EarlyLeaveMinutes = sched.EarlyLeaveMinutes(d, *out, s.loc)
 	}
 	a.Status = attendance.DeriveStatus(a.LateMinutes, a.EarlyLeaveMinutes)
+	// The Mini App asks why for a late check-in or an early check-out.
+	pick := func(list []string) string { return list[(int(e.ID)+d.YearDay())%len(list)] }
+	if a.LateMinutes > 0 {
+		a.CheckInReason = pick(lateReasons)
+	}
+	if a.EarlyLeaveMinutes > 0 {
+		a.CheckOutReason = pick(earlyReasons)
+	}
 	reviewer := s.reviewerOf(e.EmployeeCode)
 
 	confs := []models.AttendanceConfirmation{s.conf(models.TypeCheckIn, in, pendingIn, false, reviewer)}
@@ -757,3 +880,13 @@ func (s *seeder) audit() error {
 }
 
 func ptr(s string) *string { return &s }
+
+// branchCode: a demo employee's branch ("D-SR03" -> "SR"; "D-KC01" -> the client's).
+func branchCode(code string) string {
+	for _, p := range people {
+		if p.code == code {
+			return p.branch
+		}
+	}
+	return ""
+}

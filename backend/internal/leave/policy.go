@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"math"
 	"regexp"
+	"slices"
 	"strings"
 	"time"
 
@@ -22,6 +23,7 @@ import (
 // ---------- leave types (categories, allowances, approval policy) ----------
 
 type TypeInput struct {
+	BranchID          *uint64  `json:"branch_id"` // create: the branch it belongs to
 	Code              *string  `json:"code"`
 	Name              *string  `json:"name"`
 	AnnualDays        *float64 `json:"annual_days"`
@@ -47,10 +49,15 @@ var (
 	hexColor = regexp.MustCompile(`^#[0-9a-fA-F]{6}$`)
 )
 
-// AllTypes lists every leave type (inactive too) for the admin panel.
-func (s *Service) AllTypes(ctx context.Context) ([]TypeView, error) {
+// AllTypes lists the leave types (inactive too) of the branches the actor reaches
+// (branchID narrows to one), for the admin panel.
+func (s *Service) AllTypes(ctx context.Context, actor *auth.Actor, branchID uint64) ([]TypeView, error) {
 	var ts []models.LeaveType
-	if err := s.db.WithContext(ctx).Order("active DESC, sort_order, name").Find(&ts).Error; err != nil {
+	q := auth.InReach(s.db.WithContext(ctx), actor, "branch_id")
+	if branchID != 0 {
+		q = q.Where("branch_id = ?", branchID)
+	}
+	if err := q.Order("branch_id, active DESC, sort_order, name").Find(&ts).Error; err != nil {
 		return nil, err
 	}
 	var counts []struct {
@@ -71,16 +78,28 @@ func (s *Service) AllTypes(ctx context.Context) ([]TypeView, error) {
 	return out, nil
 }
 
+// canType: leave policy managers edit the leave types of the branches they reach.
+func canType(actor *auth.Actor, branchID uint64) bool {
+	return actor.Has(auth.PermLeaveManage) && actor.Reaches(branchID)
+}
+
 func (s *Service) CreateType(ctx context.Context, actor *auth.Actor, in TypeInput) (*models.LeaveType, error) {
-	if !actor.Has(auth.PermLeaveManage) {
+	if in.BranchID == nil || *in.BranchID == 0 {
+		return nil, apperr.BadRequest("BRANCH_REQUIRED", "Choose the branch this leave type belongs to.")
+	}
+	if !canType(actor, *in.BranchID) {
 		return nil, apperr.ErrForbidden
 	}
 	if in.Code == nil || in.Name == nil {
 		return nil, apperr.BadRequest("TYPE_INCOMPLETE", "Code and name are required.")
 	}
-	t := models.LeaveType{Approval: models.LeaveApprovalManual, IsPaid: true, Active: true, Color: "#2563eb"}
+	var n int64
+	if s.db.WithContext(ctx).Model(&models.Branch{}).Where("id = ?", *in.BranchID).Count(&n); n == 0 {
+		return nil, apperr.BadRequest("INVALID_BRANCH", "Unknown branch.")
+	}
+	t := models.LeaveType{BranchID: *in.BranchID, Approval: models.LeaveApprovalManual, IsPaid: true, Active: true, Color: "#2563eb"}
 	var maxOrder int
-	s.db.WithContext(ctx).Model(&models.LeaveType{}).Select("COALESCE(MAX(sort_order), 0)").Scan(&maxOrder)
+	s.db.WithContext(ctx).Model(&models.LeaveType{}).Where("branch_id = ?", t.BranchID).Select("COALESCE(MAX(sort_order), 0)").Scan(&maxOrder)
 	t.SortOrder = maxOrder + 1
 	if err := applyType(&t, in, true); err != nil {
 		return nil, err
@@ -100,7 +119,7 @@ func (s *Service) UpdateType(ctx context.Context, actor *auth.Actor, id uint64, 
 	}
 	var t models.LeaveType
 	err := s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
-		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).First(&t, id).Error; err != nil {
+		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).First(&t, id).Error; err != nil || !canType(actor, t.BranchID) {
 			return apperr.NotFound("LEAVE_TYPE_NOT_FOUND", "Leave type not found.")
 		}
 		before := typeAudit(&t)
@@ -123,7 +142,7 @@ func (s *Service) DeleteType(ctx context.Context, actor *auth.Actor, id uint64) 
 	}
 	return s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 		var t models.LeaveType
-		if err := tx.First(&t, id).Error; err != nil {
+		if err := tx.First(&t, id).Error; err != nil || !canType(actor, t.BranchID) {
 			return apperr.NotFound("LEAVE_TYPE_NOT_FOUND", "Leave type not found.")
 		}
 		var n int64
@@ -212,7 +231,7 @@ func applyType(t *models.LeaveType, in TypeInput, creating bool) error {
 func typeWriteErr(err error) error {
 	var me *mysqldrv.MySQLError
 	if errors.As(err, &me) && me.Number == 1062 {
-		return apperr.Conflict("TYPE_CODE_TAKEN", "Another leave type already has this code.")
+		return apperr.Conflict("TYPE_CODE_TAKEN", "Another leave type in this branch already has this code.")
 	}
 	return err
 }
@@ -243,8 +262,9 @@ type Balance struct {
 	Note        string  `json:"note,omitempty"`
 }
 
-// balances computes every active type's balance for each employee in year.
-func balances(ctx context.Context, db *gorm.DB, empIDs []uint64, year int, types []models.LeaveType) (map[uint64][]Balance, error) {
+// balances computes, for each employee in year, the balance of every given type
+// of their branch (branchOf: employee -> branch; nil = no filtering).
+func balances(ctx context.Context, db *gorm.DB, empIDs []uint64, branchOf map[uint64]uint64, year int, types []models.LeaveType) (map[uint64][]Balance, error) {
 	out := map[uint64][]Balance{}
 	if len(empIDs) == 0 {
 		return out, nil
@@ -281,6 +301,9 @@ func balances(ctx context.Context, db *gorm.DB, empIDs []uint64, year int, types
 	}
 	for _, e := range empIDs {
 		for _, t := range types {
+			if branchOf != nil && t.BranchID != branchOf[e] {
+				continue // each branch has its own leave types
+			}
 			k := key{e, t.ID}
 			b := Balance{LeaveTypeID: t.ID, Code: t.Code, Name: t.Name, Color: t.Color, Year: year, Allocated: t.AnnualDays,
 				Used: used[k], Pending: pending[k], Tracked: t.AnnualDays > 0}
@@ -295,9 +318,13 @@ func balances(ctx context.Context, db *gorm.DB, empIDs []uint64, year int, types
 	return out, nil
 }
 
-func (s *Service) activeTypes(ctx context.Context, db *gorm.DB) ([]models.LeaveType, error) {
-	var ts []models.LeaveType
-	return ts, db.WithContext(ctx).Where("active = 1").Order("sort_order, name").Find(&ts).Error
+// activeTypes: the active leave types of the given branches.
+func (s *Service) activeTypes(ctx context.Context, db *gorm.DB, branchIDs []uint64) ([]models.LeaveType, error) {
+	ts := []models.LeaveType{}
+	if len(branchIDs) == 0 {
+		return ts, nil
+	}
+	return ts, db.WithContext(ctx).Where("active = 1 AND branch_id IN ?", branchIDs).Order("branch_id, sort_order, name").Find(&ts).Error
 }
 
 // MyBalances: the actor's own balances for year (Mini App).
@@ -305,11 +332,14 @@ func (s *Service) MyBalances(ctx context.Context, actor *auth.Actor, year int) (
 	if !actor.Has(auth.PermLeaveSelf) {
 		return nil, apperr.ErrForbidden
 	}
-	types, err := s.activeTypes(ctx, s.db)
+	if actor.Employee.BranchID == nil {
+		return []Balance{}, nil
+	}
+	types, err := s.activeTypes(ctx, s.db, []uint64{*actor.Employee.BranchID})
 	if err != nil {
 		return nil, err
 	}
-	m, err := balances(ctx, s.db, []uint64{actor.ID()}, year, types)
+	m, err := balances(ctx, s.db, []uint64{actor.ID()}, nil, year, types)
 	if err != nil {
 		return nil, err
 	}
@@ -361,15 +391,28 @@ func (s *Service) Balances(ctx context.Context, actor *auth.Actor, f BalanceFilt
 	if err := q.Find(&emps).Error; err != nil {
 		return nil, nil, err
 	}
-	types, err := s.activeTypes(ctx, s.db)
+	ids := make([]uint64, len(emps))
+	branchOf := map[uint64]uint64{}
+	branchIDs := []uint64{}
+	for i, e := range emps {
+		ids[i] = e.ID
+		if e.BranchID != nil {
+			if _, seen := branchOf[e.ID]; !seen {
+				branchOf[e.ID] = *e.BranchID
+			}
+			if !slices.Contains(branchIDs, *e.BranchID) {
+				branchIDs = append(branchIDs, *e.BranchID)
+			}
+		}
+	}
+	if f.BranchID != 0 && !slices.Contains(branchIDs, f.BranchID) {
+		branchIDs = append(branchIDs, f.BranchID) // its types show even with nobody listed
+	}
+	types, err := s.activeTypes(ctx, s.db, branchIDs)
 	if err != nil {
 		return nil, nil, err
 	}
-	ids := make([]uint64, len(emps))
-	for i, e := range emps {
-		ids[i] = e.ID
-	}
-	m, err := balances(ctx, s.db, ids, f.Year, types)
+	m, err := balances(ctx, s.db, ids, branchOf, f.Year, types)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -466,9 +509,9 @@ func (s *Service) balanceTarget(ctx context.Context, actor *auth.Actor, empID, t
 		return nil, apperr.ErrForbidden
 	}
 	var n int64
-	s.db.WithContext(ctx).Model(&models.LeaveType{}).Where("id = ?", typeID).Count(&n)
+	s.db.WithContext(ctx).Model(&models.LeaveType{}).Where("id = ? AND branch_id = ?", typeID, branchOf(&emp)).Count(&n)
 	if n == 0 {
-		return nil, apperr.BadRequest("INVALID_LEAVE_TYPE", "Unknown leave type.")
+		return nil, apperr.BadRequest("INVALID_LEAVE_TYPE", "Unknown leave type for this employee's branch.")
 	}
 	return &emp, nil
 }
@@ -481,7 +524,7 @@ func (s *Service) checkPolicy(ctx context.Context, tx *gorm.DB, actor *auth.Acto
 	if lt.MinNoticeDays > 0 && start.Before(today.AddDate(0, 0, lt.MinNoticeDays)) {
 		return nil, apperr.BadRequest("SHORT_NOTICE", fmt.Sprintf("%s must be requested at least %d day(s) before it starts.", lt.Name, lt.MinNoticeDays))
 	}
-	m, err := balances(ctx, tx, []uint64{actor.ID()}, start.Year(), []models.LeaveType{*lt})
+	m, err := balances(ctx, tx, []uint64{actor.ID()}, nil, start.Year(), []models.LeaveType{*lt})
 	if err != nil {
 		return nil, err
 	}
@@ -491,6 +534,14 @@ func (s *Service) checkPolicy(ctx context.Context, tx *gorm.DB, actor *auth.Acto
 			lt.Name, start.Year(), fmtDays(b.Available), days))
 	}
 	return &b, nil
+}
+
+// branchOf: the employee's branch id (0: none).
+func branchOf(e *models.Employee) uint64 {
+	if e.BranchID == nil {
+		return 0
+	}
+	return *e.BranchID
 }
 
 func fmtDays(d float64) string {

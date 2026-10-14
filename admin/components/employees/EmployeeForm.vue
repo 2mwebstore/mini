@@ -2,7 +2,7 @@
 import { useAuthStore } from '~/stores/auth'
 import { useLookupsStore } from '~/stores/lookups'
 import type { Employee, EmployeeInput, EmployeeStatus, RoleCode } from '~/types/api'
-import { employeeStatus, isoDay, shiftHours } from '~/utils/format'
+import { employeeStatus, isoDay } from '~/utils/format'
 import { isAdminRole, optionsFrom, type SelectOption } from '~/utils/options'
 
 // Create/edit form for an employee. Emits only the fields the API should apply.
@@ -42,13 +42,27 @@ const form = reactive({
 const roles = computed(() => (lookups.roles ?? []).filter(r => r.code === form.role || !isAdminRole(r)))
 // Roles that see every branch belong to no branch; everyone else belongs to one.
 const companyWide = computed(() => !!lookups.roles?.find(r => r.code === form.role)?.permissions.includes('all.view'))
-const branchFixed = computed(() => !auth.can('all.view')) // a branch admin adds staff to their own branch
 const activeBranches = computed(() => (lookups.branches ?? []).filter(b => b.status === 'ACTIVE' || String(b.id) === form.branch_id))
-const managers = computed(() => (lookups.employees ?? []).filter(m => !m.deleted_at && m.id !== e?.id))
+// An admin who reaches a single branch adds staff to that branch only.
+const branchFixed = computed(() => !auth.multiBranch)
+watch(activeBranches, (list) => {
+  if (!form.branch_id && list.length === 1) form.branch_id = String(list[0]!.id)
+}, { immediate: true })
+// Managers come from the same branch (the current one is kept so it shows).
+const managers = computed(() => (lookups.employees ?? []).filter(m =>
+  !m.deleted_at && m.id !== e?.id && (String(m.id) === form.manager_id || !form.branch_id || String(m.branch_id ?? '') === form.branch_id)))
 const branchOptions = computed((): SelectOption[] => activeBranches.value.map(b => ({ value: String(b.id), label: b.name })))
-const scheduleOptions = computed((): SelectOption[] =>
-  (lookups.schedules ?? []).map(s => ({ value: String(s.id), label: s.name, sub: shiftHours(s.start_time, s.end_time, s.work_type === 'CROSS_DAY') })),
-)
+// Departments, positions and shifts are the chosen branch's own.
+const departmentOptions = computed(() => form.branch_id ? lookups.departmentOptions(form.branch_id) : [])
+const positionOptions = computed(() => form.branch_id ? lookups.positionOptions(form.branch_id) : [])
+const scheduleOptions = computed(() => form.branch_id ? lookups.shiftOptions(form.branch_id) : [])
+watch(() => form.branch_id, (b) => {
+  if (!lookups.fits('departments', form.department_id, b)) form.department_id = ''
+  if (!lookups.fits('positions', form.position_id, b)) form.position_id = ''
+  if (!lookups.fits('schedules', form.work_schedule_id, b)) form.work_schedule_id = ''
+})
+const moved = computed(() => !!e && String(e.branch_id ?? '') !== form.branch_id)
+const needBranch = computed(() => !companyWide.value && !form.branch_id)
 const managerOptions = computed((): SelectOption[] => managers.value.map(m => ({ value: String(m.id), label: m.full_name, sub: m.employee_code })))
 const roleOptions = computed((): SelectOption[] => roles.value.map(r => ({ value: r.code, label: r.name, sub: r.is_system ? undefined : 'custom' })))
 const statusOptions = optionsFrom(employeeStatus)
@@ -100,18 +114,21 @@ function submit() {
       <input v-else id="emp-branch" class="input" disabled :value="e?.branch?.name ?? auth.employee?.branch?.name ?? ''" />
     </FormField>
     <FormField label="Department" for="emp-dept">
-      <SearchSelect id="emp-dept" v-model="form.department_id" :options="lookups.departmentOptions" empty-label="No department" />
-      <NuxtLink v-if="auth.can('all.view')" to="/employees/departments" class="mt-1 inline-block text-xs text-primary hover:underline">Manage departments</NuxtLink>
+      <SearchSelect id="emp-dept" v-model="form.department_id" :options="departmentOptions" :empty-label="needBranch ? 'Choose a branch first' : 'No department'" :disabled="needBranch" />
+      <NuxtLink v-if="auth.can('staff.manage')" to="/employees/departments" class="mt-1 inline-block text-xs text-primary hover:underline">Manage departments</NuxtLink>
     </FormField>
     <FormField label="Position" for="emp-pos">
-      <SearchSelect id="emp-pos" v-model="form.position_id" :options="lookups.positionOptions" empty-label="No position" />
-      <NuxtLink v-if="auth.can('all.view')" to="/employees/positions" class="mt-1 inline-block text-xs text-primary hover:underline">Manage positions</NuxtLink>
+      <SearchSelect id="emp-pos" v-model="form.position_id" :options="positionOptions" :empty-label="needBranch ? 'Choose a branch first' : 'No position'" :disabled="needBranch" />
+      <NuxtLink v-if="auth.can('staff.manage')" to="/employees/positions" class="mt-1 inline-block text-xs text-primary hover:underline">Manage positions</NuxtLink>
     </FormField>
     <FormField label="Phone" for="emp-phone"><input id="emp-phone" v-model="form.phone" class="input" type="tel" maxlength="30" /></FormField>
     <FormField label="Email" for="emp-email"><input id="emp-email" v-model="form.email" class="input" type="email" maxlength="150" /></FormField>
     <FormField label="Join date" for="emp-join"><input id="emp-join" v-model="form.join_date" class="input" type="date" /></FormField>
     <FormField label="Usual shift" for="emp-sched" hint="Change single days on the weekly roster, or a date range with a special schedule.">
-      <SearchSelect id="emp-sched" v-model="form.work_schedule_id" :options="scheduleOptions" :empty-label="e ? 'Unchanged' : 'Default shift'" />
+      <SearchSelect
+        id="emp-sched" v-model="form.work_schedule_id" :options="scheduleOptions" :disabled="needBranch"
+        :empty-label="needBranch ? 'Choose a branch first' : e && !moved ? 'Unchanged' : 'The branch\'s default shift'"
+      />
     </FormField>
     <FormField label="Manager" for="emp-mgr" hint="The manager reviews this person's attendance and leave.">
       <SearchSelect id="emp-mgr" v-model="form.manager_id" :options="managerOptions" empty-label="No manager" />

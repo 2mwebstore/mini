@@ -37,9 +37,7 @@ export interface Profile {
 export interface CompanySettings {
   company_name: string
   timezone: string
-  gps_enabled: boolean
-  gps_required: boolean
-  confirmation_required: boolean
+  confirmation_required: boolean // GPS rules are per branch: see Precheck
 }
 
 export interface MeResponse {
@@ -67,6 +65,8 @@ export interface Attendance {
   working_minutes: number
   late_minutes: number
   early_leave_minutes: number
+  check_in_reason?: string // why late, in the employee's words
+  check_out_reason?: string // why leaving early
   status: DayStatus
   confirmation_status: ConfirmationStatus
   note: string
@@ -79,6 +79,9 @@ export interface Precheck {
   need_gps: boolean
   gps_required: boolean
   message?: string
+  late_minutes?: number // right now: how late a check-in would be…
+  early_minutes?: number // …or how early a check-out
+  reason_required: boolean // late or early: say why
 }
 
 export interface TodayStatus {
@@ -126,6 +129,8 @@ export interface DayRow {
   working_minutes: number
   late_minutes: number
   early_leave_minutes: number
+  check_in_reason?: string
+  check_out_reason?: string
   status: DayStatus
   confirmation_status: ConfirmationStatus | ''
   confirmed_by: string
@@ -251,6 +256,7 @@ export interface PendingAttendance {
   check_out_at: string | null
   late_minutes: number
   early_leave_minutes: number
+  reason: string // theirs: why late (check-in) or early (check-out)
   photo_id: number | null // none: check-ins have no photo
   distance_meters: number | null
   inside_office: boolean | null

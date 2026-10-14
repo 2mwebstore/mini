@@ -8,7 +8,10 @@ import { parseWorkDays, shiftHours, workDaysLabel } from '~/utils/format'
 const auth = useAuthStore()
 const lookups = useLookupsStore()
 const canEdit = computed(() => auth.can('schedules.manage'))
-const shifts = useResource(() => scheduleService.shifts())
+// Each branch has its own shifts (and its own default one).
+const { branchId, target, showBranch, branchName, picker } = useBranchPick()
+const shifts = useResource(() => scheduleService.shifts(Number(branchId.value) || undefined))
+watch(branchId, () => shifts.load())
 const { busy, run } = useAction()
 const { confirm } = useConfirm()
 
@@ -19,7 +22,7 @@ const typeOptions = [
 ]
 
 const form = reactive({
-  id: 0, name: '', start_time: '08:00', end_time: '17:00', work_type: 'NORMAL' as WorkType,
+  id: 0, branch_id: '', name: '', start_time: '08:00', end_time: '17:00', work_type: 'NORMAL' as WorkType,
   grace_minutes: 10, work_days: [1, 2, 3, 4, 5] as number[], color: palette[0]!, is_default: false,
 })
 const open = ref(false)
@@ -27,9 +30,9 @@ const open = ref(false)
 const unusedColor = () => palette.find(c => !shifts.data.value?.some(s => s.color.toLowerCase() === c)) ?? palette[0]!
 function edit(s?: WorkSchedule) {
   Object.assign(form, s
-    ? { id: s.id, name: s.name, start_time: s.start_time, end_time: s.end_time, work_type: s.work_type, grace_minutes: s.grace_minutes,
+    ? { id: s.id, branch_id: String(s.branch_id), name: s.name, start_time: s.start_time, end_time: s.end_time, work_type: s.work_type, grace_minutes: s.grace_minutes,
         work_days: parseWorkDays(s.work_days), color: s.color, is_default: s.is_default }
-    : { id: 0, name: '', start_time: '08:00', end_time: '17:00', work_type: 'NORMAL', grace_minutes: 10, work_days: [1, 2, 3, 4, 5], color: unusedColor(), is_default: false })
+    : { id: 0, branch_id: target.value, name: '', start_time: '08:00', end_time: '17:00', work_type: 'NORMAL', grace_minutes: 10, work_days: [1, 2, 3, 4, 5], color: unusedColor(), is_default: false })
   open.value = true
 }
 
@@ -55,8 +58,8 @@ watch(() => [form.start_time, form.end_time], ([s, e]) => {
 })
 
 async function save() {
-  if (hoursError.value || !form.work_days.length) return
-  const input = { name: form.name.trim(), start_time: form.start_time, end_time: form.end_time, work_type: form.work_type,
+  if (hoursError.value || !form.work_days.length || !form.branch_id) return
+  const input = { ...(form.id ? {} : { branch_id: Number(form.branch_id) }), name: form.name.trim(), start_time: form.start_time, end_time: form.end_time, work_type: form.work_type,
     grace_minutes: Number(form.grace_minutes), work_days: form.work_days, color: form.color, ...(form.is_default ? { is_default: true } : {}) }
   const ok = await run('save', () => (form.id ? scheduleService.updateShift(form.id, input) : scheduleService.createShift(input)),
     form.id ? 'Shift saved' : 'Shift created')
@@ -78,15 +81,20 @@ async function remove(s: WorkSchedule) {
 
 <template>
   <div>
-    <PageHeader title="Shifts" subtitle="Working hours, grace period and usual work days. A night shift that ends the next morning is a cross-day shift.">
+    <PageHeader title="Shifts" subtitle="Each branch's working hours, grace period and usual work days. A night shift that ends the next morning is a cross-day shift.">
       <AppButton v-if="canEdit" @click="edit()">New shift</AppButton>
     </PageHeader>
+    <div v-if="picker" class="mb-4 max-w-xs">
+      <FormField label="Branch" for="sh-branch">
+        <SearchSelect id="sh-branch" v-model="branchId" :options="lookups.branchOptions" empty-label="All my branches" />
+      </FormField>
+    </div>
 
     <StateView :loading="shifts.loading.value && !shifts.data.value" :error="shifts.error.value" :empty="shifts.data.value?.length === 0" empty-text="No shifts yet." @retry="shifts.load">
       <div class="card overflow-hidden">
         <div class="overflow-x-auto">
           <table class="table">
-            <thead><tr><th>Shift</th><th>Hours</th><th>Work type</th><th>Grace</th><th>Work days</th><th>Staff</th><th v-if="canEdit" class="text-right">Actions</th></tr></thead>
+            <thead><tr><th>Shift</th><th v-if="showBranch">Branch</th><th>Hours</th><th>Work type</th><th>Grace</th><th>Work days</th><th>Staff</th><th v-if="canEdit" class="text-right">Actions</th></tr></thead>
             <tbody>
               <tr v-for="s in shifts.data.value ?? []" :key="s.id">
                 <td>
@@ -96,6 +104,7 @@ async function remove(s: WorkSchedule) {
                     <StatusBadge v-if="s.is_default" tone="info" label="Default" />
                   </span>
                 </td>
+                <td v-if="showBranch" class="text-muted">{{ branchName(s.branch_id) }}</td>
                 <td class="whitespace-nowrap tabular-nums">{{ shiftHours(s.start_time, s.end_time, s.work_type === 'CROSS_DAY') }}</td>
                 <td>
                   <StatusBadge v-if="s.work_type === 'CROSS_DAY'" tone="warning" label="Cross-day · night" />
@@ -114,7 +123,7 @@ async function remove(s: WorkSchedule) {
         </div>
       </div>
       <p class="mt-3 text-xs text-muted">
-        The default shift applies to staff without a usual shift. Change single days on the
+        A branch's default shift applies to its staff without a usual shift. Change single days on the
         <NuxtLink to="/schedules/roster" class="link">weekly roster</NuxtLink>, or a date range with a
         <NuxtLink to="/schedules/special" class="link">special schedule</NuxtLink>.
       </p>
@@ -122,6 +131,9 @@ async function remove(s: WorkSchedule) {
 
     <AppModal v-model="open" :title="form.id ? 'Edit shift' : 'New shift'" wide>
       <form id="shift-form" class="grid gap-4 sm:grid-cols-2" @submit.prevent="save">
+        <FormField v-if="picker" label="Branch" for="sh-form-branch" class="sm:col-span-2" :hint="form.id ? 'A shift stays in its branch.' : undefined">
+          <SearchSelect id="sh-form-branch" v-model="form.branch_id" :options="lookups.branchOptions" placeholder="Choose a branch…" required :disabled="!!form.id" />
+        </FormField>
         <FormField label="Name" for="sh-name" class="sm:col-span-2">
           <input id="sh-name" v-model="form.name" class="input" required maxlength="100" placeholder="e.g. Night Shift" />
         </FormField>
@@ -160,12 +172,12 @@ async function remove(s: WorkSchedule) {
         </FormField>
         <label v-if="!form.id || !shifts.data.value?.find(s => s.id === form.id)?.is_default" class="flex items-center gap-2 text-sm sm:col-span-2">
           <input v-model="form.is_default" type="checkbox" class="size-4 accent-[var(--primary)]" />
-          Make this the default shift (for staff without a usual shift)
+          Make this the branch's default shift (for its staff without a usual shift)
         </label>
       </form>
       <template #footer>
         <AppButton variant="secondary" @click="open = false">Cancel</AppButton>
-        <AppButton type="submit" form="shift-form" :loading="busy === 'save'" :disabled="!!hoursError || !form.work_days.length">Save</AppButton>
+        <AppButton type="submit" form="shift-form" :loading="busy === 'save'" :disabled="!!hoursError || !form.work_days.length || !form.branch_id">Save</AppButton>
       </template>
     </AppModal>
   </div>

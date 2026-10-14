@@ -10,7 +10,7 @@ const statusOptions = optionsFrom(employeeStatus)
 const auth = useAuthStore()
 const lookups = useLookupsStore()
 const route = useRoute()
-const allBranches = computed(() => auth.can('all.view'))
+const allBranches = computed(() => auth.multiBranch) // a branch column and filter
 const fromUrl = (k: string) => (typeof route.query[k] === 'string' ? (route.query[k] as string) : '')
 const filter = reactive({
   q: '',
@@ -20,6 +20,11 @@ const filter = reactive({
   status: '',
   include_inactive: false,
 })
+// Departments and positions belong to one branch: drop a choice the new branch doesn't have.
+watch(() => filter.branch_id, (b) => {
+  if (!lookups.fits('departments', filter.department_id, b)) filter.department_id = ''
+  if (!lookups.fits('positions', filter.position_id, b)) filter.position_id = ''
+}, { flush: 'sync' })
 
 const list = useResource(() =>
   employeeService.list({
@@ -61,10 +66,10 @@ onMounted(() => {
         <SearchSelect id="e-branch" v-model="filter.branch_id" :options="lookups.branchOptions" empty-label="All" />
       </FormField>
       <FormField label="Department" for="e-dept">
-        <SearchSelect id="e-dept" v-model="filter.department_id" :options="lookups.departmentOptions" empty-label="All" />
+        <SearchSelect id="e-dept" v-model="filter.department_id" :options="lookups.departmentOptions(filter.branch_id)" empty-label="All" />
       </FormField>
       <FormField label="Position" for="e-pos">
-        <SearchSelect id="e-pos" v-model="filter.position_id" :options="lookups.positionOptions" empty-label="All" />
+        <SearchSelect id="e-pos" v-model="filter.position_id" :options="lookups.positionOptions(filter.branch_id)" empty-label="All" />
       </FormField>
       <FormField label="Status" for="e-status">
         <SearchSelect id="e-status" v-model="filter.status" :options="statusOptions" empty-label="All" />

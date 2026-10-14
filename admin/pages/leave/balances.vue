@@ -9,8 +9,24 @@ const auth = useAuthStore()
 const lookups = useLookupsStore()
 const thisYear = Number(todayISO(auth.company.timezone).slice(0, 4))
 const filter = reactive({ year: thisYear, branch_id: '', department_id: '', q: '' })
-const data = useResource(() => leaveService.balances({ year: filter.year, branch_id: filter.branch_id || undefined, department_id: filter.department_id || undefined, q: filter.q.trim() || undefined }))
+// Departments belong to one branch: drop a choice the new branch doesn't have.
+watch(() => filter.branch_id, (b) => {
+  if (!lookups.fits('departments', filter.department_id, b)) filter.department_id = ''
+}, { flush: 'sync' })
+// Leave types are per branch, so balances are shown one branch at a time (the
+// first one until another is picked); an admin of one branch just sees theirs.
+const pickBranch = computed(() => auth.multiBranch)
+const data = useResource(
+  () => leaveService.balances({ year: filter.year, branch_id: filter.branch_id || undefined, department_id: filter.department_id || undefined, q: filter.q.trim() || undefined }),
+  { immediate: false },
+)
 watch(() => [filter.year, filter.branch_id, filter.department_id], () => data.load())
+onMounted(async () => {
+  if (!pickBranch.value) return data.load()
+  const branches = await lookups.loadBranches().catch(() => [])
+  if (branches.length) filter.branch_id = String((branches.find(b => b.status === 'ACTIVE') ?? branches[0])!.id) // loads via the watch
+  else data.load()
+})
 let typing: ReturnType<typeof setTimeout> | undefined
 watch(() => filter.q, () => {
   clearTimeout(typing)
@@ -71,8 +87,10 @@ async function reset() {
           <AppButton variant="secondary" aria-label="Next year" @click="filter.year++">›</AppButton>
         </div>
       </FormField>
-      <BranchFilter id="lb-branch" v-model="filter.branch_id" />
-      <FormField label="Department" for="lb-dept"><SearchSelect id="lb-dept" v-model="filter.department_id" :options="lookups.departmentOptions" empty-label="All" /></FormField>
+      <FormField v-if="pickBranch" label="Branch" for="lb-branch">
+        <SearchSelect id="lb-branch" v-model="filter.branch_id" :options="lookups.branchOptions" />
+      </FormField>
+      <FormField label="Department" for="lb-dept"><SearchSelect id="lb-dept" v-model="filter.department_id" :options="lookups.departmentOptions(filter.branch_id)" empty-label="All" /></FormField>
       <FormField label="Search" for="lb-q"><input id="lb-q" v-model="filter.q" type="search" class="input" placeholder="Name or employee ID" /></FormField>
     </div>
 
@@ -96,7 +114,7 @@ async function reset() {
               <tr v-for="r in rows" :key="r.employee_id">
                 <th scope="row" class="sticky left-0 z-10 border-b border-border bg-surface px-3 py-2 text-left font-normal">
                   <span class="block font-medium">{{ r.full_name }}</span>
-                  <span class="block text-xs text-muted">{{ r.employee_code }}<template v-if="r.branch && auth.can('all.view')"> · {{ r.branch }}</template></span>
+                  <span class="block text-xs text-muted">{{ r.employee_code }}<template v-if="r.branch && auth.multiBranch"> · {{ r.branch }}</template></span>
                 </th>
                 <td v-for="t in columns" :key="t.id" class="border-b border-l border-border p-1">
                   <template v-for="b in [cell(r, t.id)]" :key="t.id">

@@ -8,6 +8,10 @@ const auth = useAuthStore()
 const lookups = useLookupsStore()
 const tz = auth.company.timezone
 const filter = reactive({ from: monthStartISO(tz), to: todayISO(tz), branch_id: '', department_id: '', employee_id: '' })
+// Departments belong to one branch: drop a choice the new branch doesn't have.
+watch(() => filter.branch_id, (b) => {
+  if (!lookups.fits('departments', filter.department_id, b)) filter.department_id = ''
+}, { flush: 'sync' })
 const query = computed<ReportFilter>(() => ({
   from: filter.from,
   to: filter.to,
@@ -68,7 +72,7 @@ const totals = computed(() => {
       <FormField label="To" for="r-to"><input id="r-to" v-model="filter.to" type="date" class="input" :min="filter.from" /></FormField>
       <BranchFilter id="r-branch" v-model="filter.branch_id" />
       <FormField label="Department" for="r-dept">
-        <SearchSelect id="r-dept" v-model="filter.department_id" :options="lookups.departmentOptions" empty-label="All" />
+        <SearchSelect id="r-dept" v-model="filter.department_id" :options="lookups.departmentOptions(filter.branch_id)" empty-label="All" />
       </FormField>
       <FormField label="Employee" for="r-emp">
         <SearchSelect id="r-emp" v-model="filter.employee_id" :options="lookups.employeeOptions" empty-label="All" />

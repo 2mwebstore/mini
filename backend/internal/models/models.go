@@ -85,8 +85,12 @@ type UserBranch struct {
 }
 
 // Position is a job title from the managed list.
+// Departments, positions, shifts, leave types and holidays belong to one branch:
+// each branch sets up its own (nothing is shared between branches).
+
 type Position struct {
 	ID        uint64    `gorm:"primaryKey" json:"id"`
+	BranchID  uint64    `json:"branch_id"`
 	Name      string    `json:"name"`
 	CreatedAt time.Time `json:"created_at"`
 	UpdatedAt time.Time `json:"updated_at"`
@@ -94,6 +98,7 @@ type Position struct {
 
 type Department struct {
 	ID        uint64    `gorm:"primaryKey" json:"id"`
+	BranchID  uint64    `json:"branch_id"`
 	Name      string    `json:"name"`
 	CreatedAt time.Time `json:"created_at"`
 	UpdatedAt time.Time `json:"updated_at"`
@@ -102,6 +107,7 @@ type Department struct {
 // WorkSchedule is a shift: hours, grace period and usual work days.
 type WorkSchedule struct {
 	ID           uint64    `gorm:"primaryKey" json:"id"`
+	BranchID     uint64    `json:"branch_id"`
 	Name         string    `json:"name"`
 	StartTime    string    `json:"start_time"`
 	EndTime      string    `json:"end_time"`
@@ -109,7 +115,7 @@ type WorkSchedule struct {
 	GraceMinutes int       `json:"grace_minutes"`
 	WorkDays     string    `json:"work_days"`
 	Color        string    `json:"color"`
-	IsDefault    bool      `json:"is_default"`
+	IsDefault    bool      `json:"is_default"` // the branch's shift for staff without one
 	CreatedAt    time.Time `json:"created_at"`
 	UpdatedAt    time.Time `json:"updated_at"`
 }
@@ -167,11 +173,14 @@ type Branch struct {
 	Code                 string    `json:"code"`
 	Name                 string    `json:"name"`
 	Address              string    `json:"address"`
+	TelegramBotToken     string    `json:"-"` // encrypted at rest; never sent to clients
+	TelegramBotUsername  string    `json:"telegram_bot_username"`
+	MiniAppURL           string    `gorm:"column:miniapp_url" json:"miniapp_url"`
 	AdminEmployeeID      *uint64   `json:"admin_employee_id"`
 	OfficeLatitude       *float64  `json:"office_latitude"`
 	OfficeLongitude      *float64  `json:"office_longitude"`
 	AllowedRadiusMeters  *float64  `json:"allowed_radius_meters"`
-	GPSEnabled           *bool     `json:"gps_enabled"` // nil = the company setting
+	GPSEnabled           *bool     `json:"gps_enabled"` // nil = off
 	GPSRequired          *bool     `json:"gps_required"`
 	GPSRejectOutside     *bool     `json:"gps_reject_outside"`
 	TelegramGroupID      int64     `json:"telegram_group_id"`
@@ -180,11 +189,12 @@ type Branch struct {
 	CreatedAt            time.Time `json:"created_at"`
 	UpdatedAt            time.Time `json:"updated_at"`
 
-	Admin      *Employee `gorm:"foreignKey:AdminEmployeeID" json:"admin,omitempty"`
-	StaffCount int64     `gorm:"-" json:"staff_count"`
+	Admin          *Employee `gorm:"foreignKey:AdminEmployeeID" json:"admin,omitempty"`
+	StaffCount     int64     `gorm:"-" json:"staff_count"`
+	TelegramBotSet bool      `gorm:"-" json:"telegram_bot_set"` // a bot token is saved
 }
 
-// HasOffice reports whether the branch overrides the company office location.
+// HasOffice reports whether the branch has an office location (for GPS checks).
 func (b *Branch) HasOffice() bool {
 	return b != nil && b.OfficeLatitude != nil && b.OfficeLongitude != nil && b.AllowedRadiusMeters != nil
 }
@@ -265,6 +275,7 @@ type User struct {
 
 type Holiday struct {
 	ID        uint64    `gorm:"primaryKey" json:"id"`
+	BranchID  uint64    `json:"branch_id"`
 	Date      time.Time `gorm:"type:date" json:"date"`
 	Name      string    `json:"name"`
 	CreatedAt time.Time `json:"created_at"`
@@ -276,6 +287,8 @@ type Attendance struct {
 	WorkDate           time.Time  `gorm:"type:date" json:"work_date"`
 	CheckInAt          *time.Time `json:"check_in_at"`
 	CheckOutAt         *time.Time `json:"check_out_at"`
+	CheckInReason      string     `json:"check_in_reason"`  // the employee's reason (required when late)
+	CheckOutReason     string     `json:"check_out_reason"` // (required when leaving early)
 	WorkingMinutes     int        `json:"working_minutes"`
 	LateMinutes        int        `json:"late_minutes"`
 	EarlyLeaveMinutes  int        `json:"early_leave_minutes"`
@@ -341,6 +354,7 @@ type AttendanceConfirmation struct {
 // LeaveType is a leave category with its yearly allowance and approval policy.
 type LeaveType struct {
 	ID                uint64    `gorm:"primaryKey" json:"id"`
+	BranchID          uint64    `json:"branch_id"`
 	Code              string    `json:"code"`
 	Name              string    `json:"name"`
 	AnnualDays        float64   `json:"annual_days"` // yearly allowance; 0 = not counted

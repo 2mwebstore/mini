@@ -17,11 +17,13 @@ import (
 	"os/signal"
 	"strings"
 	"syscall"
+	"text/tabwriter"
 	"time"
 
 	"attendance/backend/internal/access"
 	"attendance/backend/internal/attendance"
 	"attendance/backend/internal/auth"
+	"attendance/backend/internal/bots"
 	"attendance/backend/internal/branch"
 	"attendance/backend/internal/config"
 	"attendance/backend/internal/database"
@@ -58,8 +60,10 @@ func main() {
 		err = createAdmin(os.Args[2:])
 	case "seed-demo":
 		err = seedDemo(os.Args[2:])
+	case "clear-data":
+		err = clearData(os.Args[2:])
 	default:
-		err = fmt.Errorf("unknown command %q (serve | migrate | create-admin | seed-demo)", cmd)
+		err = fmt.Errorf("unknown command %q (serve | migrate | create-admin | seed-demo | clear-data)", cmd)
 	}
 	if err != nil {
 		slog.Error("fatal", "err", err)
@@ -129,15 +133,11 @@ func serve() error {
 		return err
 	}
 	st := settings.NewService(db, box)
-	// The bot token is a setting (Settings → Telegram in the admin panel), read on each call.
-	tg := telegram.New(func(ctx context.Context) string {
-		if s, err := st.Get(ctx); err == nil {
-			return s.TelegramBotToken
-		}
-		return ""
-	}, cfg.TelegramAPIBase)
-	notifier := notification.New(db, tg, st)
-	go notification.SyncBot(ctx, tg, st)
+	// Each branch has its own bot (set on the branch page); calls pick the branch's token.
+	botReg := bots.New(db, box)
+	tg := telegram.New(func(context.Context) string { return "" }, cfg.TelegramAPIBase)
+	notifier := notification.New(db, tg, botReg)
+	go notification.SyncBots(ctx, db, tg, botReg)
 	authSvc := auth.NewService(db, cfg.JWTSecret, cfg.JWTTTL)
 	empSvc := employee.NewService(db)
 	attSvc := attendance.NewService(db, st, store, notifier)
@@ -145,7 +145,7 @@ func serve() error {
 	repSvc := report.NewService(db, st)
 
 	srv := httpapi.New(cfg, httpapi.Deps{DB: db, Redis: rdb, Store: store, Auth: authSvc, Settings: st, Employees: empSvc,
-		Branches: branch.NewService(db), Attendance: attSvc, Leave: leaveSvc, Reports: repSvc, Schedules: schedule.NewService(db, st), Access: access.NewService(db), Telegram: tg}).HTTPServer(cfg.HTTPAddr)
+		Branches: branch.NewService(db), Attendance: attSvc, Leave: leaveSvc, Reports: repSvc, Schedules: schedule.NewService(db, st), Access: access.NewService(db), Telegram: tg, Bots: botReg}).HTTPServer(cfg.HTTPAddr)
 	sched := scheduler.New(db, rdb, st, repSvc, notifier)
 	sched.BackupStatusFile = cfg.BackupStatusFile
 	go sched.Run(ctx)
@@ -211,6 +211,45 @@ func createAdmin(args []string) error {
 	return nil
 }
 
+// clearData wipes all business data (keeping the owner, roles and company settings)
+// so the system can be set up from scratch — e.g. before a client demo.
+func clearData(args []string) error {
+	fs := flag.NewFlagSet("clear-data", flag.ExitOnError)
+	yes := fs.Bool("yes", false, "confirm: delete every branch, employee, system user (but the owner), attendance and leave record")
+	force := fs.Bool("force", false, "allow it when APP_ENV=production")
+	_ = fs.Parse(args)
+	if !*yes {
+		return errors.New("this deletes all branches, employees, system users (the owner stays), attendance, leave and schedules: run it again with -yes")
+	}
+	cfg, err := config.Load()
+	if err != nil {
+		return err
+	}
+	if cfg.IsProduction() && !*force {
+		return errors.New("APP_ENV=production: refusing to clear the data (use -force on a throwaway database only)")
+	}
+	ctx := context.Background()
+	if _, err := database.Migrate(ctx, cfg.DatabaseURL); err != nil {
+		return err
+	}
+	db, err := database.Open(cfg.DatabaseURL, false)
+	if err != nil {
+		return err
+	}
+	out, err := demo.Clear(ctx, db)
+	if err != nil {
+		return err
+	}
+	fmt.Printf("Cleared: %d branches, %d employees, %d system users, %d attendance days, %d leave requests.\n",
+		out.Branches, out.Employees, out.SystemUsers, out.Attendance, out.LeaveRequests)
+	if len(out.Owners) > 0 {
+		fmt.Println("Kept the owner:", strings.Join(out.Owners, ", "))
+	} else {
+		fmt.Println("No owner was found: create one with `api create-admin`, or run `api seed-demo` for a demo owner.")
+	}
+	return nil
+}
+
 // seedDemo fills the database with sample data for trying out the admin panel.
 // Every demo login shares one password: DEMO_PASSWORD, or a default.
 func seedDemo(args []string) error {
@@ -253,12 +292,14 @@ func seedDemo(args []string) error {
 		len(sum.Branches), strings.Join(sum.Branches, ", "), sum.Employees, sum.AttendanceDays, sum.LeaveRequests, sum.Holidays,
 		sum.Shifts, sum.RosterEntries, sum.SpecialSchedules)
 	fmt.Println("System users (admin panel logins):")
+	tw := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
 	for _, l := range sum.Logins {
 		p := pw
 		if l.Existing {
 			p = "(your existing password)"
 		}
-		fmt.Printf("  %-28s %-22s %-34s %s\n", l.Email, p, l.Role, l.Name)
+		fmt.Fprintf(tw, "  %s\t%s\t%s\t%s\n", l.Email, p, l.Role, l.Name)
 	}
+	tw.Flush()
 	return nil
 }

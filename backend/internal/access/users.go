@@ -460,15 +460,21 @@ func (s *Service) checkRole(actor *auth.Actor, code string) (uint8, error) {
 	return id, nil
 }
 
-// placeBranch sets a system user's home branch: none for company-wide roles, a
-// branch (required) for branch-level roles such as Branch Admin.
+// placeBranch sets a system user's home branch: none for company-wide roles; the
+// branch they run for a Branch Admin (required); optional for other branch-level
+// roles such as Company Admin, who work in the branches assigned to them or that
+// they create.
 func (s *Service) placeBranch(tx *gorm.DB, p *models.Employee, branchID *uint64) error {
 	if auth.IsCompanyWide(p.RoleID) {
 		p.BranchID = nil
 		return nil
 	}
 	if branchID == nil || *branchID == 0 {
-		return apperr.BadRequest("BRANCH_REQUIRED", "This role works in a branch: choose the branch.")
+		if p.RoleID == models.RoleBranchAdmin {
+			return apperr.BadRequest("BRANCH_REQUIRED", "A Branch Admin runs one branch: choose the branch.")
+		}
+		p.BranchID = nil
+		return nil
 	}
 	var b models.Branch
 	if err := tx.First(&b, *branchID).Error; err != nil {

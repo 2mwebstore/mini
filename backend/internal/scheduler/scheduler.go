@@ -159,17 +159,9 @@ func (s *Scheduler) MissingCheckinAlert(ctx context.Context, date time.Time, st 
 	return nil
 }
 
-// DailyReport posts the company report to the company group and each branch's
-// report to that branch's group (if it has one).
+// DailyReport posts each branch's report to that branch's group (through the
+// branch's bot), if it has one.
 func (s *Scheduler) DailyReport(ctx context.Context, date time.Time, _ *settings.Settings) error {
-	rep, err := s.dayReport(ctx, date)
-	if err != nil {
-		return err
-	}
-	if len(rep.Rows) == 0 {
-		return nil // nobody scheduled (weekend/holiday)
-	}
-	s.notify.Group("report.daily", report.DayText(rep, "DAILY ATTENDANCE REPORT", true))
 	branches, err := s.activeBranches(ctx)
 	if err != nil {
 		return err

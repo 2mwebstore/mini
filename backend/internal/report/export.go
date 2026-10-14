@@ -13,7 +13,7 @@ import (
 
 var exportHeader = []string{"Employee ID", "Employee Name", "Branch", "Department", "Date", "Shift", "Check-In", "Check-Out",
 	"Working Hours", "Working Minutes", "Late Minutes", "Early Leave Minutes", "Status", "Leave Type",
-	"Confirmation Status", "Confirmed By"}
+	"Confirmation Status", "Confirmed By", "Check-In Reason", "Check-Out Reason"}
 
 // exportCol returns a column's index in exportHeader (so cell positions follow the header).
 func exportCol(name string) int {
@@ -30,7 +30,7 @@ func exportRow(rep *Report, r DayRow) []string {
 		r.EmployeeCode, r.FullName, r.Branch, r.Department, r.Date.Format("2006-01-02"), shiftText(r),
 		dash(timeutil.FormatClock24(r.CheckInAt, rep.Loc)), dash(timeutil.FormatClock24(r.CheckOutAt, rep.Loc)),
 		timeutil.FormatMinutes(r.WorkingMinutes), fmt.Sprint(r.WorkingMinutes), fmt.Sprint(r.LateMinutes),
-		fmt.Sprint(r.EarlyMinutes), r.Status, r.LeaveType, r.Confirmation, r.ConfirmedBy,
+		fmt.Sprint(r.EarlyMinutes), r.Status, r.LeaveType, r.Confirmation, r.ConfirmedBy, r.CheckInReason, r.CheckOutReason,
 	}
 }
 

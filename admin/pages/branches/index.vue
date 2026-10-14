@@ -1,24 +1,35 @@
 <script setup lang="ts">
 import { branchService } from '~/services/branch.service'
+import { useAuthStore } from '~/stores/auth'
 import { useLookupsStore } from '~/stores/lookups'
+import type { Branch } from '~/types/api'
 
-definePageMeta({ permission: 'branches.manage' })
+// The owner sees every branch; a company admin sees the branches assigned to them
+// or that they created (a new branch is theirs at once).
+definePageMeta({ permission: ['branches.manage', 'branches.create'] })
 
+const auth = useAuthStore()
+const owner = computed(() => auth.can('branches.manage'))
 const lookups = useLookupsStore()
 const list = useResource(() => branchService.list())
 const { busy, run } = useAction()
 
 const addOpen = ref(false)
-const draft = reactive({ code: '', name: '', address: '' })
-watch(addOpen, v => v && Object.assign(draft, { code: '', name: '', address: '' }))
+const draft = reactive({ code: '', name: '', address: '', starter: true })
+watch(addOpen, v => v && Object.assign(draft, { code: '', name: '', address: '', starter: true }))
+function gpsText(b: Branch) {
+  if (!b.gps_enabled) return 'Off'
+  return ['On', b.gps_required && 'required', b.gps_reject_outside && 'in office'].filter(Boolean).join(' · ')
+}
 async function create() {
   let id = 0
   const ok = await run('create', async () => {
-    id = (await branchService.create({ code: draft.code.trim(), name: draft.name.trim(), address: draft.address.trim() })).id
+    id = (await branchService.create({ code: draft.code.trim(), name: draft.name.trim(), address: draft.address.trim(), starter: draft.starter })).id
   }, `${draft.name} added`)
   if (ok) {
     addOpen.value = false
     lookups.branches = null
+    if (!owner.value) await auth.refresh() // the new branch is now within reach
     await navigateTo(`/branches/${id}`)
   }
 }
@@ -26,14 +37,17 @@ async function create() {
 
 <template>
   <div>
-    <PageHeader title="Branches" subtitle="Each branch has one admin who manages only that branch.">
+    <PageHeader
+      title="Branches"
+      :subtitle="owner ? 'Each branch has its own admin, Telegram bot, GPS rules and setup lists.' : 'Your branches. Each has its own Telegram bot, GPS rules and setup lists.'"
+    >
       <AppButton @click="addOpen = true">Add branch</AppButton>
     </PageHeader>
 
     <StateView :loading="list.loading.value && !list.data.value" :error="list.error.value" :empty="list.data.value?.length === 0" empty-text="No branches yet." @retry="list.load">
       <div class="card overflow-x-auto">
         <table class="table">
-          <thead><tr><th>Branch</th><th>Address</th><th>Branch admin</th><th class="text-right">Staff</th><th>Status</th><th /></tr></thead>
+          <thead><tr><th>Branch</th><th>Address</th><th>Branch admin</th><th>Telegram</th><th>GPS</th><th class="text-right">Staff</th><th>Status</th><th /></tr></thead>
           <tbody>
             <tr v-for="b in list.data.value ?? []" :key="b.id" class="hover:bg-surface-2/60">
               <td>
@@ -48,6 +62,11 @@ async function create() {
                 </template>
                 <StatusBadge v-else tone="warning" label="No admin" />
               </td>
+              <td>
+                <StatusBadge v-if="b.telegram_bot_set" tone="success" :label="b.telegram_bot_username ? `@${b.telegram_bot_username}` : 'Bot set'" />
+                <StatusBadge v-else tone="warning" label="No bot" />
+              </td>
+              <td><StatusBadge :tone="b.gps_enabled ? 'info' : 'neutral'" :label="gpsText(b)" /></td>
               <td class="text-right tabular-nums">{{ b.staff_count }}</td>
               <td><StatusBadge :tone="b.status === 'ACTIVE' ? 'success' : 'neutral'" :label="b.status === 'ACTIVE' ? 'Open' : 'Closed'" /></td>
               <td class="text-right"><NuxtLink :to="`/branches/${b.id}`" class="link text-sm">Manage</NuxtLink></td>
@@ -68,6 +87,13 @@ async function create() {
         <FormField label="Address" for="b-addr" class="sm:col-span-3">
           <input id="b-addr" v-model="draft.address" class="input" maxlength="255" />
         </FormField>
+        <label class="flex items-start gap-2 text-sm sm:col-span-3">
+          <input v-model="draft.starter" type="checkbox" class="mt-0.5 size-4 accent-[var(--primary)]" />
+          <span>
+            Start with a default shift and the usual leave types
+            <span class="block text-xs text-muted">Office Hours 09:00–17:30 and Annual, Sick, Personal, Emergency and Unpaid leave — change them any time. Untick to set everything up yourself.</span>
+          </span>
+        </label>
       </form>
       <template #footer>
         <AppButton variant="secondary" @click="addOpen = false">Cancel</AppButton>

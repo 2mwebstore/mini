@@ -46,6 +46,8 @@ type DayRow struct {
 	Date           time.Time  `json:"date"`
 	CheckInAt      *time.Time `json:"check_in_at"`
 	CheckOutAt     *time.Time `json:"check_out_at"`
+	CheckInReason  string     `json:"check_in_reason,omitempty"`
+	CheckOutReason string     `json:"check_out_reason,omitempty"`
 	WorkingMinutes int        `json:"working_minutes"`
 	LateMinutes    int        `json:"late_minutes"`
 	EarlyMinutes   int        `json:"early_leave_minutes"`
@@ -201,7 +203,18 @@ func (s *Service) Build(ctx context.Context, actor *auth.Actor, f Filter) (*Repo
 		}
 		return "", ""
 	}
-	isHol, err := attendance.HolidaySet(ctx, s.db, f.From, f.To)
+	// Each branch has its own holidays.
+	branchSet := map[uint64]bool{}
+	for _, e := range emps {
+		if e.BranchID != nil {
+			branchSet[*e.BranchID] = true
+		}
+	}
+	branchIDs := make([]uint64, 0, len(branchSet))
+	for id := range branchSet {
+		branchIDs = append(branchIDs, id)
+	}
+	holidays, err := attendance.Holidays(ctx, s.db, branchIDs, f.From, f.To)
 	if err != nil {
 		return nil, err
 	}
@@ -222,6 +235,7 @@ func (s *Service) Build(ctx context.Context, actor *auth.Actor, f Filter) (*Repo
 			branch, branchID = e.Branch.Name, e.Branch.ID
 		}
 		sum := Summary{EmployeeID: e.ID, EmployeeCode: e.EmployeeCode, FullName: e.FullName, Department: dept, Branch: branch}
+		isHol := func(d time.Time) bool { _, ok := holidays[branchID][d.Format("2006-01-02")]; return ok }
 		// Days before the employee joined — or before they were registered in this
 		// system — are never "absent". Recorded rows are always shown.
 		startDate := timeutil.DateOf(e.CreatedAt, st.Location)
@@ -241,6 +255,7 @@ func (s *Service) Build(ctx context.Context, actor *auth.Actor, f Filter) (*Repo
 			if a, ok := byKey[key(e.ID, d)]; ok {
 				row.AttendanceID = a.ID
 				row.CheckInAt, row.CheckOutAt = a.CheckInAt, a.CheckOutAt
+				row.CheckInReason, row.CheckOutReason = a.CheckInReason, a.CheckOutReason
 				row.WorkingMinutes, row.LateMinutes, row.EarlyMinutes = a.WorkingMinutes, a.LateMinutes, a.EarlyLeaveMinutes
 				row.Status, row.Confirmation, row.ConfirmedBy = a.Status, a.ConfirmationStatus, a.ConfirmerName
 				if a.Status == models.StatusLeave {

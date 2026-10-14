@@ -4,18 +4,22 @@ Employees check in and out (with GPS where their branch asks for it — no photo
 leave (full or half days) and see their own records in a **Telegram Mini App**. The
 owner, HR, branch admins and managers confirm attendance, approve leave, manage staff
 and run reports in a web **admin panel**. The
-company can have **several branches**, each run by one branch admin the owner assigns.
-A Go API backs both apps and sends Telegram notifications. Telegram itself (bot token,
-Mini App URL, group chats) is configured in the admin panel — not in `.env`.
+company can have **several branches**, and each branch runs on its own: its own
+Telegram bot, GPS rules and office, departments, positions, shifts, leave types and
+holidays. A branch is run by a branch admin; a client's **Company Admin** sees only the
+branches they were given or created themselves. A Go API backs both apps and sends
+Telegram notifications. Telegram (each branch's bot token, Mini App URL, group chats) is
+configured on the branch page of the admin panel — not in `.env`.
 
 ```
 attendance-system/
 ├── backend/                 Go API (Gin, GORM, MySQL) + scheduler
-│   ├── cmd/api/             serve | migrate | create-admin | seed-demo
+│   ├── cmd/api/             serve | migrate | create-admin | seed-demo | clear-data
 │   ├── internal/
 │   │   ├── auth/            JWT sessions, Mini App initData, RBAC (permissions.go)
 │   │   ├── employee/        staff (employees) and their Telegram link
-│   │   ├── branch/          branches and their branch admins
+│   │   ├── branch/          branches: details, admin, GPS rules + office, Telegram
+│   │   ├── bots/            each branch's Telegram bot (token decrypted, cached)
 │   │   ├── attendance/      check-in/out, late/early/hours, review, manual edits
 │   │   ├── leave/           requests, approval → marks days as LEAVE
 │   │   ├── report/          daily/period/staff reports, Excel/CSV
@@ -23,8 +27,8 @@ attendance-system/
 │   │   ├── notification/    Telegram notifications (+ notifications table)
 │   │   ├── telegram/        send-only Bot API client
 │   │   ├── storage/         S3-compatible photo storage (R2 / S3 / MinIO)
-│   │   ├── settings/        company settings (incl. Telegram), cached
-│   │   ├── secret/          encryption of stored credentials (bot token)
+│   │   ├── settings/        company settings (name, timezone, jobs), cached
+│   │   ├── secret/          encryption of stored credentials (bot tokens)
 │   │   ├── audit/           append-only audit log
 │   │   └── httpapi/         /api/v1 (admin panel) and /api/v1/app (Mini App)
 │   └── migrations/          SQL migrations (embedded, applied on start)
@@ -50,17 +54,18 @@ HR / managers ──browser──HTTPS /admin/ + /api/v1 (session cookie)──�
 - **The API is the only place with rules.** Both front ends are static apps; every
   permission check, scope and business rule runs in Go, so they can never disagree.
 - **Who is who.** In the Mini App, Telegram signs the user's identity (`initData`); the
-  API verifies it with the bot token and maps the numeric Telegram user ID to an
-  employee. In the admin panel, people sign in with email + password.
-- **There is no chat bot.** The bot account from @BotFather just hosts the Mini App
-  (its menu button opens it) and sends notifications. Messages sent *to* the bot are
-  not read.
-- **Notifications** about a check-in or leave request go, with the time, lateness,
-  location and a **Review in app** button, to the branch's review chat if it has one; otherwise to the company
-  review chat if set; otherwise by DM to the employee's manager and branch admin — or,
-  when the branch has neither, to HR and the owner. Employees are told when their
-  attendance or leave is reviewed. Daily reports go to the company group and to each
-  branch's own group.
+  API verifies it with the branch bots' tokens and maps the numeric Telegram user ID to
+  an employee. In the admin panel, people sign in with email + password.
+- **One bot per branch, no chat bot.** Each branch's bot from @BotFather hosts the Mini
+  App (its menu button opens it) and sends that branch's notifications. Messages sent
+  *to* a bot are not read.
+- **Notifications** about a check-in or leave request go through the employee's branch
+  bot, with the time, lateness, **the employee's reason** (when late or leaving early),
+  the location and a **Review in app** button: to the branch's review chat if it has
+  one; otherwise by DM to the employee's manager and branch admin — or, when neither is
+  reachable, to everyone who reviews that branch (HR, the owner, admins assigned to it).
+  Employees are told when their attendance or leave is reviewed. The daily report goes
+  to each branch's own group.
 
 ## Quick start
 
@@ -76,18 +81,33 @@ docker compose exec -e ADMIN_PASSWORD='a-long-password' api \
 
 Then open `https://<your-domain>/admin/`, sign in, and:
 
-1. **Settings → Telegram:** paste the bot token from @BotFather and the Mini App URL
-   (`https://<your-domain>/app/`). The token is checked with Telegram, stored encrypted,
-   and the bot's **Open App** menu button is pointed at the Mini App. Until this is done
-   the Mini App says it isn't set up and no notifications are sent. Optionally add the
-   company group's chat ID for the daily report (how to find it is shown on the page).
-2. **Branches:** rename *Main branch* (all existing staff start there) and add the others.
-3. **Employees → Add employee** for each member of staff, choosing their branch. Everyone
-   needs their numeric **Telegram user ID** for the Mini App: they open the bot, tap
-   **Open App**, and the "No access" screen shows their ID.
-4. **Administration → System users → New system user** for each admin account (HR, a
+1. **Branches:** rename *Main branch* (all existing staff start there) and add the
+   others. *Add branch* can start a branch with a default shift and the usual leave
+   types (ticked by default); untick it to set everything up yourself.
+2. **Each branch's page → Telegram:** paste that branch's bot token from @BotFather and
+   the Mini App URL (`https://<your-domain>/app/`). The token is checked with Telegram,
+   stored encrypted, and the bot's **Open App** menu button is pointed at the Mini App.
+   Until a branch has a bot its staff can't open the Mini App and it gets no
+   notifications. Optionally add the branch's group chat ID (daily report) and a review
+   chat. On the same page, **Location (GPS)** sets whether check-ins ask for the
+   location, require it, or refuse it outside the office radius.
+3. **Each branch's setup lists** — departments, positions, shifts, leave types and
+   holidays. Every one belongs to a single branch (pick the branch at the top of each
+   list); nothing is shared, so two branches can have different hours and allowances.
+4. **Employees → Add employee** for each member of staff, choosing their branch (its own
+   departments, positions and shifts are then offered). Everyone needs their numeric
+   **Telegram user ID** for the Mini App: they open their branch's bot, tap **Open
+   App**, and the "No access" screen shows their ID.
+5. **Administration → System users → New system user** for each admin account (HR, a
    Branch Admin per branch…). Choosing *Branch Admin* and a branch makes them that
    branch's admin.
+
+**Setting up a client.** Give the client one system user with the **Company Admin** role
+(no branch needed), and either assign them a branch on *Administration → Branch
+assignment* or let them create their own: a branch they create is theirs at once. They
+see and manage only those branches — staff, attendance, leave, schedules, setup lists,
+reports, Telegram and GPS — and set up the whole company themselves. They cannot see
+other branches, manage system users or change company settings.
 
 **Employees and system users are separate.** *Employees* are staff: they check in and
 out and request leave in the Mini App, and never sign in to the panel. *System users* are
@@ -98,8 +118,9 @@ checking in, and a system user for the panel.
 
 Roles: system users have admin roles — `super_admin` (the owner), `hr_admin`
 (company-wide HR), `branch_admin` (one branch) or a custom admin role; employees have
-`staff`, `manager` or a custom role of that kind. Only the owner creates branches,
-assigns branch admins and manages system users. A manager reviews the people whose
+`staff`, `manager` or a custom role of that kind. The owner (and a Company Admin, for
+their own branches) creates branches; only the owner assigns branch admins and manages
+system users. A manager reviews the people whose
 **Manager** is set to them, in the Mini App.
 
 ### HTTPS
@@ -161,8 +182,8 @@ services in one project:
    CLIENT_IP_HEADER=X-Real-IP
    ```
 
-   Never change `JWT_SECRET` afterwards: it signs sessions and encrypts the bot token
-   saved in Settings (a new secret means everyone signs in again and the token must be
+   Never change `JWT_SECRET` afterwards: it signs sessions and encrypts the branch bot
+   tokens (a new secret means everyone signs in again and every branch's token must be
    re-entered).
 4. **Settings → Networking → Generate Domain**, target port `8080`. Only this one service
    gets a domain: do not add separate services for `admin/`, `miniapp/` or `backend/`
@@ -177,7 +198,7 @@ services in one project:
    ```
 
 6. Open `https://<domain>/admin/` and continue from step 1 after *Quick start* above
-   (*Settings → Telegram*, Mini App URL `https://<domain>/app/`).
+   (each branch's *Telegram*, Mini App URL `https://<domain>/app/`).
 
 Notes:
 
@@ -202,16 +223,18 @@ their profile. Managers and admins also get a **Team** tab to confirm or reject
 attendance (each card shows where the person was), approve leave and see today's team
 report — handy on the go; the admin panel has the full tools.
 
-**Setup.** Set the Mini App URL in *Settings → Telegram*; the API points the bot's chat
-menu button at it (on save and on every start). Optional: in @BotFather → *Bot Settings →
+**Setup.** Each branch has its own bot: set its token and the Mini App URL on the
+branch's page (*Branches → a branch → Telegram*); the API points that bot's chat menu
+button at the Mini App (on save and on every start). Staff open the Mini App from their
+own branch's bot. Optional: in @BotFather → *Bot Settings →
 Configure Mini App*, set the same URL — this enables the bot profile's **Open** button and
 the `t.me/<bot>?startapp=team` links used in group-chat notifications. Employees see
 their branch on the home screen and profile; a branch admin's **Team** tab covers their
 branch.
 
 **Authentication.** Every request sends Telegram's signed `initData` as
-`Authorization: tma <initData>`. The API verifies the HMAC with the bot token
-(`auth/webapp.go`) and rejects launches older than `MINIAPP_SESSION_TTL` (24h; the user
+`Authorization: tma <initData>`. The API verifies the HMAC against the branch bots'
+tokens (`auth/webapp.go`, `bots/`) and rejects launches older than `MINIAPP_SESSION_TTL` (24h; the user
 just reopens the app). `/api/v1/app` exposes only what the app needs; reviewer routes
 reuse the admin panel's handlers and permission checks. Panel sessions are not accepted
 there, and `initData` is not accepted on the panel's routes.
@@ -226,13 +249,26 @@ cross-day night shift (22:00–06:00) into **First half** 22:00–02:00 and **Se
 **No photos.** Check-ins have no camera or upload. Photos from earlier records are kept
 and still shown in the admin panel.
 
+**Reasons.** Checking in late (after the grace period) or checking out before the
+shift ends asks **why** — tap a common reason (Traffic, Feeling unwell, Approved by my
+manager…) or write one (up to 255 characters). The button stays off until a reason is
+given, and the API refuses a late check-in or early check-out without one
+(`REASON_REQUIRED`). The reason is shown on the home tiles, in the history, on the
+reviewer's card and in their Telegram message, in the admin panel's Reason column and in
+report exports.
+
 **Location** uses Telegram's LocationManager (Bot API 8.0+) and falls back to browser
-geolocation, following the GPS rules of the person's branch (*Settings → Location (GPS)*).
+geolocation, following the GPS rules of the person's branch (*Branches → a branch →
+Location (GPS)*).
 
 ## Branches
 
 Every staff member, manager and branch admin belongs to one branch; the owner and HR
-admins work across all branches. Each branch has **at most one branch admin**, and a
+admins work across all branches. **Everything is per branch**: each has its own Telegram
+bot and chats, GPS rules and office, and its own departments, positions, shifts (with a
+default one), leave types and holidays. Pick the branch at the top of each setup list;
+the employee form, the roster and special schedules offer only the person's own
+branch's items. Each branch has **at most one branch admin**, and a
 person can admin only one branch. Only the owner assigns them (*Branches → a branch →
 Assign a new admin*): the person gets the Branch Admin role and moves to that branch;
 a replaced admin becomes staff, and their panel session ends at once. Deactivating a
@@ -240,16 +276,24 @@ branch admin leaves the branch without one.
 
 A branch admin has HR's tools limited to their branch: they see and review only their
 branch's people, add staff (always into their branch, as staff or manager), correct
-attendance, approve leave and export their branch's reports. On **My branch** they can
-set the branch's Telegram chats — a group for its daily report and an optional review
-chat — and on *Settings → Location (GPS)* its office location and GPS rules. They cannot
-rename or close the branch, change its admin, or see company settings.
+attendance, approve leave, manage their branch's shifts, holidays and leave types, and
+export their branch's reports. On **My branch** they set the branch's **Telegram** (its
+bot, Mini App URL, a group for its daily report and an optional review chat) and its
+**Location (GPS)**. They cannot rename or close the branch, change its admin, or see
+company settings.
 
-**GPS per branch.** *Settings → Location (GPS)* shows the company default (ask for a
-location, require it, refuse check-ins outside the radius, office point) and every
-branch. A branch follows the company default until it gets its own rules; its own office
-point and radius always win over the company's. Paste a Google Maps / OpenStreetMap link
-or "lat, lng", or use the browser's current location.
+**Company Admin (a client).** The `company_admin` role is for a client who sets up their
+own company: give them the role (no branch needed) and either assign branches on *Branch
+assignment* or let them create their own on *Branches* — a branch they create is added
+to their access at once. They see only those branches and manage everything in them
+(staff, attendance, leave, schedules, setup lists, reports, GPS, Telegram); they cannot
+see other branches, manage system users or change company settings.
+
+**GPS per branch.** On each branch's page: ask for the location at check-in/out, require
+it, and/or refuse check-ins outside the office radius (which needs the office point).
+New branches start with GPS off. Paste a Google Maps / OpenStreetMap link or "lat, lng",
+or use the browser's current location. Without an office point the position is recorded
+but not checked.
 
 **Branch access.** *Administration → Branch assignment* limits system users to specific
 branches. A user with a company-wide role (*View all branches*) and **no branches ticked
@@ -264,31 +308,31 @@ what the user may do there comes from their role. Nobody can limit their own acc
 **Attendance** (Records, Reports), **Leave** (Requests, Balances, Types), **Schedules**
 (Weekly roster, Special schedules, Shifts, Holidays), **Employees** (Employees,
 Departments, Positions), **Branches**, **Administration** (System users, Branch
-assignment, Role management) and **Settings** (General, Location (GPS), Audit log).
+assignment, Role management) and **Settings** (General, Audit log). A branch admin also
+gets **My branch**.
 Pages a role cannot use are hidden. What the built-in roles may do (change it on
 *Role management*):
 
-| Page | Owner (super admin) | HR admin | Branch admin |
-|---|---|---|---|
-| Dashboard — today's counts, each person's shift, who needs attention | all (branch filter) | all (branch filter) | their branch |
-| Attendance › Records — check-in and check-out in their own columns (time, on time / late / early, review, inside/outside pin); **View** opens the full record (schedule, each side's status, location and reviewer, totals, review history; confirm/reject there); **Edit** and **Delete** (reason required, audited) on each row | ✓ | ✓ | their branch |
-| ↳ add a record / edit times (reason required, audited) | ✓ | ✓ | their branch |
-| Leave › Requests — all statuses by default; full / half day filter (half days show which half and its hours); approve/reject | ✓ | ✓ | their branch |
-| Leave › Balances — entitlement, carried over, used, pending, left per type and year | edit | edit | view their branch |
-| Leave › Types — allowance per year, paid, manual/automatic approval, limits | edit | edit | view |
-| Schedules › Weekly roster — shift per person per day, copy last week, Excel/CSV export | edit | edit | edit their branch |
-| Schedules › Special schedules — date-range overrides (another shift, custom hours, days off) for one or **several people at once** | ✓ | ✓ | their branch |
-| Schedules › Shifts — hours, grace, work days, normal or cross-day (night) | edit | edit | view |
-| Schedules › Holidays | edit | view | view |
-| Employees — add, edit, link Telegram, set branch/department/position/manager/role, deactivate; filter by department and position | ✓ | ✓ (not admins) | their branch |
-| Employees › Departments, Positions — add, rename, delete unused | ✓ | ✓ | view |
-| Administration › System users — admin accounts (separate from employees): role, branch, Telegram, status, reset password, delete | ✓ | — | — |
-| Administration › Branch assignment · Role management | ✓ | — | — |
-| Branches — add/edit/close branches, assign branch admins | ✓ | — | My branch: office + Telegram |
-| Reports — period summary per employee, Excel/CSV export | ✓ | ✓ | their branch |
-| Settings › General — Telegram, company, scheduled jobs | edit | view | — |
-| Settings › Location (GPS) — company default + per-branch rules and office | edit | view | their branch |
-| Audit log | ✓ | — | — |
+| Page | Owner (super admin) | HR admin | Company Admin (a client) | Branch admin |
+|---|---|---|---|---|
+| Dashboard — today's counts, each person's shift, who needs attention | all (branch filter) | all (branch filter) | their branches | their branch |
+| Attendance › Records — check-in and check-out in their own columns (time, on time / late / early, review, inside/outside pin) and a **Reason** column (why late / why early, in the employee's words); **View** opens the full record (schedule, each side's status, reason, location and reviewer, totals, review history; confirm/reject there); **Edit** and **Delete** (reason required, audited) on each row | ✓ | ✓ | their branches | their branch |
+| ↳ add a record / edit times (reason required, audited) | ✓ | ✓ | their branches | their branch |
+| Leave › Requests — all statuses by default; full / half day filter (half days show which half and its hours); approve/reject | ✓ | ✓ | their branches | their branch |
+| Leave › Balances — entitlement, carried over, used, pending, left per type and year (one branch at a time) | edit | edit | edit | edit their branch |
+| Leave › Types — per branch: allowance per year, paid, manual/automatic approval, limits | edit | edit | their branches | their branch |
+| Schedules › Weekly roster — shift per person per day (from their branch's shifts), copy last week, Excel/CSV export | edit | edit | their branches | their branch |
+| Schedules › Special schedules — date-range overrides (another shift of the people's branch, custom hours, days off) for one or **several people at once** | ✓ | ✓ | their branches | their branch |
+| Schedules › Shifts — per branch: hours, grace, work days, normal or cross-day (night); each branch has its own default | edit | edit | their branches | their branch |
+| Schedules › Holidays — per branch; one holiday can be added to several branches at once | edit | edit | their branches | their branch |
+| Employees — add, edit, link Telegram, set branch/department/position/manager/role, deactivate; filter by branch, department and position | ✓ | ✓ (not admins) | their branches | their branch |
+| Employees › Departments, Positions — per branch: add, rename, delete unused | ✓ | ✓ | their branches | their branch |
+| Administration › System users — admin accounts (separate from employees): role, branch, Telegram, status, reset password, delete | ✓ | — | — | — |
+| Administration › Branch assignment · Role management | ✓ | — | — | — |
+| Branches — add/edit/close branches; each branch's page has its details, admin, **Location (GPS)** and **Telegram** (own bot) | ✓ (+ assign admins) | — | add, and edit their own | My branch: GPS + Telegram |
+| Reports — period summary per employee, Excel/CSV export (with check-in/out reasons) | ✓ | ✓ | their branches | their branch |
+| Settings › General — company name, timezone, confirmations, scheduled jobs | edit | view | — | — |
+| Audit log | ✓ | — | — | — |
 
 Managers are employees: they review their team's attendance and leave in the Mini App
 (*Team* tab), not in the panel.
@@ -403,7 +447,7 @@ cd miniapp && npm ci && npm run dev   # http://localhost:3000/app/ (outside Tele
 ```
 
 To try the Mini App on a phone, expose its dev server over HTTPS (e.g. `cloudflared
-tunnel`) and set that as the Mini App URL of a test bot in *Settings → Telegram*.
+tunnel`) and set that as the Mini App URL of a test bot on a branch's page (*Telegram*).
 Both apps need a current browser / web view (Chrome 111+, iOS 16.4+).
 
 ### Demo data
@@ -415,25 +459,45 @@ data (from `backend/`):
 go run ./cmd/api seed-demo
 ```
 
-It adds three branches (Main branch, Siem Reap, Battambang); 16 employees (staff and two
-managers, plus a branch manager per branch) with four weeks of attendance up to today —
-on time, late, early leave, absent and missing check-out days, with GPS points and
-reviews (some still pending, one rejected); and the system users: the owner, an HR
-admin, a Branch Admin per branch (the branch managers' admin accounts — separate records
-from their employee ones) and a *Regional Supervisor* (a custom role) limited to Siem Reap
-and Battambang. Also approved, pending, rejected and cancelled leave requests (two of
-them half days: a night shift's first half and a day shift's afternoon), Cambodia's
-fixed-date public holidays, a morning and a night (cross-day) shift, a few weekly roster
-days, three special schedules and leave allowances (one person with a custom entitlement
-and carried-over days). The command prints the system users' logins: all of them use the
-password `Demo@12345` (set `DEMO_PASSWORD` to choose another). If the database already
-has an owner, that owner is kept and no demo owner is created.
+It adds four branches — Main branch, Siem Reap and Battambang, plus **Kampot Coffee Co.**,
+a client's café set up by its own *Company Admin* — each with its own departments,
+positions, shifts (office branches: Office Hours, a morning and a night (cross-day)
+shift; the café: Café Hours), leave types and Cambodia's fixed-date public holidays.
+19 employees (staff and managers, plus a branch manager per branch) with four weeks of
+attendance up to today — on time, late, early leave, absent and missing check-out days,
+with **reasons** for the late and early ones, GPS points and reviews (some still pending,
+one rejected). System users: the owner, an HR admin, a Branch Admin per branch (the
+branch managers' admin accounts — separate records from their employee ones), a
+*Regional Supervisor* (a custom role) limited to Siem Reap and Battambang, and the
+client's **Company Admin** (`client@demo.local`), who sees only Kampot Coffee Co. Also
+approved, pending, rejected and cancelled leave requests (two of them half days: a night
+shift's first half and a day shift's afternoon), a few weekly roster days, three special
+schedules and leave allowances (one person with a custom entitlement and carried-over
+days). The command prints the system users' logins: all of them use the password
+`Demo@12345` (set `DEMO_PASSWORD` to choose another). If the database already has an
+owner, that owner is kept (with their own password) and no demo owner is created.
 
 Demo employees have codes starting with `D-` and placeholder Telegram IDs
-(9900000001…), so they cannot open the Mini App; link your own Telegram ID to one of
-them in the admin panel to try it. Running the command again does nothing. It refuses to
-run with `APP_ENV=production` — never seed a live database. To start over, drop the
-database and run `migrate` and `seed-demo` again.
+(9900000001…), so they cannot open the Mini App; set a bot on their branch and link your
+own Telegram ID to one of them in the admin panel to try it. Running the command again
+does nothing. It refuses to run with `APP_ENV=production` — never seed a live database.
+
+### Clearing data
+
+To start over — before a client demo, or before entering real data — wipe the business
+data (from `backend/`):
+
+```bash
+go run ./cmd/api clear-data -yes     # without -yes it only says what it would delete
+go run ./cmd/api seed-demo           # optional: fresh demo data
+```
+
+It deletes every branch with its Telegram, GPS and setup lists, all employees, system
+users other than the owner(s), attendance, leave, balances, schedules, holidays and
+notifications. It keeps the database schema, roles and permissions, company settings,
+the owner account(s) and the audit log (with a `data.clear` entry). Photo files already in
+storage are not removed. It refuses `APP_ENV=production` unless given `-force`; never run
+it on a live database.
 
 ## Business rules (as implemented)
 
@@ -442,7 +506,9 @@ database and run `migrate` and `seed-demo` again.
 | 1–3 | One check-in and one check-out per day; no check-out without check-in | `attendance/service.go` (row lock + unique `(employee_id, work_date)`) |
 | — | A **rejected** check-in/out can be re-submitted; history is kept (old review marked `SUPERSEDED`); each submission keeps its own location | same (migration `0006`) |
 | 4–5 | No photo needed (the Mini App doesn't take one). A photo a client still sends is checked and can't be a re-used image | `attendance/service.go` (SHA-256, migration `0002`) |
-| 6 | GPS: `gps_enabled`, `gps_required`, `gps_reject_outside`, office lat/lng/radius; a branch may override each rule and its office | `company_settings`, `branches`, `attendance.GPSRulesFor` |
+| 6 | GPS per branch: `gps_enabled`, `gps_required`, `gps_reject_outside`, office lat/lng/radius (NULL = off; refusing outside needs the office) | `branches`, `attendance.GPSRulesFor` |
+| — | A late check-in (after the grace period) or an early check-out needs a reason (≤ 255 characters), stored as `check_in_reason` / `check_out_reason` | `attendance/service.go` (`REASON_REQUIRED`, migration `0008`) |
+| — | Departments, positions, shifts, leave types and holidays belong to one branch; a person only gets their own branch's (a move to another branch drops the old ones and gives the new branch's default shift) | `employee/`, `schedule/`, `leave/` (migration `0008`) |
 | 7 | `confirmation_required=false` auto-confirms | `company_settings` |
 | 8–10 | Staff: self · Manager: assigned team (`manager_id`) · Branch admin: their branch (+ assigned) · company-wide roles: all, or only their assigned branches. No self-review except super admin | `auth/permissions.go`, `auth/roles.go` |
 | 11 | Approving leave marks those working days `LEAVE`; check-in on a leave day is refused. A **half day** marks nothing: the other half is worked, late/early measured against it | `leave/service.go`, `attendance/plan.go` (`Halves`, `WithHalfOff`) |
@@ -464,8 +530,8 @@ Times are stored in UTC; `work_date` is the calendar day in the company timezone
 
 | Setting | Default | Job |
 |---|---|---|
-| `missing_checkin_alert_time` | 10:00 | Tells each branch admin (or branch review chat) who in their branch hasn't checked in, and the company admins everyone |
-| `daily_report_time` | 18:00 | Posts the daily report (+ "need attention") to the company group, and each branch's report to its own group |
+| `missing_checkin_alert_time` | 10:00 | Tells each branch admin (or branch review chat) who in their branch hasn't checked in, and the company admins everyone — through the branches' bots |
+| `daily_report_time` | 18:00 | Posts each branch's daily report (+ "need attention") to that branch's group, through its bot |
 | `day_close_time` | 23:50 | Writes `ABSENT` rows for scheduled staff with no check-in |
 | — | 08:00 | If the last database backup failed or is over a day old, tells the company admins |
 
@@ -484,17 +550,18 @@ Errors look like `{"error":{"code":"ALREADY_CHECKED_IN","message":"…"}}`. Date
 | `POST /auth/login` · `GET /auth/me` · `POST /auth/logout` | — | login: 10/min/IP; `me` includes company name + timezone |
 | `GET /employees?q=&branch_id=&department_id=&position_id=&status=&include_inactive=` · `GET /employees/:id` | scoped | staff only (system users are not employees) |
 | `POST /employees` · `PUT /employees/:id` · `DELETE /employees/:id` | staff.manage | delete = deactivate |
-| `GET /branches` · `GET /branches/:id` | scoped | company-wide users see all; others their own |
-| `POST /branches` · `PUT /branches/:id/admin {employee_id\|null}` | owner | assign / remove the branch admin |
-| `PUT /branches/:id` | owner, or that branch's admin | branch admins: office location, `gps` and Telegram chats only; `gps: {inherit}` or `{enabled, required, reject_outside}` |
-| `GET /departments` · `GET /positions` | any | `{id, name, employees}` |
-| `POST\|PUT /departments[/:id]` · `POST\|PUT /positions[/:id] {name}` · `DELETE …/:id` | staff.manage + all branches | in use → 409 |
+| `GET /branches` · `GET /branches/:id` | scoped | company-wide users see all; others the branches they reach; `telegram_bot_set` / `telegram_bot_username` (the token itself is never returned) |
+| `POST /branches {code, name, address?, starter?}` | branches.manage (owner) or branches.create (Company Admin) | `starter: true` adds a default shift and the usual leave types; a creator limited to some branches gets the new one added to their access |
+| `PUT /branches/:id/admin {employee_id\|null}` | owner | assign / remove the branch admin |
+| `PUT /branches/:id` | owner, a creator for branches they reach, or that branch's admin | `gps: {enabled, required, reject_outside}`, office lat/lng/radius or `clear_office`, `telegram_bot_token` (write-only, checked with Telegram, `""` removes the bot), `miniapp_url`, `telegram_group_id`, `telegram_review_chat_id`; branch admins: only these, not code/name/address/status |
+| `GET /departments?branch_id=` · `GET /positions?branch_id=` | scoped | `{id, branch_id, branch_name, name, employees}` |
+| `POST\|PUT /departments[/:id]` · `POST\|PUT /positions[/:id] {name, branch_id}` · `DELETE …/:id` | staff.manage, in a branch they reach | `branch_id` on create; in use → 409 |
 | `GET /roles` | any | roles with permissions and head counts |
 | `GET /roles/permissions` · `POST /roles` · `PUT /roles/:id` · `DELETE /roles/:id` | users.manage | `{name, description, permissions[]}`; built-in roles can't be deleted |
 | `GET /system-users` · `POST /system-users {full_name, email, password, role, branch_id?, phone?, telegram_user_id?}` · `PUT /system-users/:id {…, status?}` · `DELETE /system-users/:id` | users.manage | admin accounts, separate from employees; admin roles only (a Branch Admin takes its branch); delete keeps the audit history |
 | `POST /system-users/:id/password {password}` · `PUT /system-users/:id/branches {branch_ids}` | users.manage | `branch_ids: []` = all branches |
-| `GET /work-schedules` | any | shifts, with how many staff use each |
-| `POST /work-schedules` · `PUT /work-schedules/:id` · `DELETE /work-schedules/:id` | schedules.manage (owner, HR) | `work_type` `NORMAL`\|`CROSS_DAY`; a shift in use or the default can't be deleted |
+| `GET /work-schedules?branch_id=` | scoped | each branch's shifts, with how many staff use each |
+| `POST /work-schedules` · `PUT /work-schedules/:id` · `DELETE /work-schedules/:id` | schedules.manage, in a branch they reach | `branch_id` on create (a branch's first shift is its default); `work_type` `NORMAL`\|`CROSS_DAY`; a shift in use or the default can't be deleted |
 | `GET /roster?from=&to=&branch_id=&department_id=&q=` | scoped | matrix: each person × day with the effective shift and its `source` (`DEFAULT`/`ROSTER`/`SPECIAL`), holidays, leave; ≤ 31 days |
 | `PUT /roster {items:[{employee_id,date,work_schedule_id\|off\|reset}]}` · `POST /roster/copy {from,to}` | staff.manage, scoped | ≤ 500 changes; copy repeats one week's entries onto another |
 | `GET /roster/export?format=xlsx\|csv&from=&to=…` | report.export | colour-coded sheet + shift list; audited |
@@ -505,16 +572,16 @@ Errors look like `{"error":{"code":"ALREADY_CHECKED_IN","message":"…"}}`. Date
 | `POST /attendance` · `PUT /attendance/:id` · `DELETE /attendance/:id {reason}` | attendance.edit | manual create/edit/delete, `reason` required (audited); delete removes reviews, locations and photos |
 | `GET /attendance/pending` | reviewer | |
 | `POST /attendance/confirmations/:id/confirm` · `/reject {reason}` | reviewer | |
-| `GET /leave?status=&day_type=FULL\|HALF&employee_id=&branch_id=&from=&to=` · `GET /leave/:id` · `GET /leave/types[?all=1]` · `GET /leave/pending` | scoped | `all=1` includes inactive types |
-| `POST /leave/types` · `PUT /leave/types/:id` · `DELETE /leave/types/:id` | leave.manage | `annual_days`, `is_paid`, `approval` `MANUAL`\|`AUTO`, `allow_exceed`, `max_days_per_request`, `min_notice_days`; a used type can only be deactivated |
+| `GET /leave?status=&day_type=FULL\|HALF&employee_id=&branch_id=&from=&to=` · `GET /leave/:id` · `GET /leave/types[?all=1&branch_id=]` · `GET /leave/pending` | scoped | `all=1` includes inactive types |
+| `POST /leave/types` · `PUT /leave/types/:id` · `DELETE /leave/types/:id` | leave.manage, in a branch they reach | `branch_id` on create, `annual_days`, `is_paid`, `approval` `MANUAL`\|`AUTO`, `allow_exceed`, `max_days_per_request`, `min_notice_days`; a used type can only be deactivated |
 | `GET /leave/balances?year=&branch_id=&department_id=&q=` | scoped | `{types, items:[{employee…, balances:[{allocated, carried, used, pending, remaining, available, custom}]}]}` |
 | `PUT /leave/balances {employee_id, leave_type_id, year, allocated, carried, note}` · `DELETE /leave/balances?employee_id=&leave_type_id=&year=` | leave.manage | set / reset to the type's allowance |
 | `POST /leave/:id/approve` · `/reject {note}` | reviewer | |
 | `GET /reports/daily?date=&branch_id=` | scoped | counts + rows |
 | `GET /reports/summary?from=&to=&employee_id=&branch_id=&department_id=&status=` | scoped | rows + per-staff summaries + totals |
-| `GET /reports/export?format=xlsx\|csv&from=&to=&employee_id=&branch_id=&department_id=` | report.export | includes Branch and Shift columns |
-| `GET /settings` · `PUT /settings {key: value}` | settings.view / owner | `{settings, backup}`; `telegram_bot_token` is write-only and verified with Telegram |
-| `GET /holidays?year=` · `POST /holidays` · `DELETE /holidays/:id` | super admin to change | |
+| `GET /reports/export?format=xlsx\|csv&from=&to=&employee_id=&branch_id=&department_id=` | report.export | includes Branch, Shift, Check-In Reason and Check-Out Reason columns |
+| `GET /settings` · `PUT /settings {key: value}` | settings.view / owner | `{settings, backup}`: company name, timezone, confirmations, job times (Telegram and GPS are per branch) |
+| `GET /holidays?year=&branch_id=` · `POST /holidays {date, name, branch_ids}` · `DELETE /holidays/:id` | schedules.manage to change, in branches they reach | one holiday to several branches at once; a branch that already has one that day is skipped |
 | `GET /audit-logs?action=&employee_id=&before_id=` | super admin | |
 | `GET /health` | — | `{"status":"ok","database":"connected","redis":"connected","storage":"connected"}` |
 
@@ -524,20 +591,21 @@ Errors look like `{"error":{"code":"ALREADY_CHECKED_IN","message":"…"}}`. Date
 |---|---|---|
 | `GET /me` | any employee | identity, profile, company settings |
 | `GET /attendance/today` · `GET /attendance/history?month=YYYY-MM` | self | |
-| `POST /attendance/check-in` · `/check-out` | self | form: optional `latitude` `longitude` `accuracy` (and an optional `photo`, no longer sent by the app) |
-| `GET /attendance/today` | self | also `half_leave` on a half day off (the schedule shown is the half still worked) |
+| `POST /attendance/check-in` · `/check-out` | self | form: optional `latitude` `longitude` `accuracy`, `reason` (required when late / leaving early → else `REASON_REQUIRED`), and an optional `photo` (no longer sent by the app) |
+| `GET /attendance/today` | self | also `half_leave` on a half day off (the schedule shown is the half still worked); `check_in` / `check_out` say `late_minutes` / `early_minutes` and `reason_required` right now |
 | `GET /leave/types` · `GET /leave/balances` · `GET /leave/mine` · `POST /leave/preview` · `POST /leave` · `POST /leave/:id/cancel` | self | body adds `day_type` `FULL`\|`FIRST_HALF`\|`SECOND_HALF`; preview returns `{days, balance, plan, problem}` — `plan` is the shift on the first date with its halves and work type, `problem` why it would be refused |
 | `GET /attendance/pending` · confirm/reject · `GET /leave/pending` · approve/reject · `GET /reports/daily` | reviewer | same handlers as the panel |
 | `GET /attendance/:id` · `GET /attendance/photos/:id` · `GET /leave/:id` | scoped | |
 
 ## Security checklist
 
-- Mini App: `initData` HMAC verified with the bot token (constant-time), max age
+- Mini App: `initData` HMAC verified with the branch bots' tokens (constant-time), max age
   `MINIAPP_SESSION_TTL` (24h); identity = numeric Telegram user ID (usernames are
   informational only). 300 req/min/user, 20 check-in/out uploads/min/user.
-- Bot token: stored AES-256-GCM-encrypted (key derived from `JWT_SECRET`), so a leaked
-  database backup doesn't leak it; never returned by the API or written to the audit
-  log. Changing `JWT_SECRET` means re-entering the token in Settings.
+- Bot tokens (one per branch): stored AES-256-GCM-encrypted on the branch (key derived
+  from `JWT_SECRET`), so a leaked database backup doesn't leak them; never returned by
+  the API or written to the audit log. Changing `JWT_SECRET` means re-entering each
+  branch's token on its page.
 - Branch scope is enforced in the API (`auth/permissions.go`): branch admins can't read,
   edit or review other branches or company-wide admins, and a demoted admin's session
   ends immediately.
@@ -585,6 +653,28 @@ Run one now: `docker compose exec backup backup.sh now`.
 Restore: `gunzip -c backups/attendance-YYYYMMDD-HHMM.sql.gz | docker compose exec -T database mysql -uroot -p"$MYSQL_ROOT_PASSWORD" attendance`.
 Back up the photo bucket too (or rely on R2/S3 durability).
 
+## Upgrading: everything per branch (migration 0008)
+
+Migration `0008` (runs on start) moves the company-wide setup onto the branches:
+
+- **Setup lists.** Departments, positions, shifts, leave types and holidays are copied
+  into every branch, and each person is pointed at their own branch's copies (their
+  leave requests and balances too), so nothing changes for anyone. Staff without a
+  branch are put into the first branch. Afterwards edit each branch's lists on its own —
+  delete what a branch doesn't use.
+- **Telegram.** The bot token, Mini App URL and chats from *Settings → Telegram* are
+  copied to every branch, so all branches keep working with the old bot. Give a branch
+  its own bot on its page when you're ready (a new token there replaces the shared one
+  for that branch only). A branch without its own group or review chat gets the
+  company's; from then on each branch posts only to its own chats.
+- **GPS.** The company GPS rules and office point are copied to every branch that didn't
+  have its own; *Settings → Location (GPS)* is gone — set them on each branch's page.
+- **Roles.** Branch admins also get *Manage schedules* and *Manage leave* (for their
+  branch). A new **Company Admin** role (`company_admin`) is added for clients: it
+  reaches the branches assigned to it or that it creates (*Create branches*).
+- **Reasons.** `attendance` gets `check_in_reason` and `check_out_reason`; from now on a
+  late check-in or early check-out needs one.
+
 ## Upgrading: system users and employees become separate
 
 Migration `0007` (runs on start) sorts every existing admin panel login:
@@ -607,7 +697,7 @@ What happened to whom is written to the audit log (`migration.system_users`).
 
 - Remove the old webhook so Telegram stops delivering messages to a URL that no longer
   exists: `curl -s https://api.telegram.org/bot<your-bot-token>/deleteWebhook`.
-- Telegram moved from `.env` to *Settings → Telegram* in the admin panel. These are no
+- Telegram moved from `.env` to the admin panel (now each branch's page → *Telegram*). These are no
   longer used — delete them from `.env`: `BOT_TOKEN`, `MINIAPP_URL`, `TELEGRAM_GROUP_ID`,
   `TELEGRAM_ADMIN_CHAT_ID` (now *Review chat ID*), `BACKUP_NOTIFY_CHAT_ID`, `CORS_ORIGINS`,
   `BOT_MODE`, `BOT_WEBHOOK_URL`, `TELEGRAM_WEBHOOK_SECRET`, `INTERNAL_API_TOKEN`.

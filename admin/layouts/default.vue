@@ -50,7 +50,7 @@ const items: NavItem[] = [
       { to: '/employees/positions', label: 'Positions' },
     ],
   },
-  { to: '/branches', label: 'Branches', icon: branchIcon, perm: ['branches.manage'] },
+  { to: '/branches', label: 'Branches', icon: branchIcon, perm: ['branches.manage', 'branches.create'] },
   {
     label: 'Administration', icon: 'M12 3 4 6v6c0 5 3.4 8.6 8 9 4.6-.4 8-4 8-9V6zm-3 9 2 2 4-4', perm: ['users.manage'],
     children: [
@@ -63,7 +63,6 @@ const items: NavItem[] = [
     label: 'Settings', icon: 'M12 15a3 3 0 1 0 0-6 3 3 0 0 0 0 6zm7.4-3a7.4 7.4 0 0 0-.1-1.2l2-1.6-2-3.4-2.4 1a7.5 7.5 0 0 0-2-1.2L14.5 3h-5l-.4 2.6a7.5 7.5 0 0 0-2 1.2l-2.4-1-2 3.4 2 1.6a7.4 7.4 0 0 0 0 2.4l-2 1.6 2 3.4 2.4-1a7.5 7.5 0 0 0 2 1.2l.4 2.6h5l.4-2.6a7.5 7.5 0 0 0 2-1.2l2.4 1 2-3.4-2-1.6c.1-.4.1-.8.1-1.2z',
     children: [
       { to: '/settings', label: 'General', perm: ['settings.view'] },
-      { to: '/settings/location', label: 'Location (GPS)', perm: ['settings.view', 'branch.settings'] },
       { to: '/audit', label: 'Audit log', perm: ['audit.view'] },
     ],
   },
@@ -74,9 +73,9 @@ const nav = computed(() => {
     .filter(i => allowed(i.perm))
     .map(i => (i.children ? { ...i, children: i.children.filter(c => allowed(c.perm)) } : i))
     .filter(i => !i.children || i.children.length > 0)
-  // A branch admin edits their own branch's settings from "My branch".
+  // A branch admin edits their own branch (location, Telegram) from "My branch".
   const myBranch = auth.employee?.branch_id
-  if (!auth.can('branches.manage') && auth.can('branch.settings') && myBranch) {
+  if (!auth.can('branches.manage') && !auth.can('branches.create') && auth.can('branch.settings') && myBranch) {
     list.splice(list.findIndex(i => i.label === 'Employees') + 1, 0, { to: `/branches/${myBranch}`, label: 'My branch', icon: branchIcon })
   }
   return list

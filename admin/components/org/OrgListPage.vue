@@ -4,13 +4,16 @@ import { useAuthStore } from '~/stores/auth'
 import { useLookupsStore } from '~/stores/lookups'
 import type { OrgItem } from '~/types/api'
 
-// One managed list (departments or positions): add, rename, delete when unused.
+// One managed list (departments or positions). Each item belongs to one branch:
+// add, rename, delete when unused.
 const props = defineProps<{ kind: 'departments' | 'positions'; title: string; noun: string; subtitle: string }>()
 const auth = useAuthStore()
 const lookups = useLookupsStore()
-// Company-wide lists: changed by staff managers who reach every branch.
-const canEdit = computed(() => auth.can('staff.manage') && auth.can('all.view'))
-const list = useResource(() => employeeService.orgList(props.kind))
+const canEdit = computed(() => auth.can('staff.manage'))
+const { branchId, target, showBranch, picker } = useBranchPick()
+const list = useResource(() => employeeService.orgList(props.kind, Number(branchId.value) || undefined))
+watch(branchId, () => list.load())
+
 const { busy, run } = useAction()
 const { confirm } = useConfirm()
 
@@ -25,8 +28,8 @@ function refreshLookups() {
 }
 async function add() {
   const name = newName.value.trim()
-  if (!name) return
-  if (await run('add', () => employeeService.orgSave(props.kind, 0, name), `${props.noun} added`)) {
+  if (!name || !target.value) return
+  if (await run('add', () => employeeService.orgSave(props.kind, 0, name, Number(target.value)), `${props.noun} added`)) {
     newName.value = ''
     list.load()
     refreshLookups()
@@ -49,7 +52,7 @@ async function rename(item: OrgItem) {
   }
 }
 async function remove(item: OrgItem) {
-  if (!(await confirm({ title: `Delete “${item.name}”?`, message: 'Nobody is assigned to it.' }))) return
+  if (!(await confirm({ title: `Delete “${item.name}”?`, message: `Nobody is assigned to it${showBranch.value ? ` in ${item.branch_name}` : ''}.` }))) return
   if (await run(`d${item.id}`, () => employeeService.orgDelete(props.kind, item.id), `${props.noun} deleted`)) {
     list.load()
     refreshLookups()
@@ -61,11 +64,16 @@ async function remove(item: OrgItem) {
   <div>
     <PageHeader :title="title" :subtitle="subtitle" />
     <section class="card max-w-3xl p-5">
+      <div v-if="picker" class="mb-4 max-w-xs">
+        <FormField label="Branch" for="org-branch">
+          <SearchSelect id="org-branch" v-model="branchId" :options="lookups.branchOptions" empty-label="All my branches" />
+        </FormField>
+      </div>
       <form v-if="canEdit" class="mb-4 flex flex-wrap items-end gap-2" @submit.prevent="add">
         <FormField :label="`New ${noun.toLowerCase()}`" :for="`org-new-${kind}`" class="min-w-48 flex-1">
-          <input :id="`org-new-${kind}`" v-model="newName" class="input" maxlength="100" required />
+          <input :id="`org-new-${kind}`" v-model="newName" class="input" maxlength="100" required :disabled="!target" :placeholder="target ? '' : 'Choose a branch first'" />
         </FormField>
-        <AppButton type="submit" :loading="busy === 'add'">Add</AppButton>
+        <AppButton type="submit" :loading="busy === 'add'" :disabled="!target">Add</AppButton>
       </form>
       <StateView :loading="list.loading.value && !list.data.value" :error="list.error.value" :empty="list.data.value?.length === 0" :empty-text="`No ${kind} yet.`" @retry="list.load">
         <ul class="divide-y divide-border">
@@ -76,8 +84,11 @@ async function remove(item: OrgItem) {
               <AppButton size="sm" variant="ghost" @click="editing = null">Cancel</AppButton>
             </form>
             <template v-else>
-              <span class="flex-1 font-medium">{{ item.name }}</span>
-              <NuxtLink :to="`/employees?${filterKey}=${item.id}`" class="text-xs text-muted hover:text-primary hover:underline">
+              <span class="flex-1">
+                <span class="font-medium">{{ item.name }}</span>
+                <span v-if="showBranch" class="ml-2 text-xs text-muted">{{ item.branch_name }}</span>
+              </span>
+              <NuxtLink :to="`/employees?branch_id=${item.branch_id}&${filterKey}=${item.id}`" class="text-xs text-muted hover:text-primary hover:underline">
                 {{ item.employees }} {{ item.employees === 1 ? 'person' : 'people' }}
               </NuxtLink>
               <span v-if="canEdit" class="flex gap-1">

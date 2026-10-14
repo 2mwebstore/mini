@@ -155,8 +155,14 @@ async function remove(u: SystemUser) {
         <FormField label="Role" for="u-role" :hint="editing?.self ? 'You cannot change your own role.' : 'Admin roles. Managers and staff are employees (Mini App).'">
           <SearchSelect id="u-role" v-model="form.role" :options="editing ? editRoleOptions : roleOptions" placeholder="Choose a role…" required :disabled="editing?.self" />
         </FormField>
-        <FormField v-if="needsBranch" label="Branch" for="u-branch" :hint="form.role === 'branch_admin' ? 'Becomes this branch’s admin (one per branch).' : 'Their home branch.'">
-          <SearchSelect id="u-branch" v-model="form.branch_id" :options="branchOptions" placeholder="Choose a branch…" required />
+        <FormField
+          v-if="needsBranch" label="Branch" for="u-branch"
+          :hint="form.role === 'branch_admin' ? 'Becomes this branch’s admin (one per branch).' : 'Optional home branch. Add more branches on Branch assignment; branches they create are theirs too.'"
+        >
+          <SearchSelect
+            id="u-branch" v-model="form.branch_id" :options="branchOptions" :required="form.role === 'branch_admin'"
+            :placeholder="form.role === 'branch_admin' ? 'Choose a branch…' : 'No home branch'" :empty-label="form.role === 'branch_admin' ? undefined : 'No home branch'"
+          />
         </FormField>
         <FormField v-else label="Branches" hint="Every branch — limit on Branch assignment."><p class="input bg-surface-2 text-muted">All branches</p></FormField>
         <FormField label="Phone" for="u-phone"><input id="u-phone" v-model="form.phone" class="input" maxlength="32" /></FormField>
