@@ -113,7 +113,6 @@ const { native } = useMainButton({
   loading: submitting,
   onClick: submit,
 })
-const dateInput = 'mt-1 w-full rounded-xl border border-separator bg-surface px-3 py-2.5 text-[15px] text-fg'
 </script>
 
 <template>
@@ -133,21 +132,12 @@ const dateInput = 'mt-1 w-full rounded-xl border border-separator bg-surface px-
         <AppCard title="When">
           <Segmented v-model="form.whole" :options="[{ value: 'FULL', label: 'Full day' }, { value: 'HALF', label: 'Half day' }]" />
 
-          <div v-if="form.whole === 'FULL'" class="mt-3 grid grid-cols-1 gap-3 min-[360px]:grid-cols-2">
-            <label class="text-[13px] text-hint">
-              From
-              <input v-model="form.start" type="date" required :class="dateInput" />
-            </label>
-            <label class="text-[13px] text-hint">
-              To
-              <input v-model="form.end" type="date" required :min="form.start" :class="dateInput" />
-            </label>
+          <div v-if="form.whole === 'FULL'" class="mt-3 grid grid-cols-2 gap-2.5">
+            <DateField v-model="form.start" label="From" required />
+            <DateField v-model="form.end" label="To" :min="form.start" required />
           </div>
           <template v-else>
-            <label class="mt-3 block text-[13px] text-hint">
-              Date
-              <input v-model="form.start" type="date" required :class="dateInput" />
-            </label>
+            <DateField v-model="form.start" label="Date" class="mt-3" required />
             <div v-if="halves" class="mt-3 grid grid-cols-2 gap-2" role="radiogroup" aria-label="Which half">
               <button
                 v-for="h in halves"
