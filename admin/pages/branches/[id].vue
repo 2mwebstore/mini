@@ -13,6 +13,8 @@ const lookups = useLookupsStore()
 const { confirm } = useConfirm()
 const id = Number(useRoute().params.id)
 const owner = computed(() => auth.can('branches.manage'))
+// The owner assigns any branch's admin; a Company Admin those of their own branches.
+const canAssign = computed(() => owner.value || auth.can('users.branch'))
 // Owners and company admins (who set up their own branches) edit everything;
 // a branch admin edits the location and Telegram of their branch.
 const full = computed(() => owner.value || auth.can('branches.create'))
@@ -108,7 +110,7 @@ async function removeBot() {
 
 // ---------- branch admin (owner only): a system user, never an employee ----------
 const sysUsers = useResource(() => accessService.users(), { immediate: false })
-onMounted(() => owner.value && sysUsers.load())
+onMounted(() => canAssign.value && sysUsers.load())
 const candidates = computed(() => (sysUsers.data.value ?? []).filter(u => u.status === 'ACTIVE' && u.role !== 'super_admin'))
 const chosen = ref('')
 const chosenUser = computed(() => candidates.value.find(u => String(u.person_id) === chosen.value))
@@ -170,14 +172,14 @@ const setup = computed(() => [
             <h2 class="text-sm font-semibold">Branch admin</h2>
             <div v-if="branch.data.value.admin" class="flex items-center justify-between gap-3 rounded-lg bg-surface-2 px-3 py-2">
               <div>
-                <NuxtLink v-if="owner" to="/access/users" class="font-medium hover:underline">{{ branch.data.value.admin.full_name }}</NuxtLink>
+                <NuxtLink v-if="canAssign" to="/access/users" class="font-medium hover:underline">{{ branch.data.value.admin.full_name }}</NuxtLink>
                 <span v-else class="font-medium">{{ branch.data.value.admin.full_name }}</span>
                 <span class="block text-xs text-muted">System user · {{ branch.data.value.admin.email || 'Branch Admin' }}</span>
               </div>
-              <AppButton v-if="owner" size="sm" variant="danger" :loading="busy === 'admin'" @click="assign(null)">Remove</AppButton>
+              <AppButton v-if="canAssign" size="sm" variant="danger" :loading="busy === 'admin'" @click="assign(null)">Remove</AppButton>
             </div>
             <p v-else class="text-sm text-warning">This branch has no admin. Review requests go to managers and the admins who reach this branch.</p>
-            <template v-if="owner">
+            <template v-if="canAssign">
               <FormField label="Assign a new admin" for="b-admin" hint="Choose a system user: they become this branch's Branch Admin. A replaced admin keeps the account without panel powers until given another role.">
                 <div class="flex gap-2">
                   <SearchSelect id="b-admin" v-model="chosen" :options="candidateOptions" placeholder="Choose a system user…" class="min-w-0 flex-1" />

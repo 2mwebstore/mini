@@ -20,12 +20,12 @@ import (
 // ---------- roles ----------
 
 func (s *Server) listRoles(c *gin.Context) {
-	out, err := s.access.Roles(c.Request.Context())
+	out, err := s.access.Roles(c.Request.Context(), actorFrom(c))
 	if err != nil {
 		fail(c, err)
 		return
 	}
-	c.JSON(http.StatusOK, gin.H{"items": out})
+	c.JSON(http.StatusOK, paged(c, out))
 }
 
 func (s *Server) permissionCatalog(c *gin.Context) {
@@ -91,7 +91,7 @@ func (s *Server) listSystemUsers(c *gin.Context) {
 		fail(c, err)
 		return
 	}
-	c.JSON(http.StatusOK, gin.H{"items": out})
+	c.JSON(http.StatusOK, paged(c, out))
 }
 
 func (s *Server) createSystemUser(c *gin.Context) {
@@ -187,7 +187,7 @@ func (s *Server) listPositions(c *gin.Context) {
 		fail(c, err)
 		return
 	}
-	c.JSON(http.StatusOK, gin.H{"items": out})
+	c.JSON(http.StatusOK, paged(c, out))
 }
 
 func (s *Server) saveDepartment(c *gin.Context) {
@@ -311,7 +311,9 @@ func (s *Server) leaveBalances(c *gin.Context) {
 		fail(c, err)
 		return
 	}
-	c.JSON(http.StatusOK, gin.H{"year": f.Year, "items": rows, "types": types})
+	out := paged(c, rows)
+	out["year"], out["types"] = f.Year, types
+	c.JSON(http.StatusOK, out)
 }
 
 func (s *Server) setLeaveBalance(c *gin.Context) {

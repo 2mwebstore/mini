@@ -224,13 +224,19 @@ func (s *Server) webAppAuth() gin.HandlerFunc {
 	}
 }
 
-func require(p auth.Permission) gin.HandlerFunc {
+// require: the actor has one of the permissions (the handler narrows it further).
+func require(ps ...auth.Permission) gin.HandlerFunc {
 	return func(c *gin.Context) {
-		if a := actorFrom(c); a == nil || !a.Has(p) {
-			fail(c, apperr.ErrForbidden)
-			return
+		a := actorFrom(c)
+		if a != nil {
+			for _, p := range ps {
+				if a.Has(p) {
+					c.Next()
+					return
+				}
+			}
 		}
-		c.Next()
+		fail(c, apperr.ErrForbidden)
 	}
 }
 

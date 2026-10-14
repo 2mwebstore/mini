@@ -21,6 +21,7 @@ const query = computed<ReportFilter>(() => ({
 }))
 
 const report = useResource(() => reportService.summary(query.value))
+const pager = usePager(() => report.data.value?.summaries ?? []) // totals cover everyone
 watch(query, () => report.load())
 onMounted(() => {
   lookups.loadEmployees().catch(() => {})
@@ -98,7 +99,7 @@ const totals = computed(() => {
               </tr>
             </thead>
             <tbody>
-              <tr v-for="s in report.data.value.summaries" :key="s.employee_id">
+              <tr v-for="s in pager.rows.value" :key="s.employee_id">
                 <td><NuxtLink :to="{ path: '/attendance', query: { employee_id: String(s.employee_id), from: filter.from, to: filter.to } }" class="font-medium hover:underline">{{ s.full_name }}</NuxtLink><span class="block text-xs text-muted">{{ s.employee_code }}</span></td>
                 <td class="text-muted">{{ s.branch || '—' }}</td>
                 <td class="text-muted">{{ s.department || '—' }}</td>
@@ -113,6 +114,7 @@ const totals = computed(() => {
               </tr>
             </tbody>
           </table>
+          <AppPagination v-if="pager.total.value" class="sticky left-0" :page="pager.page.value" :page-size="pager.pageSize.value" :total="pager.total.value" noun="employee" @go="pager.go" @size="pager.resize" />
         </div>
       </template>
     </StateView>

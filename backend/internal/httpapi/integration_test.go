@@ -247,9 +247,17 @@ func (h *harness) app(method, path string, tgUser int64, body any) (int, map[str
 	return w.Code, out, w.Body.Bytes()
 }
 
-// admin calls the admin panel API with a Bearer JWT.
+// admin calls the admin panel API with a Bearer JWT. Lists come whole (page_size=0)
+// unless the path asks for a page itself; TestPaging covers the default.
 func (h *harness) admin(method, path, jwt string, body any) (int, map[string]any, []byte) {
 	h.t.Helper()
+	if method == "GET" && !strings.Contains(path, "page") {
+		sep := "?"
+		if strings.Contains(path, "?") {
+			sep = "&"
+		}
+		path += sep + "page_size=0"
+	}
 	w, out := h.do(method, "/api/v1"+path, body, withHeader("Authorization", "Bearer "+jwt))
 	return w.Code, out, w.Body.Bytes()
 }
@@ -915,8 +923,8 @@ func TestIntegration(t *testing.T) {
 	if code, body, _ := h.app("GET", "/me", hrTG, nil); code != 200 || body["me"].(map[string]any)["is_system_user"] != true {
 		t.Fatalf("the Mini App knows a system user: %d %v", code, body)
 	}
-	if code, body, _ := h.admin("GET", "/audit-logs?limit=5", ownerJWT, nil); code != 200 || len(body["items"].([]any)) != 5 {
-		t.Fatalf("super admin reads audit logs: %d %v", code, body)
+	if code, body, _ := h.admin("GET", "/audit-logs?page=2&page_size=5", ownerJWT, nil); code != 200 || len(body["items"].([]any)) != 5 || num(body, "total") < 10 || num(body, "page") != 2 {
+		t.Fatalf("super admin reads audit logs, a page at a time: %d %v", code, body["total"])
 	}
 	_ = ownerTG
 
@@ -1626,6 +1634,87 @@ func TestIntegration(t *testing.T) {
 	}
 	if _, body, _ := h.admin("GET", "/branches", clientJWT, nil); len(body["items"].([]any)) != 2 {
 		t.Fatalf("they see both branches they created: %v", body)
+	}
+
+	// ---------- a Company Admin manages the admin accounts of their own branches ----------
+	if _, body, _ := h.admin("GET", "/system-users", clientJWT, nil); len(body["items"].([]any)) != 1 || body["items"].([]any)[0].(map[string]any)["self"] != true {
+		t.Fatalf("they see only accounts of their branches (just themselves so far): %v", body)
+	}
+	assignable := map[string]bool{}
+	_, rolesBody, _ := h.admin("GET", "/roles", clientJWT, nil)
+	for _, r := range rolesBody["items"].([]any) {
+		rm := r.(map[string]any)
+		assignable[fmt.Sprint(rm["code"])] = rm["assignable"] == true
+	}
+	if !assignable["branch_admin"] || !assignable["company_admin"] || assignable["hr_admin"] || assignable["super_admin"] || assignable["staff"] {
+		t.Fatalf("roles they may give: branch-level admin roles within their powers only: %v", assignable)
+	}
+	newAdmin := func(email, role string, branch uint64) (int, map[string]any) {
+		code, body, _ := h.admin("POST", "/system-users", clientJWT, map[string]any{"full_name": "Kampot " + role, "email": email,
+			"password": "kampot-pass-123", "role": role, "branch_id": branch})
+		return code, body
+	}
+	code, body = newAdmin("kcr.admin@example.com", "branch_admin", kcrID)
+	if code != 201 || num(body, "branch_id") != float64(kcrID) {
+		t.Fatalf("a Branch Admin for their own branch: %d %v", code, body)
+	}
+	kcrAdmin := uint64(num(body, "id"))
+	if _, b, _ := h.admin("GET", fmt.Sprintf("/branches/%d", kcrID), clientJWT, nil); b["admin"] == nil {
+		t.Fatalf("…who becomes that branch's admin: %v", b)
+	}
+	if code, body := newAdmin("x1@example.com", "branch_admin", mainBranch); code != 403 {
+		t.Fatalf("not for someone else's branch: %d %v", code, body)
+	}
+	if code, body := newAdmin("x2@example.com", "hr_admin", 0); code != 403 {
+		t.Fatalf("no company-wide roles: %d %v", code, body)
+	}
+	if code, body := newAdmin("x3@example.com", "company_admin", 0); code != 400 || errCode(body) != "BRANCH_REQUIRED" {
+		t.Fatalf("every account they make works in one of their branches: %d %v", code, body)
+	}
+	code, body = newAdmin("kcc.partner@example.com", "company_admin", kccID)
+	if code != 201 {
+		t.Fatalf("another Company Admin for their branch: %d %v", code, body)
+	}
+	partner := uint64(num(body, "id"))
+	if code, _, _ := h.admin("PUT", fmt.Sprintf("/system-users/%d/branches", partner), clientJWT, map[string]any{"branch_ids": []uint64{mainBranch}}); code != 403 {
+		t.Fatalf("they hand out only their own branches: %d", code)
+	}
+	if code, _, _ := h.admin("PUT", fmt.Sprintf("/system-users/%d/branches", partner), clientJWT, map[string]any{"branch_ids": []uint64{kcrID}}); code != 200 {
+		t.Fatalf("their own branches, yes: %d", code)
+	}
+	if code, _, _ := h.admin("POST", fmt.Sprintf("/system-users/%d/password", kcrAdmin), clientJWT, map[string]any{"password": "new-kampot-pass-1"}); code != 204 && code != 200 {
+		t.Fatalf("reset the password of their branch admin: %d", code)
+	}
+	if _, body, _ := h.admin("GET", "/system-users", clientJWT, nil); len(body["items"].([]any)) != 3 {
+		t.Fatalf("now they see their 3 accounts: %v", body)
+	}
+	if _, body, _ := h.admin("GET", "/system-users", ownerJWT, nil); len(body["items"].([]any)) < 6 {
+		t.Fatalf("the owner still sees every account: %v", body)
+	}
+	var ownerLogin uint64
+	h.db.QueryRow("SELECT u.id FROM users u JOIN employees e ON e.id = u.employee_id WHERE e.role_id = 1 LIMIT 1").Scan(&ownerLogin)
+	if code, _, _ := h.admin("PUT", fmt.Sprintf("/system-users/%d", ownerLogin), clientJWT, map[string]any{"status": "INACTIVE"}); code != 404 {
+		t.Fatalf("accounts outside their branches don't exist for them: %d", code)
+	}
+	if code, _, _ := h.admin("DELETE", fmt.Sprintf("/system-users/%d", partner), clientJWT, nil); code != 204 && code != 200 {
+		t.Fatalf("they remove an account of theirs: %d", code)
+	}
+	if code, _, _ := h.admin("GET", "/roles/permissions", clientJWT, nil); code != 403 {
+		t.Fatalf("roles stay the owner's: %d", code)
+	}
+
+	// ---------- lists come 10 at a time ----------
+	w, paged := h.do("GET", "/api/v1/audit-logs", nil, withHeader("Authorization", "Bearer "+ownerJWT))
+	if w.Code != 200 || len(paged["items"].([]any)) != 10 || num(paged, "page_size") != 10 || num(paged, "total") <= 10 {
+		t.Fatalf("default page: 10 of %v", paged["total"])
+	}
+	w, paged = h.do("GET", "/api/v1/work-schedules?page=2&page_size=1", nil, withHeader("Authorization", "Bearer "+ownerJWT))
+	if w.Code != 200 || len(paged["items"].([]any)) != 1 || num(paged, "page") != 2 {
+		t.Fatalf("page 2 of 1-item pages: %v", paged)
+	}
+	w, paged = h.do("GET", "/api/v1/employees", nil, withHeader("Authorization", "Bearer "+ownerJWT))
+	if w.Code != 200 || num(paged, "page_size") != 10 || len(paged["items"].([]any)) > 10 {
+		t.Fatalf("employees: 10 per page by default: %v", paged["page_size"])
 	}
 	kccShift := map[string]any{"branch_id": kccID, "name": "Café Hours", "start_time": "07:00", "end_time": "16:00", "work_type": "NORMAL", "grace_minutes": 5, "work_days": []int{1, 2, 3, 4, 5, 6}, "color": "#b45309"}
 	if code, body, _ := h.admin("POST", "/work-schedules", clientJWT, kccShift); code != 201 || body["is_default"] != true {

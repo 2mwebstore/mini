@@ -83,7 +83,7 @@ func (s *Server) listEmployees(c *gin.Context) {
 		fail(c, err)
 		return
 	}
-	c.JSON(http.StatusOK, gin.H{"items": out})
+	c.JSON(http.StatusOK, paged(c, out))
 }
 
 func (s *Server) createEmployee(c *gin.Context) {
@@ -148,7 +148,7 @@ func (s *Server) listDepartments(c *gin.Context) {
 		fail(c, err)
 		return
 	}
-	c.JSON(http.StatusOK, gin.H{"items": out})
+	c.JSON(http.StatusOK, paged(c, out))
 }
 
 // ---------- attendance ----------
@@ -275,7 +275,7 @@ func (s *Server) pendingAttendance(c *gin.Context) {
 		fail(c, err)
 		return
 	}
-	c.JSON(http.StatusOK, gin.H{"items": out})
+	c.JSON(http.StatusOK, paged(c, out))
 }
 
 func (s *Server) reviewAttendance(approve bool) gin.HandlerFunc {
@@ -299,15 +299,17 @@ func (s *Server) reviewAttendance(approve bool) gin.HandlerFunc {
 
 // ---------- leave ----------
 
+// listLeave pages in the database: leave requests keep growing.
 func (s *Server) listLeave(c *gin.Context) {
 	var f leave.ListFilter
 	_ = c.ShouldBindQuery(&f)
-	out, err := s.leave.List(c.Request.Context(), actorFrom(c), f)
+	page, size := pageParams(c)
+	out, total, err := s.leave.Page(c.Request.Context(), actorFrom(c), f, page, size)
 	if err != nil {
 		fail(c, err)
 		return
 	}
-	c.JSON(http.StatusOK, gin.H{"items": out})
+	c.JSON(http.StatusOK, gin.H{"items": out, "total": total, "page": page, "page_size": size})
 }
 
 // leaveTypes: active types; ?all=1 also inactive ones, with usage counts (admin panel).
@@ -319,7 +321,7 @@ func (s *Server) leaveTypes(c *gin.Context) {
 			fail(c, err)
 			return
 		}
-		c.JSON(http.StatusOK, gin.H{"items": out})
+		c.JSON(http.StatusOK, paged(c, out))
 		return
 	}
 	out, err := s.leave.Types(c.Request.Context(), actorFrom(c))
@@ -327,7 +329,7 @@ func (s *Server) leaveTypes(c *gin.Context) {
 		fail(c, err)
 		return
 	}
-	c.JSON(http.StatusOK, gin.H{"items": out})
+	c.JSON(http.StatusOK, paged(c, out))
 }
 
 func (s *Server) pendingLeave(c *gin.Context) {
@@ -336,7 +338,7 @@ func (s *Server) pendingLeave(c *gin.Context) {
 		fail(c, err)
 		return
 	}
-	c.JSON(http.StatusOK, gin.H{"items": out})
+	c.JSON(http.StatusOK, paged(c, out))
 }
 
 func (s *Server) getLeave(c *gin.Context) {
@@ -550,7 +552,7 @@ func (s *Server) listHolidays(c *gin.Context) {
 		fail(c, err)
 		return
 	}
-	c.JSON(http.StatusOK, gin.H{"items": hs})
+	c.JSON(http.StatusOK, paged(c, hs))
 }
 
 // createHoliday adds a holiday to one or several branches ({branch_ids: [...]}),
@@ -642,17 +644,19 @@ func (s *Server) auditLogs(c *gin.Context) {
 	if v, err := strconv.ParseUint(c.Query("employee_id"), 10, 64); err == nil {
 		q = q.Where("target_employee_id = ? OR actor_employee_id = ?", v, v)
 	}
-	if v := c.Query("before_id"); v != "" {
-		q = q.Where("id < ?", v)
-	}
-	limit, _ := strconv.Atoi(c.DefaultQuery("limit", "100"))
-	if limit <= 0 || limit > 500 {
-		limit = 100
-	}
-	var out []models.AuditLog
-	if err := q.Limit(limit).Find(&out).Error; err != nil {
+	var total int64
+	if err := q.Session(&gorm.Session{}).Model(&models.AuditLog{}).Count(&total).Error; err != nil {
 		fail(c, err)
 		return
 	}
-	c.JSON(http.StatusOK, gin.H{"items": out})
+	page, size := pageParams(c)
+	if size == 0 {
+		size = maxPageSize // the log is too long to send whole
+	}
+	out := []models.AuditLog{}
+	if err := q.Offset((page - 1) * size).Limit(size).Find(&out).Error; err != nil {
+		fail(c, err)
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"items": out, "total": total, "page": page, "page_size": size})
 }

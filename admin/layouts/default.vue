@@ -52,11 +52,12 @@ const items: NavItem[] = [
   },
   { to: '/branches', label: 'Branches', icon: branchIcon, perm: ['branches.manage', 'branches.create'] },
   {
-    label: 'Administration', icon: 'M12 3 4 6v6c0 5 3.4 8.6 8 9 4.6-.4 8-4 8-9V6zm-3 9 2 2 4-4', perm: ['users.manage'],
+    // The owner manages every admin account; a Company Admin those of their own branches.
+    label: 'Administration', icon: 'M12 3 4 6v6c0 5 3.4 8.6 8 9 4.6-.4 8-4 8-9V6zm-3 9 2 2 4-4', perm: ['users.manage', 'users.branch'],
     children: [
       { to: '/access/users', label: 'System users' },
       { to: '/access/branches', label: 'Branch assignment' },
-      { to: '/access/roles', label: 'Role management' },
+      { to: '/access/roles', label: 'Role management', perm: ['users.manage'] },
     ],
   },
   {
@@ -171,7 +172,7 @@ async function signOut() {
     </aside>
 
     <main class="min-w-0 px-4 py-6 sm:px-8">
-      <div class="mx-auto max-w-6xl"><slot /></div>
+      <div class="mx-auto max-w-7xl"><slot /></div>
     </main>
   </div>
 </template>

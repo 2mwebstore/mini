@@ -32,6 +32,7 @@ const (
 	PermSchedulesManage  Permission = "schedules.manage"   // shifts and holidays of the branches in reach
 	PermLeaveManage      Permission = "leave.manage"       // leave types, allowances, balances
 	PermUsersManage      Permission = "users.manage"       // system users, roles, branch access
+	PermUsersBranch      Permission = "users.branch"       // admin accounts of their own branches (no more powers than their own)
 )
 
 const (
@@ -101,6 +102,46 @@ func (a *Actor) Reach() (all bool, ids []uint64) {
 		ids = append(ids, *b)
 	}
 	return false, ids
+}
+
+// ManagesUsers: the actor manages admin panel accounts — all of them (users.manage)
+// or those of their own branches (users.branch).
+func (a *Actor) ManagesUsers() bool { return a.Has(PermUsersManage) || a.Has(PermUsersBranch) }
+
+// ManagesUser: the actor may see and change this admin account (its person record
+// and branch access). users.manage: any. users.branch: an account that works only in
+// the actor's branches and has no more powers than the actor — never the owner, a
+// company-wide role, or an account with no branch at all.
+func (a *Actor) ManagesUser(target *models.Employee, branches []uint64) bool {
+	if a.Has(PermUsersManage) {
+		return true
+	}
+	if !a.Has(PermUsersBranch) || target.RoleID == models.RoleSuperAdmin || IsCompanyWide(target.RoleID) || !RoleWithin(target.RoleID, a) {
+		return false
+	}
+	reach := slices.Clone(branches)
+	if target.BranchID != nil {
+		reach = append(reach, *target.BranchID)
+	}
+	if len(reach) == 0 {
+		return false
+	}
+	for _, b := range reach {
+		if !a.Reaches(b) {
+			return false
+		}
+	}
+	return true
+}
+
+// CanGrant: the actor may give this admin role. users.manage needs "Grant admin
+// roles"; someone limited to their branches' accounts may give a branch-level role
+// that grants nothing they don't have themselves.
+func (a *Actor) CanGrant(roleID uint8) bool {
+	if a.Has(PermUsersManage) {
+		return a.Has(PermAssignAdminRoles)
+	}
+	return a.Has(PermUsersBranch) && roleID != models.RoleSuperAdmin && !IsCompanyWide(roleID) && RoleWithin(roleID, a)
 }
 
 // Reaches: the branch is within the actor's reach.

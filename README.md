@@ -287,7 +287,16 @@ own company: give them the role (no branch needed) and either assign branches on
 assignment* or let them create their own on *Branches* — a branch they create is added
 to their access at once. They see only those branches and manage everything in them
 (staff, attendance, leave, schedules, setup lists, reports, GPS, Telegram); they cannot
-see other branches, manage system users or change company settings.
+see other branches or change company settings.
+
+They also run **Administration** for their branches (*Admin accounts of their branches*,
+`users.branch`): on *System users* they create, edit, disable, reset the password of and
+delete admin accounts that work only in their branches — Branch Admins (which become
+that branch's admin), more Company Admins, or a custom role — never the owner, HR or any
+company-wide role, and never a role with more powers than their own. Every account they
+make is placed in one of their branches; on *Branch assignment* they can add only their
+own branches. Accounts outside their branches don't exist for them. *Role management*
+stays the owner's.
 
 **GPS per branch.** On each branch's page: ask for the location at check-in/out, require
 it, and/or refuse check-ins outside the office radius (which needs the office point).
@@ -316,7 +325,7 @@ Pages a role cannot use are hidden. What the built-in roles may do (change it on
 | Page | Owner (super admin) | HR admin | Company Admin (a client) | Branch admin |
 |---|---|---|---|---|
 | Dashboard — today's counts, each person's shift, who needs attention | all (branch filter) | all (branch filter) | their branches | their branch |
-| Attendance › Records — check-in and check-out in their own columns (time, on time / late / early, review, inside/outside pin) and a **Reason** column (why late / why early, in the employee's words); **View** opens the full record (schedule, each side's status, reason, location and reviewer, totals, review history; confirm/reject there); **Edit** and **Delete** (reason required, audited) on each row | ✓ | ✓ | their branches | their branch |
+| Attendance › Records — check-in and check-out in their own columns (time, on time / late / early, inside/outside pin) and a **Reason** column (why late / why early, in the employee's words); the review status is not in the list: **View** opens the full record (schedule, each side's status, reason, location, reviewer and review history; confirm/reject there); **Edit** and **Delete** (reason required, audited) on each row | ✓ | ✓ | their branches | their branch |
 | ↳ add a record / edit times (reason required, audited) | ✓ | ✓ | their branches | their branch |
 | Leave › Requests — all statuses by default; full / half day filter (half days show which half and its hours); approve/reject | ✓ | ✓ | their branches | their branch |
 | Leave › Balances — entitlement, carried over, used, pending, left per type and year (one branch at a time) | edit | edit | edit | edit their branch |
@@ -327,8 +336,9 @@ Pages a role cannot use are hidden. What the built-in roles may do (change it on
 | Schedules › Holidays — per branch; one holiday can be added to several branches at once | edit | edit | their branches | their branch |
 | Employees — add, edit, link Telegram, set branch/department/position/manager/role, deactivate; filter by branch, department and position | ✓ | ✓ (not admins) | their branches | their branch |
 | Employees › Departments, Positions — per branch: add, rename, delete unused | ✓ | ✓ | their branches | their branch |
-| Administration › System users — admin accounts (separate from employees): role, branch, Telegram, status, reset password, delete | ✓ | — | — | — |
-| Administration › Branch assignment · Role management | ✓ | — | — | — |
+| Administration › System users — admin accounts (separate from employees): role, branch, Telegram, status, reset password, delete | ✓ | — | their branches' accounts | — |
+| Administration › Branch assignment | ✓ | — | their branches' accounts | — |
+| Administration › Role management | ✓ | — | — | — |
 | Branches — add/edit/close branches; each branch's page has its details, admin, **Location (GPS)** and **Telegram** (own bot) | ✓ (+ assign admins) | — | add, and edit their own | My branch: GPS + Telegram |
 | Reports — period summary per employee, Excel/CSV export (with check-in/out reasons) | ✓ | ✓ | their branches | their branch |
 | Settings › General — company name, timezone, confirmations, scheduled jobs | edit | view | — | — |
@@ -336,6 +346,11 @@ Pages a role cannot use are hidden. What the built-in roles may do (change it on
 
 Managers are employees: they review their team's attendance and leave in the Mini App
 (*Team* tab), not in the panel.
+
+**Every list shows 10 rows per page**, with *Rows* (10 / 25 / 50 / 100) and page buttons
+under it. Row actions are icon buttons with a coloured background — **View** (blue),
+**Edit** (indigo), **Delete** (red), plus *Reset password* (amber) and *Approve* /
+*Reject* on leave — each naming what it does in its tooltip.
 
 **Roles.** A role is a set of permissions (*Administration → Role management*). The five
 built-in roles can be edited but not deleted; the owner (Super Admin) always has every
@@ -543,6 +558,12 @@ caught up within 2 hours.
 Errors look like `{"error":{"code":"ALREADY_CHECKED_IN","message":"…"}}`. Dates accept
 `DD-MM-YYYY` or `YYYY-MM-DD`. List endpoints always return arrays (`[]`, never `null`).
 
+**Lists are paged:** `GET` list endpoints of the admin API return
+`{items, total, page, page_size}`, **10 items per page by default**. Ask with `?page=`
+(from 1) and `?page_size=` (at most 500); `page_size=0` returns everything (used by the
+panel's pickers). The Mini App's routes (`/api/v1/app/…`) return everything unless
+asked. Attendance records page at most 200 at a time; the audit log at most 500.
+
 ### Admin panel — `/api/v1` (session cookie or `Bearer` token)
 
 | Method & path | Permission | Notes |
@@ -552,14 +573,14 @@ Errors look like `{"error":{"code":"ALREADY_CHECKED_IN","message":"…"}}`. Date
 | `POST /employees` · `PUT /employees/:id` · `DELETE /employees/:id` | staff.manage | delete = deactivate |
 | `GET /branches` · `GET /branches/:id` | scoped | company-wide users see all; others the branches they reach; `telegram_bot_set` / `telegram_bot_username` (the token itself is never returned) |
 | `POST /branches {code, name, address?, starter?}` | branches.manage (owner) or branches.create (Company Admin) | `starter: true` adds a default shift and the usual leave types; a creator limited to some branches gets the new one added to their access |
-| `PUT /branches/:id/admin {employee_id\|null}` | owner | assign / remove the branch admin |
+| `PUT /branches/:id/admin {employee_id\|null}` | owner, or users.branch in their branches | assign / remove the branch admin (users.branch: one of their own accounts) |
 | `PUT /branches/:id` | owner, a creator for branches they reach, or that branch's admin | `gps: {enabled, required, reject_outside}`, office lat/lng/radius or `clear_office`, `telegram_bot_token` (write-only, checked with Telegram, `""` removes the bot), `miniapp_url`, `telegram_group_id`, `telegram_review_chat_id`; branch admins: only these, not code/name/address/status |
 | `GET /departments?branch_id=` · `GET /positions?branch_id=` | scoped | `{id, branch_id, branch_name, name, employees}` |
 | `POST\|PUT /departments[/:id]` · `POST\|PUT /positions[/:id] {name, branch_id}` · `DELETE …/:id` | staff.manage, in a branch they reach | `branch_id` on create; in use → 409 |
-| `GET /roles` | any | roles with permissions and head counts |
+| `GET /roles` | any | roles with permissions, head counts and `assignable` (whether the caller may give it) |
 | `GET /roles/permissions` · `POST /roles` · `PUT /roles/:id` · `DELETE /roles/:id` | users.manage | `{name, description, permissions[]}`; built-in roles can't be deleted |
-| `GET /system-users` · `POST /system-users {full_name, email, password, role, branch_id?, phone?, telegram_user_id?}` · `PUT /system-users/:id {…, status?}` · `DELETE /system-users/:id` | users.manage | admin accounts, separate from employees; admin roles only (a Branch Admin takes its branch); delete keeps the audit history |
-| `POST /system-users/:id/password {password}` · `PUT /system-users/:id/branches {branch_ids}` | users.manage | `branch_ids: []` = all branches |
+| `GET /system-users` · `POST /system-users {full_name, email, password, role, branch_id?, phone?, telegram_user_id?}` · `PUT /system-users/:id {…, status?}` · `DELETE /system-users/:id` | users.manage, or users.branch for their branches' accounts | admin accounts, separate from employees; admin roles only (a Branch Admin takes its branch); delete keeps the audit history. With users.branch: only accounts working in the actor's branches, only roles that are branch-level and within their own powers, `branch_id` required and theirs |
+| `POST /system-users/:id/password {password}` · `PUT /system-users/:id/branches {branch_ids}` | users.manage, or users.branch | `branch_ids: []` = all branches (users.branch: only their own branches) |
 | `GET /work-schedules?branch_id=` | scoped | each branch's shifts, with how many staff use each |
 | `POST /work-schedules` · `PUT /work-schedules/:id` · `DELETE /work-schedules/:id` | schedules.manage, in a branch they reach | `branch_id` on create (a branch's first shift is its default); `work_type` `NORMAL`\|`CROSS_DAY`; a shift in use or the default can't be deleted |
 | `GET /roster?from=&to=&branch_id=&department_id=&q=` | scoped | matrix: each person × day with the effective shift and its `source` (`DEFAULT`/`ROSTER`/`SPECIAL`), holidays, leave; ≤ 31 days |
@@ -582,7 +603,7 @@ Errors look like `{"error":{"code":"ALREADY_CHECKED_IN","message":"…"}}`. Date
 | `GET /reports/export?format=xlsx\|csv&from=&to=&employee_id=&branch_id=&department_id=` | report.export | includes Branch, Shift, Check-In Reason and Check-Out Reason columns |
 | `GET /settings` · `PUT /settings {key: value}` | settings.view / owner | `{settings, backup}`: company name, timezone, confirmations, job times (Telegram and GPS are per branch) |
 | `GET /holidays?year=&branch_id=` · `POST /holidays {date, name, branch_ids}` · `DELETE /holidays/:id` | schedules.manage to change, in branches they reach | one holiday to several branches at once; a branch that already has one that day is skipped |
-| `GET /audit-logs?action=&employee_id=&before_id=` | super admin | |
+| `GET /audit-logs?action=&employee_id=&page=&page_size=` | super admin | newest first |
 | `GET /health` | — | `{"status":"ok","database":"connected","redis":"connected","storage":"connected"}` |
 
 ### Mini App — `/api/v1/app` (`Authorization: tma <initData>`)
@@ -653,6 +674,14 @@ Run one now: `docker compose exec backup backup.sh now`.
 Restore: `gunzip -c backups/attendance-YYYYMMDD-HHMM.sql.gz | docker compose exec -T database mysql -uroot -p"$MYSQL_ROOT_PASSWORD" attendance`.
 Back up the photo bucket too (or rely on R2/S3 durability).
 
+## Upgrading: client admins manage their own admin accounts (migration 0009)
+
+Migration `0009` gives the **Company Admin** role the new permission *Admin accounts of
+their branches* (`users.branch`), so a client's admin can create and manage the admin
+accounts of their own branches. Tick it on another role in *Role management* to give it
+the same. List endpoints now page 10 at a time by default (see *REST API*); a script that
+read whole lists should add `page_size=0`.
+
 ## Upgrading: everything per branch (migration 0008)
 
 Migration `0008` (runs on start) moves the company-wide setup onto the branches:
@@ -706,3 +735,11 @@ What happened to whom is written to the audit log (`migration.system_users`).
 - Confirm/Reject buttons on notifications sent before the upgrade no longer do anything;
   review those items in the admin panel or the Mini App's Team tab.
 - Existing employees, Telegram links, attendance, photos and leave are unchanged.
+
+
+# A — add the demo data next to what's already there
+railway ssh --service mini -- /app/api seed-demo -force
+
+# B — wipe everything except the owner account, then load the demo
+railway ssh --service mini -- /app/api clear-data -yes -force
+railway ssh --service mini -- /app/api seed-demo -force

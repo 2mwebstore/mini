@@ -11,7 +11,7 @@ definePageMeta({ permission: ['branches.manage', 'branches.create'] })
 const auth = useAuthStore()
 const owner = computed(() => auth.can('branches.manage'))
 const lookups = useLookupsStore()
-const list = useResource(() => branchService.list())
+const list = usePaged(p => branchService.page(p))
 const { busy, run } = useAction()
 
 const addOpen = ref(false)
@@ -44,12 +44,13 @@ async function create() {
       <AppButton @click="addOpen = true">Add branch</AppButton>
     </PageHeader>
 
-    <StateView :loading="list.loading.value && !list.data.value" :error="list.error.value" :empty="list.data.value?.length === 0" empty-text="No branches yet." @retry="list.load">
-      <div class="card overflow-x-auto">
+    <StateView :loading="list.loading.value && !list.data.value" :error="list.error.value" :empty="list.total.value === 0" empty-text="No branches yet." @retry="list.load">
+      <div class="card overflow-hidden" :class="{ 'opacity-60': list.loading.value }">
+        <div class="overflow-x-auto">
         <table class="table">
-          <thead><tr><th>Branch</th><th>Address</th><th>Branch admin</th><th>Telegram</th><th>GPS</th><th class="text-right">Staff</th><th>Status</th><th /></tr></thead>
+          <thead><tr><th>Branch</th><th>Address</th><th>Branch admin</th><th>Telegram</th><th>GPS</th><th class="text-right">Staff</th><th>Status</th><th class="text-right">Actions</th></tr></thead>
           <tbody>
-            <tr v-for="b in list.data.value ?? []" :key="b.id" class="hover:bg-surface-2/60">
+            <tr v-for="b in list.rows.value" :key="b.id" class="hover:bg-surface-2/60">
               <td>
                 <NuxtLink :to="`/branches/${b.id}`" class="font-medium hover:underline">{{ b.name }}</NuxtLink>
                 <span class="block font-mono text-xs text-muted">{{ b.code }}</span>
@@ -69,10 +70,17 @@ async function create() {
               <td><StatusBadge :tone="b.gps_enabled ? 'info' : 'neutral'" :label="gpsText(b)" /></td>
               <td class="text-right tabular-nums">{{ b.staff_count }}</td>
               <td><StatusBadge :tone="b.status === 'ACTIVE' ? 'success' : 'neutral'" :label="b.status === 'ACTIVE' ? 'Open' : 'Closed'" /></td>
-              <td class="text-right"><NuxtLink :to="`/branches/${b.id}`" class="link text-sm">Manage</NuxtLink></td>
+              <td class="whitespace-nowrap text-right">
+                <div class="inline-flex gap-1.5">
+                  <IconAction kind="view" :to="`/employees?branch_id=${b.id}`" :label="`View the staff of ${b.name}`" />
+                  <IconAction kind="edit" :to="`/branches/${b.id}`" :label="`Edit ${b.name}: details, admin, GPS, Telegram`" />
+                </div>
+              </td>
             </tr>
           </tbody>
         </table>
+        </div>
+        <AppPagination :page="list.page.value" :page-size="list.pageSize.value" :total="list.total.value" noun="branch" @go="list.go" @size="list.resize" />
       </div>
     </StateView>
 

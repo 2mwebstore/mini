@@ -23,7 +23,7 @@ func (s *Server) listShifts(c *gin.Context) {
 		fail(c, err)
 		return
 	}
-	c.JSON(http.StatusOK, gin.H{"items": out})
+	c.JSON(http.StatusOK, paged(c, out))
 }
 
 func (s *Server) createShift(c *gin.Context) {
@@ -189,7 +189,7 @@ func (s *Server) listOverrides(c *gin.Context) {
 		fail(c, err)
 		return
 	}
-	c.JSON(http.StatusOK, gin.H{"items": out})
+	c.JSON(http.StatusOK, paged(c, out))
 }
 
 func (s *Server) createOverride(c *gin.Context) {

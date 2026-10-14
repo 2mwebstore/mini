@@ -10,8 +10,8 @@ const lookups = useLookupsStore()
 const canEdit = computed(() => auth.can('schedules.manage'))
 // Each branch has its own shifts (and its own default one).
 const { branchId, target, showBranch, branchName, picker } = useBranchPick()
-const shifts = useResource(() => scheduleService.shifts(Number(branchId.value) || undefined))
-watch(branchId, () => shifts.load())
+const shifts = usePaged(p => scheduleService.shiftsPage(Number(branchId.value) || undefined, p))
+watch(branchId, () => shifts.reset())
 const { busy, run } = useAction()
 const { confirm } = useConfirm()
 
@@ -27,7 +27,7 @@ const form = reactive({
 })
 const open = ref(false)
 // New shifts get a colour no other shift has, so they stand apart on the roster.
-const unusedColor = () => palette.find(c => !shifts.data.value?.some(s => s.color.toLowerCase() === c)) ?? palette[0]!
+const unusedColor = () => palette.find(c => !shifts.rows.value.some(s => s.color.toLowerCase() === c)) ?? palette[0]!
 function edit(s?: WorkSchedule) {
   Object.assign(form, s
     ? { id: s.id, branch_id: String(s.branch_id), name: s.name, start_time: s.start_time, end_time: s.end_time, work_type: s.work_type, grace_minutes: s.grace_minutes,
@@ -65,7 +65,7 @@ async function save() {
     form.id ? 'Shift saved' : 'Shift created')
   if (ok) {
     open.value = false
-    shifts.load()
+    shifts.refresh()
     lookups.loadSchedules(true).catch(() => {})
   }
 }
@@ -73,7 +73,7 @@ async function save() {
 async function remove(s: WorkSchedule) {
   if (!(await confirm({ title: `Delete the shift “${s.name}”?`, message: 'Nobody works this shift any more; past attendance is not changed.' }))) return
   if (await run(`d${s.id}`, () => scheduleService.deleteShift(s.id), 'Shift deleted')) {
-    shifts.load()
+    shifts.refresh()
     lookups.loadSchedules(true).catch(() => {})
   }
 }
@@ -90,13 +90,13 @@ async function remove(s: WorkSchedule) {
       </FormField>
     </div>
 
-    <StateView :loading="shifts.loading.value && !shifts.data.value" :error="shifts.error.value" :empty="shifts.data.value?.length === 0" empty-text="No shifts yet." @retry="shifts.load">
-      <div class="card overflow-hidden">
+    <StateView :loading="shifts.loading.value && !shifts.data.value" :error="shifts.error.value" :empty="shifts.total.value === 0" empty-text="No shifts yet." @retry="shifts.load">
+      <div class="card overflow-hidden" :class="{ 'opacity-60': shifts.loading.value }">
         <div class="overflow-x-auto">
           <table class="table">
             <thead><tr><th>Shift</th><th v-if="showBranch">Branch</th><th>Hours</th><th>Work type</th><th>Grace</th><th>Work days</th><th>Staff</th><th v-if="canEdit" class="text-right">Actions</th></tr></thead>
             <tbody>
-              <tr v-for="s in shifts.data.value ?? []" :key="s.id">
+              <tr v-for="s in shifts.rows.value" :key="s.id">
                 <td>
                   <span class="flex items-center gap-2 font-medium">
                     <span class="size-3 shrink-0 rounded-full" :style="{ background: s.color }" aria-hidden="true" />
@@ -114,13 +114,19 @@ async function remove(s: WorkSchedule) {
                 <td class="whitespace-nowrap">{{ workDaysLabel(parseWorkDays(s.work_days)) }}</td>
                 <td class="tabular-nums">{{ s.employees ?? 0 }}</td>
                 <td v-if="canEdit" class="whitespace-nowrap text-right">
-                  <AppButton size="sm" variant="ghost" :aria-label="`Edit ${s.name}`" @click="edit(s)">Edit</AppButton>
-                  <AppButton v-if="!s.is_default" size="sm" variant="ghost" :loading="busy === `d${s.id}`" :aria-label="`Delete ${s.name}`" @click="remove(s)">Delete</AppButton>
+                  <div class="inline-flex gap-1.5">
+                    <IconAction kind="edit" :label="`Edit ${s.name}`" @click="edit(s)" />
+                    <IconAction
+                      kind="delete" :disabled="s.is_default" :loading="busy === `d${s.id}`"
+                      :label="s.is_default ? `${s.name} is the branch's default shift` : `Delete ${s.name}`" @click="remove(s)"
+                    />
+                  </div>
                 </td>
               </tr>
             </tbody>
           </table>
         </div>
+        <AppPagination :page="shifts.page.value" :page-size="shifts.pageSize.value" :total="shifts.total.value" noun="shift" @go="shifts.go" @size="shifts.resize" />
       </div>
       <p class="mt-3 text-xs text-muted">
         A branch's default shift applies to its staff without a usual shift. Change single days on the
@@ -170,7 +176,7 @@ async function remove(s: WorkSchedule) {
           <WeekdayPicker v-model="form.work_days" label="Usual work days" />
           <p v-if="!form.work_days.length" class="mt-1 text-xs text-danger">Choose at least one day.</p>
         </FormField>
-        <label v-if="!form.id || !shifts.data.value?.find(s => s.id === form.id)?.is_default" class="flex items-center gap-2 text-sm sm:col-span-2">
+        <label v-if="!form.id || !shifts.rows.value.find(s => s.id === form.id)?.is_default" class="flex items-center gap-2 text-sm sm:col-span-2">
           <input v-model="form.is_default" type="checkbox" class="size-4 accent-[var(--primary)]" />
           Make this the branch's default shift (for its staff without a usual shift)
         </label>

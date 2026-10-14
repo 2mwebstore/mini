@@ -30,8 +30,9 @@ type RoleView struct {
 	models.Role
 	Permissions []auth.Permission `json:"permissions"`
 	Employees   int64             `json:"employees"`
-	Users       int64             `json:"users"`  // with a panel login
-	Locked      bool              `json:"locked"` // the owner role: always every permission
+	Users       int64             `json:"users"`      // with a panel login
+	Locked      bool              `json:"locked"`     // the owner role: always every permission
+	Assignable  bool              `json:"assignable"` // the actor may give this role to a system user
 }
 
 type RoleInput struct {
@@ -40,7 +41,7 @@ type RoleInput struct {
 	Permissions []auth.Permission `json:"permissions"`
 }
 
-func (s *Service) Roles(ctx context.Context) ([]RoleView, error) {
+func (s *Service) Roles(ctx context.Context, actor *auth.Actor) ([]RoleView, error) {
 	if err := auth.LoadRoles(ctx, s.db); err != nil {
 		return nil, err
 	}
@@ -59,7 +60,8 @@ func (s *Service) Roles(ctx context.Context) ([]RoleView, error) {
 	}
 	out := make([]RoleView, len(roles))
 	for i, r := range roles {
-		out[i] = RoleView{Role: r, Permissions: auth.PermissionsFor(r.ID), Locked: r.ID == models.RoleSuperAdmin}
+		out[i] = RoleView{Role: r, Permissions: auth.PermissionsFor(r.ID), Locked: r.ID == models.RoleSuperAdmin,
+			Assignable: actor.ManagesUsers() && auth.IsAdminRole(r.ID) && actor.CanGrant(r.ID)}
 		for _, c := range counts {
 			if c.RoleID == r.ID {
 				out[i].Employees, out[i].Users = c.N, c.U

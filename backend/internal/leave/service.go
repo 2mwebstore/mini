@@ -381,6 +381,35 @@ type ListFilter struct {
 }
 
 func (s *Service) List(ctx context.Context, actor *auth.Actor, f ListFilter) ([]models.LeaveRequest, error) {
+	q, err := s.listQuery(ctx, actor, f)
+	if err != nil {
+		return nil, err
+	}
+	if f.Limit <= 0 || f.Limit > 500 {
+		f.Limit = 100
+	}
+	out := []models.LeaveRequest{}
+	return out, q.Limit(f.Limit).Find(&out).Error
+}
+
+// Page is one page of List (size 0: the first 1000) and how many there are in all.
+func (s *Service) Page(ctx context.Context, actor *auth.Actor, f ListFilter, page, size int) ([]models.LeaveRequest, int64, error) {
+	q, err := s.listQuery(ctx, actor, f)
+	if err != nil {
+		return nil, 0, err
+	}
+	var total int64
+	if err := q.Session(&gorm.Session{}).Model(&models.LeaveRequest{}).Count(&total).Error; err != nil {
+		return nil, 0, err
+	}
+	if size <= 0 {
+		size = 1000
+	}
+	out := []models.LeaveRequest{}
+	return out, total, q.Offset((page - 1) * size).Limit(size).Find(&out).Error
+}
+
+func (s *Service) listQuery(ctx context.Context, actor *auth.Actor, f ListFilter) (*gorm.DB, error) {
 	scope, err := auth.Scope(ctx, s.db, actor)
 	if err != nil {
 		return nil, err
@@ -415,11 +444,7 @@ func (s *Service) List(ctx context.Context, actor *auth.Actor, f ListFilter) ([]
 			q = q.Where("start_date <= ?", d)
 		}
 	}
-	if f.Limit <= 0 || f.Limit > 500 {
-		f.Limit = 100
-	}
-	out := []models.LeaveRequest{}
-	return out, q.Limit(f.Limit).Find(&out).Error
+	return q, nil
 }
 
 // PendingForReviewer lists pending requests the actor can approve.

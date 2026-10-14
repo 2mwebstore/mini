@@ -29,6 +29,7 @@ var Catalog = []PermissionInfo{
 	{PermBranchReview, "Branch", "Review own branch", "Confirm check-ins and approve leave in their branch."},
 	{PermBranchSettings, "Branch", "Branch settings", "Edit their branches' office location, GPS rules and Telegram bot and chats."},
 	{PermBranchesCreate, "Branch", "Create branches", "Create new branches (added to their own branch access) and rename or close the branches they reach."},
+	{PermUsersBranch, "Branch", "Admin accounts of their branches", "Create, edit and remove admin panel logins limited to their branches, with roles that have no more powers than their own."},
 	{PermAllView, "Company", "View all branches", "See everyone — limited to the branches assigned to the user, if any."},
 	{PermAllReview, "Company", "Review all branches", "Confirm check-ins and approve leave for everyone they can see."},
 	{PermAttendanceEdit, "Records", "Edit attendance", "Add and correct attendance records (audited, reason required)."},
@@ -213,6 +214,21 @@ func RolesWith(p Permission) []int {
 
 // basic permissions anyone may hand out (a manager is not an admin).
 var basic = map[Permission]bool{PermAttendanceSelf: true, PermLeaveSelf: true, PermTeamView: true, PermTeamReview: true, PermReportExport: true}
+
+// RoleWithin: the role grants nothing the actor doesn't have (own check-in and leave
+// don't count: system users never use them).
+func RoleWithin(roleID uint8, a *Actor) bool {
+	r := roleOf(roleID)
+	if r == nil {
+		return false
+	}
+	for p := range r.perms {
+		if p != PermAttendanceSelf && p != PermLeaveSelf && !a.Has(p) {
+			return false
+		}
+	}
+	return true
+}
 
 // IsAdminRole: the role has powers beyond a manager's, so only someone allowed to
 // grant admin roles may give it (or edit people who have it).

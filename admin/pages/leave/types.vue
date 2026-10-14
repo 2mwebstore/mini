@@ -9,8 +9,8 @@ const lookups = useLookupsStore()
 const canEdit = computed(() => auth.can('leave.manage'))
 // Each branch has its own leave types (and allowances).
 const { branchId, target, showBranch, branchName, picker } = useBranchPick()
-const types = useResource(() => leaveService.allTypes(Number(branchId.value) || undefined))
-watch(branchId, () => types.load())
+const types = usePaged(p => leaveService.typesPage(Number(branchId.value) || undefined, p))
+watch(branchId, () => types.reset())
 const { busy, run } = useAction()
 const { confirm } = useConfirm()
 
@@ -29,7 +29,7 @@ function edit(t?: LeaveType) {
   Object.assign(form, blank(), t
     ? { id: t.id, branch_id: String(t.branch_id), code: t.code, name: t.name, annual_days: t.annual_days, is_paid: t.is_paid, approval: t.approval, allow_exceed: t.allow_exceed,
         max_days_per_request: t.max_days_per_request, min_notice_days: t.min_notice_days, color: t.color, description: t.description, active: t.active }
-    : { color: palette.find(c => !types.data.value?.some(t => t.color === c)) ?? palette[0] })
+    : { color: palette.find(c => !types.rows.value.some(t => t.color === c)) ?? palette[0] })
   open.value = true
 }
 // The code is suggested from the name for new types (MATERNITY_LEAVE).
@@ -44,16 +44,16 @@ async function save() {
   const ok = await run('save', () => (id ? leaveService.updateType(id, body) : leaveService.createType(body)), id ? 'Leave type saved' : 'Leave type added')
   if (ok) {
     open.value = false
-    types.load()
+    types.refresh()
     lookups.leaveTypes = null
   }
 }
 async function toggle(t: LeaveType) {
-  if (await run(`a${t.id}`, () => leaveService.updateType(t.id, { active: !t.active }), t.active ? `${t.name} turned off` : `${t.name} turned on`)) types.load()
+  if (await run(`a${t.id}`, () => leaveService.updateType(t.id, { active: !t.active }), t.active ? `${t.name} turned off` : `${t.name} turned on`)) types.refresh()
 }
 async function remove(t: LeaveType) {
   if (!(await confirm({ title: `Delete the leave type “${t.name}”?`, message: 'It has never been used. A type that has been used can only be turned off.' }))) return
-  if (await run(`d${t.id}`, () => leaveService.deleteType(t.id), 'Leave type deleted')) types.load()
+  if (await run(`d${t.id}`, () => leaveService.deleteType(t.id), 'Leave type deleted')) types.refresh()
 }
 const days = (n: number) => `${n % 1 ? n.toFixed(1) : n} day${n === 1 ? '' : 's'}`
 </script>
@@ -69,13 +69,13 @@ const days = (n: number) => `${n % 1 ? n.toFixed(1) : n} day${n === 1 ? '' : 's'
       </FormField>
     </div>
 
-    <StateView :loading="types.loading.value && !types.data.value" :error="types.error.value" :empty="types.data.value?.length === 0" empty-text="No leave types yet." @retry="types.load">
-      <div class="card overflow-hidden">
+    <StateView :loading="types.loading.value && !types.data.value" :error="types.error.value" :empty="types.total.value === 0" empty-text="No leave types yet." @retry="types.load">
+      <div class="card overflow-hidden" :class="{ 'opacity-60': types.loading.value }">
         <div class="overflow-x-auto">
           <table class="table">
             <thead><tr><th>Leave type</th><th v-if="showBranch">Branch</th><th>Allowance / year</th><th>Approval</th><th>Rules</th><th>Requests</th><th>Active</th><th v-if="canEdit" class="text-right">Actions</th></tr></thead>
             <tbody>
-              <tr v-for="t in types.data.value ?? []" :key="t.id" :class="!t.active && 'opacity-60'">
+              <tr v-for="t in types.rows.value" :key="t.id" :class="!t.active && 'opacity-60'">
                 <td>
                   <span class="flex items-center gap-2 font-medium">
                     <span class="size-3 shrink-0 rounded-full" :style="{ background: t.color }" aria-hidden="true" />{{ t.name }}
@@ -110,13 +110,19 @@ const days = (n: number) => `${n % 1 ? n.toFixed(1) : n} day${n === 1 ? '' : 's'
                   </button>
                 </td>
                 <td v-if="canEdit" class="whitespace-nowrap text-right">
-                  <AppButton size="sm" variant="ghost" :aria-label="`Edit ${t.name}`" @click="edit(t)">Edit</AppButton>
-                  <AppButton v-if="!t.requests" size="sm" variant="ghost" :loading="busy === `d${t.id}`" :aria-label="`Delete ${t.name}`" @click="remove(t)">Delete</AppButton>
+                  <div class="inline-flex gap-1.5">
+                    <IconAction kind="edit" :label="`Edit ${t.name}`" @click="edit(t)" />
+                    <IconAction
+                      kind="delete" :disabled="!!t.requests" :loading="busy === `d${t.id}`"
+                      :label="t.requests ? `${t.name} has been used: turn it off instead` : `Delete ${t.name}`" @click="remove(t)"
+                    />
+                  </div>
                 </td>
               </tr>
             </tbody>
           </table>
         </div>
+        <AppPagination :page="types.page.value" :page-size="types.pageSize.value" :total="types.total.value" noun="leave type" @go="types.go" @size="types.resize" />
       </div>
       <p class="mt-3 text-xs text-muted">
         Balances are counted per calendar year from approved requests. Set a person's own entitlement or carry-over on

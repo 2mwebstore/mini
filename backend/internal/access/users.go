@@ -50,8 +50,10 @@ type SystemUser struct {
 	Self      bool     `json:"self"`
 }
 
+// Users lists the admin accounts the actor manages: every one, or — for someone
+// limited to their branches' accounts — those working only in their branches.
 func (s *Service) Users(ctx context.Context, actor *auth.Actor) ([]SystemUser, error) {
-	if !actor.Has(auth.PermUsersManage) {
+	if !actor.ManagesUsers() {
 		return nil, apperr.ErrForbidden
 	}
 	var users []models.User
@@ -70,6 +72,9 @@ func (s *Service) Users(ctx context.Context, actor *auth.Actor) ([]SystemUser, e
 	}
 	out := make([]SystemUser, 0, len(users))
 	for _, u := range users {
+		if u.Employee == nil || !actor.ManagesUser(u.Employee, byPerson[u.EmployeeID]) {
+			continue
+		}
 		out = append(out, systemUser(&u, byPerson[u.EmployeeID], actor))
 	}
 	return out, nil
@@ -126,7 +131,7 @@ var emailRe = regexp.MustCompile(`^[^\s@]+@[^\s@]+\.[^\s@]+$`)
 
 // CreateUser adds an admin panel account.
 func (s *Service) CreateUser(ctx context.Context, actor *auth.Actor, in UserInput) (*SystemUser, error) {
-	if !actor.Has(auth.PermUsersManage) {
+	if !actor.ManagesUsers() {
 		return nil, apperr.ErrForbidden
 	}
 	if in.FullName == nil || in.Email == nil || in.Password == nil || in.Role == nil {
@@ -156,7 +161,7 @@ func (s *Service) CreateUser(ctx context.Context, actor *auth.Actor, in UserInpu
 			return err
 		}
 		p.RoleID = roleID
-		if err := s.placeBranch(tx, &p, in.BranchID); err != nil {
+		if err := s.placeBranch(tx, actor, &p, in.BranchID); err != nil {
 			return err
 		}
 		if err := tx.Omit(clause.Associations).Create(&p).Error; err != nil {
@@ -191,12 +196,15 @@ func (s *Service) CreateUser(ctx context.Context, actor *auth.Actor, in UserInpu
 
 // UpdateUser changes an account's name, email, phone, status, role, home branch or Telegram link.
 func (s *Service) UpdateUser(ctx context.Context, actor *auth.Actor, id uint64, in UserInput) (*SystemUser, error) {
-	if !actor.Has(auth.PermUsersManage) {
+	if !actor.ManagesUsers() {
 		return nil, apperr.ErrForbidden
 	}
 	err := s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 		u, p, err := s.load(tx, id, true)
 		if err != nil {
+			return err
+		}
+		if err := s.manages(ctx, tx, actor, p); err != nil {
 			return err
 		}
 		self := p.ID == actor.ID()
@@ -269,7 +277,7 @@ func (s *Service) UpdateUser(ctx context.Context, actor *auth.Actor, id uint64, 
 			if branchIn == nil {
 				branchIn = p.BranchID
 			}
-			if err := s.placeBranch(tx, p, branchIn); err != nil {
+			if err := s.placeBranch(tx, actor, p, branchIn); err != nil {
 				return err
 			}
 		}
@@ -309,7 +317,7 @@ func (s *Service) UpdateUser(ctx context.Context, actor *auth.Actor, id uint64, 
 }
 
 func (s *Service) ResetPassword(ctx context.Context, actor *auth.Actor, id uint64, password string) error {
-	if !actor.Has(auth.PermUsersManage) {
+	if !actor.ManagesUsers() {
 		return apperr.ErrForbidden
 	}
 	hash, err := auth.HashPassword(password)
@@ -319,6 +327,9 @@ func (s *Service) ResetPassword(ctx context.Context, actor *auth.Actor, id uint6
 	return s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 		u, p, err := s.load(tx, id, false)
 		if err != nil {
+			return err
+		}
+		if err := s.manages(ctx, tx, actor, p); err != nil {
 			return err
 		}
 		if err := tx.Model(u).Update("password_hash", hash).Error; err != nil {
@@ -331,12 +342,15 @@ func (s *Service) ResetPassword(ctx context.Context, actor *auth.Actor, id uint6
 // DeleteUser removes an admin account: its login, branch access, Telegram link and
 // branch-admin assignment. The record stays (deleted) for the audit log and reviews.
 func (s *Service) DeleteUser(ctx context.Context, actor *auth.Actor, id uint64) error {
-	if !actor.Has(auth.PermUsersManage) {
+	if !actor.ManagesUsers() {
 		return apperr.ErrForbidden
 	}
 	return s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 		u, p, err := s.load(tx, id, true)
 		if err != nil {
+			return err
+		}
+		if err := s.manages(ctx, tx, actor, p); err != nil {
 			return err
 		}
 		if p.ID == actor.ID() {
@@ -367,15 +381,32 @@ func (s *Service) DeleteUser(ctx context.Context, actor *auth.Actor, id uint64) 
 	})
 }
 
-// SetBranches replaces a user's branch access (empty = every branch for a company-wide role).
+// SetBranches replaces a user's branch access (empty = every branch for a company-wide
+// role). Someone limited to their branches' accounts can only hand out their own branches.
 func (s *Service) SetBranches(ctx context.Context, actor *auth.Actor, id uint64, branchIDs []uint64) (*SystemUser, error) {
-	if !actor.Has(auth.PermUsersManage) {
+	if !actor.ManagesUsers() {
 		return nil, apperr.ErrForbidden
 	}
 	err := s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 		u, p, err := s.load(tx, id, false)
 		if err != nil {
 			return err
+		}
+		if err := s.manages(ctx, tx, actor, p); err != nil {
+			return err
+		}
+		if scoped := !actor.Has(auth.PermUsersManage); scoped {
+			if p.ID == actor.ID() {
+				return apperr.BadRequest("SELF_LIMIT", "You cannot change your own branch access.")
+			}
+			for _, b := range branchIDs {
+				if !actor.Reaches(b) {
+					return apperr.Forbidden("You can only give access to your own branches.")
+				}
+			}
+			if len(branchIDs) == 0 && p.BranchID == nil {
+				return apperr.BadRequest("BRANCH_REQUIRED", "Keep at least one branch: without one this account could see nothing.")
+			}
 		}
 		if p.ID == actor.ID() && len(branchIDs) > 0 {
 			return apperr.BadRequest("SELF_LIMIT", "You cannot limit your own branch access.")
@@ -426,6 +457,21 @@ func (s *Service) user(ctx context.Context, actor *auth.Actor, id uint64) (*Syst
 	return &su, nil
 }
 
+// manages: the actor may change this account (else it is "not found" to them).
+func (s *Service) manages(ctx context.Context, tx *gorm.DB, actor *auth.Actor, p *models.Employee) error {
+	if actor.Has(auth.PermUsersManage) {
+		return nil
+	}
+	branches, err := auth.BranchesOf(ctx, tx, p.ID)
+	if err != nil {
+		return err
+	}
+	if !actor.ManagesUser(p, branches) {
+		return apperr.NotFound("USER_NOT_FOUND", "System user not found.")
+	}
+	return nil
+}
+
 // load reads a system user's login and person (locked for update when lock is set).
 func (s *Service) load(tx *gorm.DB, id uint64, lock bool) (*models.User, *models.Employee, error) {
 	q := func() *gorm.DB { // a fresh statement per query
@@ -454,7 +500,10 @@ func (s *Service) checkRole(actor *auth.Actor, code string) (uint8, error) {
 	if !auth.IsAdminRole(id) {
 		return 0, apperr.BadRequest("STAFF_ROLE", "That role is for employees (they use the Mini App). Choose an admin role.")
 	}
-	if !actor.Has(auth.PermAssignAdminRoles) {
+	if !actor.CanGrant(id) {
+		if !actor.Has(auth.PermUsersManage) {
+			return 0, apperr.Forbidden("You can give only branch-level roles with no more powers than your own.")
+		}
 		return 0, apperr.Forbidden("Only someone allowed to grant admin roles can set this role.")
 	}
 	return id, nil
@@ -464,14 +513,18 @@ func (s *Service) checkRole(actor *auth.Actor, code string) (uint8, error) {
 // branch they run for a Branch Admin (required); optional for other branch-level
 // roles such as Company Admin, who work in the branches assigned to them or that
 // they create.
-func (s *Service) placeBranch(tx *gorm.DB, p *models.Employee, branchID *uint64) error {
+//
+// Someone limited to their branches' accounts must place each account in one of
+// their branches (that is what keeps it theirs).
+func (s *Service) placeBranch(tx *gorm.DB, actor *auth.Actor, p *models.Employee, branchID *uint64) error {
+	scoped := !actor.Has(auth.PermUsersManage)
 	if auth.IsCompanyWide(p.RoleID) {
 		p.BranchID = nil
 		return nil
 	}
 	if branchID == nil || *branchID == 0 {
-		if p.RoleID == models.RoleBranchAdmin {
-			return apperr.BadRequest("BRANCH_REQUIRED", "A Branch Admin runs one branch: choose the branch.")
+		if p.RoleID == models.RoleBranchAdmin || scoped {
+			return apperr.BadRequest("BRANCH_REQUIRED", "Choose the branch this account works in.")
 		}
 		p.BranchID = nil
 		return nil
@@ -479,6 +532,9 @@ func (s *Service) placeBranch(tx *gorm.DB, p *models.Employee, branchID *uint64)
 	var b models.Branch
 	if err := tx.First(&b, *branchID).Error; err != nil {
 		return apperr.BadRequest("INVALID_BRANCH", "Unknown branch.")
+	}
+	if scoped && !actor.Reaches(b.ID) {
+		return apperr.Forbidden("You can only add accounts to your own branches.")
 	}
 	p.BranchID = &b.ID
 	return nil

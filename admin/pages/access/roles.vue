@@ -7,7 +7,8 @@ import type { SelectOption } from '~/utils/options'
 definePageMeta({ permission: 'users.manage' })
 
 const lookups = useLookupsStore()
-const roles = useResource(() => accessService.roles())
+const roles = useResource(() => accessService.roles()) // all: also the "Start from" choices
+const pager = usePager(() => roles.data.value ?? [])
 const catalog = useResource(() => accessService.permissions())
 const { busy, run } = useAction()
 const { confirm } = useConfirm()
@@ -72,7 +73,7 @@ async function remove(r: Role) {
 
     <StateView :loading="roles.loading.value && !roles.data.value" :error="roles.error.value" @retry="roles.load">
       <div class="grid gap-3 md:grid-cols-2">
-        <article v-for="r in roles.data.value ?? []" :key="r.id" class="card flex flex-col p-4">
+        <article v-for="r in pager.rows.value" :key="r.id" class="card flex flex-col p-4">
           <div class="flex items-start justify-between gap-3">
             <div class="min-w-0">
               <h2 class="font-semibold">{{ r.name }}</h2>
@@ -89,13 +90,18 @@ async function remove(r: Role) {
           </ul>
           <div class="mt-auto flex items-center justify-between gap-2 pt-3 text-xs text-muted">
             <span>{{ r.employees }} {{ r.employees === 1 ? 'person' : 'people' }} · {{ r.users }} can sign in</span>
-            <span class="flex gap-1">
-              <AppButton size="sm" variant="ghost" :aria-label="`${r.locked ? 'View' : 'Edit'} ${r.name}`" @click="edit(r)">{{ r.locked ? 'View' : 'Edit' }}</AppButton>
-              <AppButton v-if="!r.is_system" size="sm" variant="ghost" :disabled="r.employees > 0" :title="r.employees > 0 ? 'Give its people another role first' : undefined"
-                :loading="busy === `d${r.id}`" :aria-label="`Delete ${r.name}`" @click="remove(r)">Delete</AppButton>
+            <span class="flex gap-1.5">
+              <IconAction :kind="r.locked ? 'view' : 'edit'" :label="`${r.locked ? 'View' : 'Edit'} ${r.name}`" @click="edit(r)" />
+              <IconAction
+                v-if="!r.is_system" kind="delete" :disabled="r.employees > 0"
+                :label="r.employees > 0 ? `Give the people of ${r.name} another role first` : `Delete ${r.name}`" :loading="busy === `d${r.id}`" @click="remove(r)"
+              />
             </span>
           </div>
         </article>
+      </div>
+      <div class="card mt-3 overflow-hidden">
+        <AppPagination :page="pager.page.value" :page-size="pager.pageSize.value" :total="pager.total.value" noun="role" @go="pager.go" @size="pager.resize" />
       </div>
     </StateView>
 

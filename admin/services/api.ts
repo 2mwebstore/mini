@@ -25,7 +25,7 @@ export function apiUrl(path: string, query?: Query) {
   return base + path + queryString(query)
 }
 
-type Query = Record<string, string | number | boolean | undefined | null>
+export type Query = Record<string, string | number | boolean | undefined | null>
 
 function queryString(query?: Query) {
   if (!query) return ''
@@ -79,3 +79,15 @@ export const api = {
   put: <T>(path: string, body: unknown) => request<T>('PUT', path, body),
   del: <T = void>(path: string, body?: unknown) => request<T>('DELETE', path, body),
 }
+
+/** A page of a list: lists come 10 at a time unless asked otherwise. */
+export interface Paging { page: number; page_size: number }
+export interface Paged<T> { items: T[]; total: number; page: number; page_size: number }
+
+/** Every item of a list endpoint (page_size=0), for pickers and selects. */
+export const listAll = <T>(path: string, query: Query = {}) =>
+  api.get<{ items?: T[] }>(path, { ...query, page_size: 0 }).then(r => r.items ?? [])
+
+/** One page of a list endpoint. */
+export const listPage = <T>(path: string, query: Query, p: Paging) =>
+  api.get<Paged<T>>(path, { ...query, page: p.page, page_size: p.page_size })

@@ -6,7 +6,7 @@ export type Permission =
   | 'attendance.self' | 'leave.self' | 'team.view' | 'team.review' | 'all.view' | 'all.review'
   | 'attendance.edit' | 'staff.manage' | 'report.export' | 'settings.view' | 'settings.edit'
   | 'audit.view' | 'roles.assign_admin' | 'branch.view' | 'branch.review' | 'branch.settings' | 'branches.manage' | 'branches.create'
-  | 'schedules.manage' | 'leave.manage' | 'users.manage'
+  | 'schedules.manage' | 'leave.manage' | 'users.manage' | 'users.branch'
 
 /** Built-in: super_admin, hr_admin, branch_admin, manager, staff — plus roles created in Role management. */
 export type RoleCode = string
@@ -94,6 +94,7 @@ export interface Role {
   employees: number
   users: number
   locked: boolean // the owner role: always every permission
+  assignable: boolean // the signed-in user may give this role to a system user
 }
 
 export interface RoleInput {

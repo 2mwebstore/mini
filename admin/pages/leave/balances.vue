@@ -35,6 +35,7 @@ watch(() => filter.q, () => {
 onMounted(() => lookups.loadDepartments().catch(() => {}))
 
 const rows = computed(() => data.data.value?.items ?? [])
+const pager = usePager(rows) // totals below cover everyone, not just the page
 // Columns: types with an allowance, plus any with someone's own entitlement.
 const columns = computed(() => (data.data.value?.types ?? []).filter(t => t.annual_days > 0 || rows.value.some(r => r.balances.some(b => b.leave_type_id === t.id && b.tracked))))
 const cell = (r: EmployeeBalances, typeId: number) => r.balances.find(b => b.leave_type_id === typeId)
@@ -111,7 +112,7 @@ async function reset() {
               </tr>
             </thead>
             <tbody>
-              <tr v-for="r in rows" :key="r.employee_id">
+              <tr v-for="r in pager.rows.value" :key="r.employee_id">
                 <th scope="row" class="sticky left-0 z-10 border-b border-border bg-surface px-3 py-2 text-left font-normal">
                   <span class="block font-medium">{{ r.full_name }}</span>
                   <span class="block text-xs text-muted">{{ r.employee_code }}<template v-if="r.branch && auth.multiBranch"> · {{ r.branch }}</template></span>
@@ -150,6 +151,7 @@ async function reset() {
             </tfoot>
           </table>
         </div>
+        <AppPagination :page="pager.page.value" :page-size="pager.pageSize.value" :total="pager.total.value" noun="person" @go="pager.go" @size="pager.resize" />
       </div>
       <p class="mt-3 text-xs text-muted">Days count in the year a request starts. "Left" excludes pending requests' days until they are approved; they are still reserved when people ask for more.</p>
     </StateView>

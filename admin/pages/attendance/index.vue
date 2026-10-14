@@ -3,12 +3,11 @@ import { attendanceService } from '~/services/attendance.service'
 import { useAuthStore } from '~/stores/auth'
 import { useLookupsStore } from '~/stores/lookups'
 import type { Attendance, AttendanceFilter } from '~/types/api'
-import { confirmationStatus, dayStatus, formatClock, formatDate, formatMinutes, latestReview, monthStartISO, nextDay, todayISO } from '~/utils/format'
+import { dayStatus, formatClock, formatDate, formatMinutes, latestReview, monthStartISO, nextDay, todayISO } from '~/utils/format'
 import { optionsFrom } from '~/utils/options'
 
 const dayStatusOptions = optionsFrom(dayStatus, ['PRESENT', 'LATE', 'EARLY_LEAVE', 'ABSENT', 'LEAVE'])
 const manualStatusOptions = optionsFrom(dayStatus, ['PRESENT', 'LATE', 'EARLY_LEAVE', 'ABSENT', 'LEAVE', 'HOLIDAY'])
-const confirmationOptions = optionsFrom(confirmationStatus, ['PENDING', 'CONFIRMED', 'REJECTED'])
 
 const auth = useAuthStore()
 const lookups = useLookupsStore()
@@ -25,8 +24,8 @@ const filter = reactive({
   department_id: q('department_id'),
   branch_id: q('branch_id'),
   status: q('status'),
-  confirmation: q('confirmation'),
   page: Number(q('page')) || 1,
+  size: Number(q('page_size')) || 10, // rows per page
 })
 // Departments belong to one branch: drop a choice the new branch doesn't have.
 watch(() => filter.branch_id, (b) => {
@@ -39,18 +38,17 @@ const query = computed<AttendanceFilter>(() => ({
   department_id: Number(filter.department_id) || undefined,
   branch_id: Number(filter.branch_id) || undefined,
   status: filter.status || undefined,
-  confirmation: filter.confirmation || undefined,
   page: filter.page,
-  page_size: 50,
+  page_size: filter.size,
 }))
 
 const list = useResource(() => attendanceService.list(query.value))
 watch(
-  () => [filter.from, filter.to, filter.employee_id, filter.department_id, filter.branch_id, filter.status, filter.confirmation],
+  () => [filter.from, filter.to, filter.employee_id, filter.department_id, filter.branch_id, filter.status, filter.size],
   () => (filter.page = 1),
 )
 watch(query, q => {
-  router.replace({ query: Object.fromEntries(Object.entries(q).filter(([k, v]) => v !== undefined && k !== 'page_size').map(([k, v]) => [k, String(v)])) })
+  router.replace({ query: Object.fromEntries(Object.entries(q).filter(([k, v]) => v !== undefined && !(k === 'page_size' && v === 10)).map(([k, v]) => [k, String(v)])) })
   list.load()
 })
 
@@ -110,11 +108,11 @@ const activeEmployeeOptions = computed(() => activeEmployees.value.map(e => ({ v
 
 <template>
   <div>
-    <PageHeader title="Attendance" subtitle="Every check-in and check-out, each with its own status, location and review. View a day for the full record.">
+    <PageHeader title="Attendance" subtitle="Every check-in and check-out with its time, on time / late / early, location and the reason given. View a day for the full record and its review.">
       <AppButton v-if="auth.can('attendance.edit')" @click="addOpen = true">Add record</AppButton>
     </PageHeader>
 
-    <div class="card mb-4 grid gap-3 p-4 sm:grid-cols-3 lg:grid-cols-7">
+    <div class="card mb-4 grid gap-3 p-4 sm:grid-cols-3 lg:grid-cols-6">
       <FormField label="From" for="f-from"><input id="f-from" v-model="filter.from" type="date" class="input" /></FormField>
       <FormField label="To" for="f-to"><input id="f-to" v-model="filter.to" type="date" class="input" :min="filter.from" /></FormField>
       <FormField label="Employee" for="f-emp">
@@ -126,9 +124,6 @@ const activeEmployeeOptions = computed(() => activeEmployees.value.map(e => ({ v
       </FormField>
       <FormField label="Status" for="f-status">
         <SearchSelect id="f-status" v-model="filter.status" :options="dayStatusOptions" empty-label="All" />
-      </FormField>
-      <FormField label="Review" for="f-conf">
-        <SearchSelect id="f-conf" v-model="filter.confirmation" :options="confirmationOptions" empty-label="All" />
       </FormField>
     </div>
 
@@ -154,13 +149,9 @@ const activeEmployeeOptions = computed(() => activeEmployees.value.map(e => ({ v
                           <svg v-if="p" viewBox="0 0 24 24" class="size-3.5" :class="p.inside ? 'text-success' : 'text-warning'" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" role="img" :aria-label="p.title"><title>{{ p.title }}</title><path d="M12 21s-7-6.2-7-11.5A7 7 0 0 1 19 9.5C19 14.8 12 21 12 21zm0-9a2.5 2.5 0 1 0 0-5 2.5 2.5 0 0 0 0 5z" /></svg>
                         </template>
                       </span>
-                      <span class="mt-0.5 flex items-center gap-1 text-xs">
+                      <span class="mt-0.5 block text-xs">
                         <span v-if="t === 'CHECK_IN'" :class="a.late_minutes ? 'text-warning' : 'text-success'">{{ a.late_minutes ? `Late ${formatMinutes(a.late_minutes)}` : 'On time' }}</span>
                         <span v-else :class="a.early_leave_minutes ? 'text-warning' : 'text-success'">{{ a.early_leave_minutes ? `Early ${formatMinutes(a.early_leave_minutes)}` : 'On time' }}</span>
-                        <template v-for="r in [latestReview(a.confirmations, t)]" :key="t">
-                          <span v-if="r && r.status !== 'CONFIRMED'" class="text-muted">·</span>
-                          <span v-if="r && r.status !== 'CONFIRMED'" :class="r.status === 'REJECTED' ? 'text-danger' : 'text-warning'">{{ confirmationStatus[r.status].label }}</span>
-                        </template>
                       </span>
                     </template>
                   </template>
@@ -176,28 +167,20 @@ const activeEmployeeOptions = computed(() => activeEmployees.value.map(e => ({ v
                   <span v-else class="text-muted">—</span>
                 </td>
                 <td class="whitespace-nowrap text-right">
-                  <div class="inline-flex items-center gap-1">
-                    <AppButton v-if="auth.can('attendance.edit')" size="sm" variant="secondary" :aria-label="`Edit ${a.employee?.full_name} ${formatDate(a.work_date)}`" @click="editing = a">
-                      <svg viewBox="0 0 24 24" class="size-3.5" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 20h9M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4z" /></svg>
-                      Edit
-                    </AppButton>
-                    <AppButton size="sm" variant="ghost" :aria-label="`View ${a.employee?.full_name} ${formatDate(a.work_date)}`" @click="viewing = a.id">View</AppButton>
-                    <AppButton
-                      v-if="auth.can('attendance.edit')"
-                      size="sm"
-                      variant="ghost"
-                      class="text-danger"
-                      :loading="deleting.busy.value === `del${a.id}`"
-                      :aria-label="`Delete ${a.employee?.full_name} ${formatDate(a.work_date)}`"
-                      @click="removeRecord(a)"
-                    >Delete</AppButton>
+                  <div class="inline-flex items-center gap-1.5">
+                    <IconAction kind="view" :label="`View ${a.employee?.full_name} ${formatDate(a.work_date)}`" @click="viewing = a.id" />
+                    <IconAction v-if="auth.can('attendance.edit')" kind="edit" :label="`Edit ${a.employee?.full_name} ${formatDate(a.work_date)}`" @click="editing = a" />
+                    <IconAction
+                      v-if="auth.can('attendance.edit')" kind="delete" :label="`Delete ${a.employee?.full_name} ${formatDate(a.work_date)}`"
+                      :loading="deleting.busy.value === `del${a.id}`" @click="removeRecord(a)"
+                    />
                   </div>
                 </td>
               </tr>
             </tbody>
           </table>
         </div>
-        <AppPagination :page="list.data.value.page" :page-size="list.data.value.page_size" :total="list.data.value.total" @go="p => (filter.page = p)" />
+        <AppPagination :page="list.data.value.page" :page-size="list.data.value.page_size" :total="list.data.value.total" @go="p => (filter.page = p)" @size="n => (filter.size = n)" />
       </div>
     </StateView>
 

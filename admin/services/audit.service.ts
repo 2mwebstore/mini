@@ -1,7 +1,6 @@
-import type { AuditLog, Items } from '~/types/api'
-import { api } from './api'
+import type { AuditLog } from '~/types/api'
+import { listPage, type Paging } from './api'
 
 export const auditService = {
-  list: (query: { action?: string; employee_id?: number; before_id?: number; limit?: number }) =>
-    api.get<Items<AuditLog>>('/audit-logs', query).then(r => r.items ?? []),
+  page: (query: { action?: string; employee_id?: number }, p: Paging) => listPage<AuditLog>('/audit-logs', query, p),
 }

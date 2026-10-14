@@ -2,6 +2,7 @@
 import { employeeService } from '~/services/employee.service'
 import { useAuthStore } from '~/stores/auth'
 import { useLookupsStore } from '~/stores/lookups'
+import type { Employee } from '~/types/api'
 import { employeeStatus } from '~/utils/format'
 import { optionsFrom } from '~/utils/options'
 
@@ -26,22 +27,38 @@ watch(() => filter.branch_id, (b) => {
   if (!lookups.fits('positions', filter.position_id, b)) filter.position_id = ''
 }, { flush: 'sync' })
 
-const list = useResource(() =>
-  employeeService.list({
+const list = usePaged(p =>
+  employeeService.page({
     q: filter.q.trim() || undefined,
     department_id: Number(filter.department_id) || undefined,
     position_id: Number(filter.position_id) || undefined,
     branch_id: Number(filter.branch_id) || undefined,
     status: filter.status || undefined,
     include_inactive: filter.include_inactive || undefined,
-  }),
+  }, p),
 )
 let timer: ReturnType<typeof setTimeout> | undefined
 watch(() => filter.q, () => {
   clearTimeout(timer)
-  timer = setTimeout(list.load, 250)
+  timer = setTimeout(list.reset, 250)
 })
-watch(() => [filter.department_id, filter.position_id, filter.branch_id, filter.status, filter.include_inactive], () => list.load())
+watch(() => [filter.department_id, filter.position_id, filter.branch_id, filter.status, filter.include_inactive], () => list.reset())
+
+// ---------- deactivate (employees are never deleted: their history stays) ----------
+const { busy, run } = useAction()
+const { confirm } = useConfirm()
+async function deactivate(e: Employee) {
+  const ok = await confirm({
+    title: 'Deactivate this employee?',
+    message: 'They can no longer use the Mini App. Their attendance and leave history stays in reports.',
+    details: [{ label: 'Employee', value: `${e.full_name} (${e.employee_code})` }, { label: 'Branch', value: e.branch?.name ?? '—' }],
+    confirmLabel: 'Deactivate',
+  })
+  if (ok && await run(`d${e.id}`, () => employeeService.deactivate(e.id), 'Employee deactivated')) {
+    lookups.invalidateStaff()
+    list.refresh()
+  }
+}
 onMounted(() => {
   lookups.loadDepartments().catch(() => {})
   lookups.loadPositions().catch(() => {})
@@ -80,12 +97,13 @@ onMounted(() => {
       </label>
     </div>
 
-    <StateView :loading="list.loading.value && !list.data.value" :error="list.error.value" :empty="list.data.value?.length === 0" empty-text="No employees match." @retry="list.load">
-      <div class="card overflow-x-auto">
+    <StateView :loading="list.loading.value && !list.data.value" :error="list.error.value" :empty="list.total.value === 0" empty-text="No employees match." @retry="list.load">
+      <div class="card overflow-hidden" :class="{ 'opacity-60': list.loading.value }">
+        <div class="overflow-x-auto">
         <table class="table">
-          <thead><tr><th>ID</th><th>Name</th><th v-if="allBranches">Branch</th><th>Department</th><th>Position</th><th>Role</th><th>Mini App</th><th>Status</th></tr></thead>
+          <thead><tr><th>ID</th><th>Name</th><th v-if="allBranches">Branch</th><th>Department</th><th>Position</th><th>Role</th><th>Mini App</th><th>Status</th><th class="text-right">Actions</th></tr></thead>
           <tbody>
-            <tr v-for="e in list.data.value ?? []" :key="e.id" class="cursor-pointer hover:bg-surface-2/60" @click="navigateTo(`/employees/${e.id}`)">
+            <tr v-for="e in list.rows.value" :key="e.id" class="hover:bg-surface-2/60">
               <td class="font-mono text-xs">{{ e.employee_code }}</td>
               <td><NuxtLink :to="`/employees/${e.id}`" class="font-medium hover:underline" @click.stop>{{ e.full_name }}</NuxtLink></td>
               <td v-if="allBranches" class="text-muted">{{ e.branch?.name || 'All branches' }}</td>
@@ -97,9 +115,21 @@ onMounted(() => {
                 <StatusBadge v-else tone="warning" label="Not linked" />
               </td>
               <td><StatusBadge v-bind="e.deleted_at ? { label: 'Deactivated', tone: 'neutral' } : employeeStatus[e.status]" /></td>
+              <td class="whitespace-nowrap text-right">
+                <div class="inline-flex gap-1.5">
+                  <IconAction kind="view" :to="`/attendance?employee_id=${e.id}`" :label="`View the attendance of ${e.full_name}`" />
+                  <IconAction kind="edit" :to="`/employees/${e.id}`" :label="`Edit ${e.full_name}`" />
+                  <IconAction
+                    v-if="auth.can('staff.manage') && !e.deleted_at" kind="delete" :label="`Deactivate ${e.full_name}`"
+                    :loading="busy === `d${e.id}`" @click="deactivate(e)"
+                  />
+                </div>
+              </td>
             </tr>
           </tbody>
         </table>
+        </div>
+        <AppPagination :page="list.page.value" :page-size="list.pageSize.value" :total="list.total.value" noun="employee" @go="list.go" @size="list.resize" />
       </div>
     </StateView>
   </div>

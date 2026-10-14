@@ -38,6 +38,7 @@ const tiles = computed(() => {
 const weight = (r: DayRow) =>
   r.status === 'NOT_CHECKED_IN' || r.status === 'ABSENT' ? 0 : r.confirmation_status === 'PENDING' || r.confirmation_status === 'REJECTED' ? 1 : r.late_minutes ? 2 : 3
 const rows = computed(() => [...(daily.data.value?.rows ?? [])].sort((a, b) => weight(a) - weight(b) || a.full_name.localeCompare(b.full_name)))
+const pager = usePager(rows) // who needs attention first
 </script>
 
 <template>
@@ -75,7 +76,7 @@ const rows = computed(() => [...(daily.data.value?.rows ?? [])].sort((a, b) => w
               <tr><th>Employee</th><th>{{ auth.multiBranch ? 'Branch' : 'Department' }}</th><th>Shift</th><th>In</th><th>Out</th><th>Worked</th><th>Status</th><th>Review</th></tr>
             </thead>
             <tbody>
-              <tr v-for="r in rows" :key="r.employee_id">
+              <tr v-for="r in pager.rows.value" :key="r.employee_id">
                 <td>
                   <NuxtLink v-if="r.attendance_id" :to="`/attendance/${r.attendance_id}`" class="font-medium hover:underline">{{ r.full_name }}</NuxtLink>
                   <span v-else class="font-medium">{{ r.full_name }}</span>
@@ -103,6 +104,7 @@ const rows = computed(() => [...(daily.data.value?.rows ?? [])].sort((a, b) => w
             </tbody>
           </table>
         </div>
+        <AppPagination v-if="rows.length" :page="pager.page.value" :page-size="pager.pageSize.value" :total="pager.total.value" noun="person" @go="pager.go" @size="pager.resize" />
       </section>
     </StateView>
   </div>

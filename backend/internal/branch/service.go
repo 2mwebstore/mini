@@ -240,14 +240,32 @@ func (s *Service) Update(ctx context.Context, actor *auth.Actor, id uint64, in I
 // admin). They get the branch_admin role in this branch; a replaced admin keeps
 // their account but loses panel powers (Staff role) until given another role on
 // System users.
+//
+// The owner assigns any; someone who manages their branches' admin accounts
+// (users.branch) assigns in their own branches, from the accounts they manage.
 func (s *Service) AssignAdmin(ctx context.Context, actor *auth.Actor, branchID uint64, employeeID *uint64) (*models.Branch, error) {
-	if !actor.Has(auth.PermBranchesManage) {
-		return nil, apperr.Forbidden("Only the owner can assign branch admins.")
+	owner := actor.Has(auth.PermBranchesManage)
+	if !owner && !(actor.Has(auth.PermUsersBranch) && actor.Reaches(branchID) && actor.CanGrant(models.RoleBranchAdmin)) {
+		return nil, apperr.Forbidden("Only the owner, or an admin who manages this branch's accounts, can assign its admin.")
+	}
+	// managed: the account is one the actor may change (always, for the owner).
+	managed := func(tx *gorm.DB, e *models.Employee) bool {
+		if owner {
+			return true
+		}
+		branches, err := auth.BranchesOf(ctx, tx, e.ID)
+		return err == nil && actor.ManagesUser(e, branches)
 	}
 	err := s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 		var b models.Branch
 		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).First(&b, branchID).Error; err != nil {
 			return apperr.NotFound("BRANCH_NOT_FOUND", "Branch not found.")
+		}
+		if !owner && b.AdminEmployeeID != nil {
+			var prev models.Employee
+			if tx.First(&prev, *b.AdminEmployeeID).Error == nil && !managed(tx, &prev) {
+				return apperr.Forbidden("This branch's admin was set by the owner; ask them to change it.")
+			}
 		}
 		var next *models.Employee
 		if employeeID != nil {
@@ -257,6 +275,9 @@ func (s *Service) AssignAdmin(ctx context.Context, actor *auth.Actor, branchID u
 			}
 			if e.RoleID == models.RoleSuperAdmin {
 				return apperr.BadRequest("INVALID_EMPLOYEE", "The owner already manages every branch.")
+			}
+			if !managed(tx, &e) {
+				return apperr.BadRequest("INVALID_EMPLOYEE", "Choose one of your system users (Administration → System users).")
 			}
 			var other models.Branch
 			if tx.Where("admin_employee_id = ? AND id <> ?", e.ID, b.ID).First(&other).Error == nil {

@@ -18,12 +18,12 @@ const tabs = [
   { value: '', label: 'All' },
 ]
 const filter = reactive({ when: 'active', branch_id: '', q: '' })
-const list = useResource(() => scheduleService.overrides({ when: filter.when || undefined, branch_id: filter.branch_id || undefined, q: filter.q.trim() || undefined }))
-watch(() => [filter.when, filter.branch_id], () => list.load())
+const list = usePaged(p => scheduleService.overrides({ when: filter.when || undefined, branch_id: filter.branch_id || undefined, q: filter.q.trim() || undefined }, p))
+watch(() => [filter.when, filter.branch_id], () => list.reset())
 let typing: ReturnType<typeof setTimeout> | undefined
 watch(() => filter.q, () => {
   clearTimeout(typing)
-  typing = setTimeout(() => list.load(), 300)
+  typing = setTimeout(() => list.reset(), 300)
 })
 onMounted(() => {
   lookups.loadEmployees().catch(() => {})
@@ -139,7 +139,7 @@ async function remove(o: ScheduleOverride) {
     details: [{ label: 'Employee', value: o.employee?.full_name ?? '' }, { label: 'Dates', value: `${formatDate(o.start_date)} – ${formatDate(o.end_date)}` },
       { label: 'Schedule', value: kindLabel[o.kind] }] })
   if (!ok) return
-  if (await run(`d${o.id}`, () => scheduleService.deleteOverride(o.id), 'Special schedule deleted')) list.load()
+  if (await run(`d${o.id}`, () => scheduleService.deleteOverride(o.id), 'Special schedule deleted')) list.refresh()
 }
 </script>
 
@@ -158,16 +158,16 @@ async function remove(o: ScheduleOverride) {
     <StateView
       :loading="list.loading.value && !list.data.value"
       :error="list.error.value"
-      :empty="list.data.value?.length === 0"
+      :empty="list.total.value === 0"
       :empty-text="filter.when === 'active' ? 'No special schedules in force today.' : 'No special schedules.'"
       @retry="list.load"
     >
-      <div class="card overflow-hidden">
+      <div class="card overflow-hidden" :class="{ 'opacity-60': list.loading.value }">
         <div class="overflow-x-auto">
           <table class="table">
             <thead><tr><th>Employee</th><th>Dates</th><th>Schedule</th><th>Days</th><th>Reason</th><th v-if="canEdit" class="text-right">Actions</th></tr></thead>
             <tbody>
-              <tr v-for="o in list.data.value ?? []" :key="o.id">
+              <tr v-for="o in list.rows.value" :key="o.id">
                 <td>
                   <span class="font-medium">{{ o.employee?.full_name }}</span>
                   <span class="block text-xs text-muted">{{ o.employee?.employee_code }}<template v-if="o.employee?.branch && auth.multiBranch"> · {{ o.employee.branch.name }}</template></span>
@@ -183,13 +183,16 @@ async function remove(o: ScheduleOverride) {
                 <td class="whitespace-nowrap text-sm">{{ o.kind === 'OFF' ? '—' : workDaysLabel(parseWorkDays(o.work_days)) }}</td>
                 <td class="max-w-xs text-sm text-muted">{{ o.reason || '—' }}</td>
                 <td v-if="canEdit" class="whitespace-nowrap text-right">
-                  <AppButton size="sm" variant="ghost" :aria-label="`Edit special schedule for ${o.employee?.full_name}`" @click="edit(o)">Edit</AppButton>
-                  <AppButton size="sm" variant="ghost" :loading="busy === `d${o.id}`" :aria-label="`Delete special schedule for ${o.employee?.full_name}`" @click="remove(o)">Delete</AppButton>
+                  <div class="inline-flex gap-1.5">
+                    <IconAction kind="edit" :label="`Edit special schedule for ${o.employee?.full_name}`" @click="edit(o)" />
+                    <IconAction kind="delete" :label="`Delete special schedule for ${o.employee?.full_name}`" :loading="busy === `d${o.id}`" @click="remove(o)" />
+                  </div>
                 </td>
               </tr>
             </tbody>
           </table>
         </div>
+        <AppPagination :page="list.page.value" :page-size="list.pageSize.value" :total="list.total.value" noun="special schedule" @go="list.go" @size="list.resize" />
       </div>
     </StateView>
 

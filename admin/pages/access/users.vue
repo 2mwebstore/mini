@@ -6,11 +6,14 @@ import type { Role, RoleCode, SystemUser, SystemUserInput } from '~/types/api'
 import { formatDateTime } from '~/utils/format'
 import { isAdminRole, type SelectOption } from '~/utils/options'
 
-definePageMeta({ permission: 'users.manage' })
+// The owner manages every admin account; a Company Admin (users.branch) the accounts
+// of their own branches — the API decides which roles and branches they may give.
+definePageMeta({ permission: ['users.manage', 'users.branch'] })
 
 const auth = useAuthStore()
 const lookups = useLookupsStore()
-const users = useResource(() => accessService.users())
+const scoped = computed(() => !auth.can('users.manage'))
+const users = usePaged(p => accessService.usersPage(p))
 onMounted(() => {
   lookups.loadRoles().catch(() => {})
   lookups.loadBranches().catch(() => {})
@@ -29,7 +32,8 @@ function access(u: SystemUser) {
 }
 
 // System users get admin roles; managers and staff are employees (they use the Mini App).
-const adminRoles = computed(() => (lookups.roles ?? []).filter(r => isAdminRole(r)))
+// Only the roles the signed-in user may give are offered.
+const adminRoles = computed(() => (lookups.roles ?? []).filter(r => isAdminRole(r) && r.assignable))
 const roleOptions = computed((): SelectOption[] => adminRoles.value.map(r => ({ value: r.code, label: r.name, sub: r.is_system ? undefined : 'custom' })))
 const roleOf = (code: string): Role | undefined => lookups.roles?.find(r => r.code === code)
 // Company-wide roles see every branch; the others work in a home branch.
@@ -57,6 +61,8 @@ const editRoleOptions = computed((): SelectOption[] => {
   return opts
 })
 const needsBranch = computed(() => !!form.role && !companyWide(form.role))
+// Accounts made by a Company Admin always work in one of their branches.
+const branchRequired = computed(() => form.role === 'branch_admin' || scoped.value)
 function generate(): string {
   const chars = 'ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz23456789'
   const bytes = crypto.getRandomValues(new Uint8Array(14))
@@ -77,7 +83,7 @@ async function save() {
     u ? 'System user saved' : 'System user created')
   if (ok) {
     formOpen.value = false
-    users.load()
+    users.refresh()
     lookups.loadBranches(true).catch(() => {}) // branch admins change with roles
   }
 }
@@ -98,7 +104,7 @@ async function remove(u: SystemUser) {
   })
   if (!ok) return
   if (await run(`d${u.id}`, () => accessService.deleteUser(u.id), 'System user deleted')) {
-    users.load()
+    users.refresh()
     lookups.loadBranches(true).catch(() => {})
   }
 }
@@ -106,17 +112,21 @@ async function remove(u: SystemUser) {
 
 <template>
   <div>
-    <PageHeader title="System users" subtitle="Admin panel accounts — separate from employees (the staff who check in). Each has a role, branch access and a sign-in email.">
+    <PageHeader
+      title="System users"
+      :subtitle="scoped ? 'Admin panel accounts for your branches — branch admins and other company admins. Separate from employees (the staff who check in).'
+        : 'Admin panel accounts — separate from employees (the staff who check in). Each has a role, branch access and a sign-in email.'"
+    >
       <AppButton @click="openForm()">New system user</AppButton>
     </PageHeader>
 
-    <StateView :loading="users.loading.value && !users.data.value" :error="users.error.value" :empty="users.data.value?.length === 0" empty-text="No system users yet." @retry="users.load">
-      <div class="card overflow-hidden">
+    <StateView :loading="users.loading.value && !users.data.value" :error="users.error.value" :empty="users.total.value === 0" empty-text="No system users yet." @retry="users.load">
+      <div class="card overflow-hidden" :class="{ 'opacity-60': users.loading.value }">
         <div class="overflow-x-auto">
           <table class="table">
             <thead><tr><th>User</th><th>Role</th><th>Branch access</th><th>Telegram</th><th>Status</th><th>Last sign-in</th><th class="text-right">Actions</th></tr></thead>
             <tbody>
-              <tr v-for="u in users.data.value ?? []" :key="u.id">
+              <tr v-for="u in users.rows.value" :key="u.id">
                 <td>
                   <span class="font-medium">{{ u.full_name }}</span><span v-if="u.self" class="ml-1.5 text-xs text-muted">(you)</span>
                   <span class="block text-xs text-muted">{{ u.email }}<template v-if="u.phone"> · {{ u.phone }}</template></span>
@@ -132,17 +142,20 @@ async function remove(u: SystemUser) {
                 <td><StatusBadge :tone="u.status === 'ACTIVE' ? 'success' : 'neutral'" :label="u.status === 'ACTIVE' ? 'Active' : 'Disabled'" /></td>
                 <td class="whitespace-nowrap text-sm text-muted">{{ u.last_login_at ? formatDateTime(u.last_login_at, auth.company.timezone) : 'Never' }}</td>
                 <td class="whitespace-nowrap text-right">
-                  <AppButton size="sm" variant="ghost" :aria-label="`Edit ${u.full_name}`" @click="openForm(u)">Edit</AppButton>
-                  <AppButton size="sm" variant="ghost" :aria-label="`Reset password of ${u.full_name}`" @click="pwFor = u; pw = ''">Password</AppButton>
-                  <AppButton v-if="!u.self" size="sm" variant="ghost" class="text-danger" :loading="busy === `d${u.id}`" :aria-label="`Delete ${u.full_name}`" @click="remove(u)">Delete</AppButton>
+                  <div class="inline-flex gap-1.5">
+                    <IconAction kind="edit" :label="`Edit ${u.full_name}`" @click="openForm(u)" />
+                    <IconAction kind="password" :label="`Reset password of ${u.full_name}`" @click="pwFor = u; pw = ''" />
+                    <IconAction v-if="!u.self" kind="delete" :label="`Delete ${u.full_name}`" :loading="busy === `d${u.id}`" @click="remove(u)" />
+                  </div>
                 </td>
               </tr>
             </tbody>
           </table>
         </div>
+        <AppPagination :page="users.page.value" :page-size="users.pageSize.value" :total="users.total.value" noun="system user" @go="users.go" @size="users.resize" />
       </div>
       <p class="mt-3 text-xs text-muted">
-        A role decides what someone may do (<NuxtLink to="/access/roles" class="link">Role management</NuxtLink>);
+        A role decides what someone may do (<NuxtLink v-if="!scoped" to="/access/roles" class="link">Role management</NuxtLink><template v-else>you can give roles with no more powers than your own</template>);
         branch access decides where (<NuxtLink to="/access/branches" class="link">Branch assignment</NuxtLink>).
         Someone who also works as staff has a separate record on <NuxtLink to="/employees" class="link">Employees</NuxtLink>.
       </p>
@@ -157,11 +170,13 @@ async function remove(u: SystemUser) {
         </FormField>
         <FormField
           v-if="needsBranch" label="Branch" for="u-branch"
-          :hint="form.role === 'branch_admin' ? 'Becomes this branch’s admin (one per branch).' : 'Optional home branch. Add more branches on Branch assignment; branches they create are theirs too.'"
+          :hint="form.role === 'branch_admin' ? 'Becomes this branch’s admin (one per branch).'
+            : scoped ? 'The branch they work in. Add more of your branches on Branch assignment.'
+            : 'Optional home branch. Add more branches on Branch assignment; branches they create are theirs too.'"
         >
           <SearchSelect
-            id="u-branch" v-model="form.branch_id" :options="branchOptions" :required="form.role === 'branch_admin'"
-            :placeholder="form.role === 'branch_admin' ? 'Choose a branch…' : 'No home branch'" :empty-label="form.role === 'branch_admin' ? undefined : 'No home branch'"
+            id="u-branch" v-model="form.branch_id" :options="branchOptions" :required="branchRequired"
+            :placeholder="branchRequired ? 'Choose a branch…' : 'No home branch'" :empty-label="branchRequired ? undefined : 'No home branch'"
           />
         </FormField>
         <FormField v-else label="Branches" hint="Every branch — limit on Branch assignment."><p class="input bg-surface-2 text-muted">All branches</p></FormField>

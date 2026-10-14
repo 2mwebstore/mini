@@ -1,11 +1,16 @@
 <script setup lang="ts">
 import { accessService } from '~/services/access.service'
+import { useAuthStore } from '~/stores/auth'
 import { useLookupsStore } from '~/stores/lookups'
 import type { SystemUser } from '~/types/api'
 import type { SelectOption } from '~/utils/options'
 
-definePageMeta({ permission: 'users.manage' })
+// The owner assigns any branch; a Company Admin (users.branch) only their own branches
+// to the accounts of their branches (the API enforces both).
+definePageMeta({ permission: ['users.manage', 'users.branch'] })
 
+const auth = useAuthStore()
+const scoped = computed(() => !auth.can('users.manage'))
 const lookups = useLookupsStore()
 const users = useResource(() => accessService.users())
 onMounted(() => {
@@ -51,11 +56,16 @@ function reset(u: SystemUser) {
   draft.value = next
 }
 const rows = computed(() => (users.data.value ?? []).filter(u => u.status === 'ACTIVE'))
+const pager = usePager(rows)
 </script>
 
 <template>
   <div>
-    <PageHeader title="Branch assignment" subtitle="Choose which branches each system user can manage. Users with no branches chosen can manage all branches; a branch admin always has their own branch." />
+    <PageHeader
+      title="Branch assignment"
+      :subtitle="scoped ? 'Choose which of your branches each of your admin accounts can manage; a branch admin always has their own branch.'
+        : 'Choose which branches each system user can manage. Users with no branches chosen can manage all branches; a branch admin always has their own branch.'"
+    />
 
     <StateView :loading="users.loading.value && !users.data.value" :error="users.error.value" :empty="!rows.length" empty-text="No active system users." @retry="users.load">
       <div class="card overflow-hidden">
@@ -63,7 +73,7 @@ const rows = computed(() => (users.data.value ?? []).filter(u => u.status === 'A
           <table class="table">
             <thead><tr><th>User</th><th class="w-1/2">Branches</th><th>Access</th><th class="text-right" /></tr></thead>
             <tbody>
-              <tr v-for="u in rows" :key="u.id">
+              <tr v-for="u in pager.rows.value" :key="u.id">
                 <td>
                   <span class="block font-medium">{{ u.full_name }}<span v-if="u.self" class="ml-1 text-xs font-normal text-muted">(you)</span></span>
                   <span class="block text-xs text-muted">{{ u.role_name }}<template v-if="u.branch_name"> · {{ u.branch_name }}</template></span>
@@ -96,10 +106,11 @@ const rows = computed(() => (users.data.value ?? []).filter(u => u.status === 'A
             </tbody>
           </table>
         </div>
+        <AppPagination :page="pager.page.value" :page-size="pager.pageSize.value" :total="pager.total.value" noun="system user" @go="pager.go" @size="pager.resize" />
       </div>
       <p class="mt-3 text-xs text-muted">
         Branch access limits where a role's powers apply (staff lists, attendance, leave, reports, roster).
-        What they may do there is set by their role in <NuxtLink to="/access/roles" class="link">Role management</NuxtLink>.
+        What they may do there is set by their role<template v-if="!scoped"> in <NuxtLink to="/access/roles" class="link">Role management</NuxtLink></template>.
       </p>
     </StateView>
   </div>

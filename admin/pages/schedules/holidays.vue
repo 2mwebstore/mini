@@ -27,6 +27,7 @@ const rows = computed(() => {
   }
   return [...byDay.values()]
 })
+const pager = usePager(rows) // the year's holidays, 10 dates a page
 
 const newHoliday = reactive({ date: '', name: '', branches: [] as string[] })
 // New holidays go to the branch shown, or to every branch when all are shown.
@@ -75,7 +76,7 @@ async function removeHoliday(h: Holiday, several: boolean) {
       </form>
       <StateView :loading="holidays.loading.value" :error="holidays.error.value" :empty="rows.length === 0" :empty-text="`No holidays in ${year}.`" @retry="holidays.load">
         <ul class="divide-y divide-border">
-          <li v-for="r in rows" :key="`${r.date}|${r.name}`" class="flex flex-wrap items-center justify-between gap-x-3 gap-y-1 py-2 text-sm">
+          <li v-for="r in pager.rows.value" :key="`${r.date}|${r.name}`" class="flex flex-wrap items-center justify-between gap-x-3 gap-y-1 py-2 text-sm">
             <span><span class="inline-block w-36 tabular-nums text-muted">{{ formatDate(r.date, true) }}</span> {{ r.name }}</span>
             <span v-if="showBranch" class="flex flex-wrap items-center gap-1">
               <span v-for="h in r.items" :key="h.id" class="inline-flex items-center gap-1 rounded-full bg-surface-2 py-0.5 pl-2.5 pr-1 text-xs">
@@ -86,12 +87,15 @@ async function removeHoliday(h: Holiday, several: boolean) {
                 >×</button>
               </span>
             </span>
-            <AppButton
-              v-else-if="canEdit" size="sm" variant="ghost" :loading="busy === `h${r.items[0]!.id}`"
-              :aria-label="`Remove ${r.name}`" @click="removeHoliday(r.items[0]!, false)"
-            >Remove</AppButton>
+            <IconAction
+              v-else-if="canEdit" kind="delete" :loading="busy === `h${r.items[0]!.id}`"
+              :label="`Remove ${r.name}`" @click="removeHoliday(r.items[0]!, false)"
+            />
           </li>
         </ul>
+        <div class="-mx-5 -mb-5 mt-2">
+          <AppPagination :page="pager.page.value" :page-size="pager.pageSize.value" :total="pager.total.value" noun="holiday" @go="pager.go" @size="pager.resize" />
+        </div>
       </StateView>
     </section>
   </div>

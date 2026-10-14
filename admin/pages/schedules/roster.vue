@@ -36,6 +36,7 @@ watch(query, v => router.replace({ query: Object.fromEntries(Object.entries({ we
 onMounted(() => lookups.loadDepartments().catch(() => {}))
 
 const rows = computed(() => roster.data.value?.rows ?? [])
+const pager = usePager(rows) // coverage below counts everyone, not just the page
 const days = computed(() => (roster.data.value?.days ?? []).map(d => d.slice(0, 10)))
 const shifts = computed(() => roster.data.value?.shifts ?? [])
 // Each branch has its own shifts: the legend lists each name/colour once.
@@ -166,7 +167,7 @@ const exportUrl = (format: 'xlsx' | 'csv') => scheduleService.exportUrl(query.va
               </tr>
             </thead>
             <tbody>
-              <tr v-for="row in rows" :key="row.employee_id">
+              <tr v-for="row in pager.rows.value" :key="row.employee_id">
                 <th scope="row" class="sticky left-0 z-10 border-b border-border bg-surface px-3 py-2 text-left font-normal">
                   <span class="block truncate font-medium">{{ row.full_name }}</span>
                   <span class="block truncate text-xs text-muted">{{ row.employee_code }}<template v-if="row.branch && auth.multiBranch"> · {{ row.branch }}</template> · {{ row.usual_shift }}</span>
@@ -206,6 +207,7 @@ const exportUrl = (format: 'xlsx' | 'csv') => scheduleService.exportUrl(query.va
             </tfoot>
           </table>
         </div>
+        <AppPagination :page="pager.page.value" :page-size="pager.pageSize.value" :total="pager.total.value" noun="person" @go="pager.go" @size="pager.resize" />
       </div>
     </StateView>
 

@@ -965,7 +965,7 @@ func (s *Service) List(ctx context.Context, actor *auth.Actor, f ListFilter) (*L
 		f.Page = 1
 	}
 	if f.PageSize < 1 || f.PageSize > 200 {
-		f.PageSize = 50
+		f.PageSize = 10 // the default page of every list
 	}
 	q := s.db.WithContext(ctx).Model(&models.Attendance{}).Joins("JOIN employees e ON e.id = attendance.employee_id")
 	if scope != nil {
