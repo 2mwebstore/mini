@@ -2,7 +2,7 @@
 import { employeeService } from '~/services/employee.service'
 import { useAuthStore } from '~/stores/auth'
 import { useLookupsStore } from '~/stores/lookups'
-import { employeeStatus, roleLabels } from '~/utils/format'
+import { employeeStatus } from '~/utils/format'
 import { optionsFrom } from '~/utils/options'
 
 const statusOptions = optionsFrom(employeeStatus)
@@ -11,10 +11,12 @@ const auth = useAuthStore()
 const lookups = useLookupsStore()
 const route = useRoute()
 const allBranches = computed(() => auth.can('all.view'))
+const fromUrl = (k: string) => (typeof route.query[k] === 'string' ? (route.query[k] as string) : '')
 const filter = reactive({
   q: '',
-  department_id: '',
-  branch_id: typeof route.query.branch_id === 'string' ? route.query.branch_id : '',
+  department_id: fromUrl('department_id'),
+  position_id: fromUrl('position_id'),
+  branch_id: fromUrl('branch_id'),
   status: '',
   include_inactive: false,
 })
@@ -23,6 +25,7 @@ const list = useResource(() =>
   employeeService.list({
     q: filter.q.trim() || undefined,
     department_id: Number(filter.department_id) || undefined,
+    position_id: Number(filter.position_id) || undefined,
     branch_id: Number(filter.branch_id) || undefined,
     status: filter.status || undefined,
     include_inactive: filter.include_inactive || undefined,
@@ -33,9 +36,10 @@ watch(() => filter.q, () => {
   clearTimeout(timer)
   timer = setTimeout(list.load, 250)
 })
-watch(() => [filter.department_id, filter.branch_id, filter.status, filter.include_inactive], () => list.load())
+watch(() => [filter.department_id, filter.position_id, filter.branch_id, filter.status, filter.include_inactive], () => list.load())
 onMounted(() => {
   lookups.loadDepartments().catch(() => {})
+  lookups.loadPositions().catch(() => {})
   if (allBranches.value) lookups.loadBranches().catch(() => {})
 })
 </script>
@@ -44,18 +48,23 @@ onMounted(() => {
   <div>
     <PageHeader
       title="Employees"
-      :subtitle="auth.can('all.view') ? 'Everyone in the company.' : auth.can('branch.view') ? `Everyone in ${auth.employee?.branch?.name ?? 'your branch'}.` : 'Your team.'"
+      :subtitle="auth.can('all.view') && auth.allBranches ? 'Everyone in the company.'
+        : auth.branchIds.length > 1 ? `Everyone in your ${auth.branchIds.length} branches.`
+        : auth.can('branch.view') || auth.can('all.view') ? `Everyone in ${auth.employee?.branch?.name ?? 'your branch'}.` : 'Your team.'"
     >
       <AppButton v-if="auth.can('staff.manage')" @click="navigateTo('/employees/new')">Add employee</AppButton>
     </PageHeader>
 
-    <div class="card mb-4 grid gap-3 p-4" :class="allBranches ? 'sm:grid-cols-5' : 'sm:grid-cols-4'">
+    <div class="card mb-4 grid gap-3 p-4 sm:grid-cols-2" :class="allBranches ? 'lg:grid-cols-6' : 'lg:grid-cols-5'">
       <FormField label="Search" for="e-q"><input id="e-q" v-model="filter.q" class="input" type="search" placeholder="Name or employee ID" /></FormField>
       <FormField v-if="allBranches" label="Branch" for="e-branch">
         <SearchSelect id="e-branch" v-model="filter.branch_id" :options="lookups.branchOptions" empty-label="All" />
       </FormField>
       <FormField label="Department" for="e-dept">
         <SearchSelect id="e-dept" v-model="filter.department_id" :options="lookups.departmentOptions" empty-label="All" />
+      </FormField>
+      <FormField label="Position" for="e-pos">
+        <SearchSelect id="e-pos" v-model="filter.position_id" :options="lookups.positionOptions" empty-label="All" />
       </FormField>
       <FormField label="Status" for="e-status">
         <SearchSelect id="e-status" v-model="filter.status" :options="statusOptions" empty-label="All" />
@@ -77,7 +86,7 @@ onMounted(() => {
               <td v-if="allBranches" class="text-muted">{{ e.branch?.name || 'All branches' }}</td>
               <td class="text-muted">{{ e.department?.name || '—' }}</td>
               <td class="text-muted">{{ e.position || '—' }}</td>
-              <td>{{ e.role ? roleLabels[e.role.code] : '' }}</td>
+              <td>{{ e.role?.name ?? '' }}</td>
               <td>
                 <StatusBadge v-if="e.telegram_account" tone="success" :label="e.telegram_account.username ? `@${e.telegram_account.username}` : 'Linked'" />
                 <StatusBadge v-else tone="warning" label="Not linked" />

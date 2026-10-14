@@ -19,6 +19,7 @@ import (
 	"syscall"
 	"time"
 
+	"attendance/backend/internal/access"
 	"attendance/backend/internal/attendance"
 	"attendance/backend/internal/auth"
 	"attendance/backend/internal/branch"
@@ -144,7 +145,7 @@ func serve() error {
 	repSvc := report.NewService(db, st)
 
 	srv := httpapi.New(cfg, httpapi.Deps{DB: db, Redis: rdb, Store: store, Auth: authSvc, Settings: st, Employees: empSvc,
-		Branches: branch.NewService(db), Attendance: attSvc, Leave: leaveSvc, Reports: repSvc, Schedules: schedule.NewService(db, st), Telegram: tg}).HTTPServer(cfg.HTTPAddr)
+		Branches: branch.NewService(db), Attendance: attSvc, Leave: leaveSvc, Reports: repSvc, Schedules: schedule.NewService(db, st), Access: access.NewService(db), Telegram: tg}).HTTPServer(cfg.HTTPAddr)
 	sched := scheduler.New(db, rdb, st, repSvc, notifier)
 	sched.BackupStatusFile = cfg.BackupStatusFile
 	go sched.Run(ctx)
@@ -240,18 +241,11 @@ func seedDemo(args []string) error {
 	if err != nil {
 		return err
 	}
-	store, err := storage.NewS3(cfg.StorageEndpoint, cfg.StorageAccessKey, cfg.StorageSecretKey, cfg.StorageBucket, cfg.StorageRegion, cfg.StorageUseSSL, cfg.StorageURLStyle)
-	if err != nil {
-		return err
-	}
-	if err := store.EnsureBucket(ctx); err != nil {
-		return fmt.Errorf("storage (%s) is needed for the demo photos — is it running? %w", cfg.StorageEndpoint, err)
-	}
 	box, err := secret.New(cfg.JWTSecret)
 	if err != nil {
 		return err
 	}
-	sum, err := demo.Seed(ctx, demo.Deps{DB: db, Store: store, Settings: settings.NewService(db, box)}, demo.Options{Password: pw})
+	sum, err := demo.Seed(ctx, demo.Deps{DB: db, Settings: settings.NewService(db, box)}, demo.Options{Password: pw})
 	if errors.Is(err, demo.ErrAlreadySeeded) {
 		fmt.Println("Demo data is already in this database (employees with codes D-…); nothing changed.")
 		return nil

@@ -196,12 +196,12 @@ func (s *Server) createOverride(c *gin.Context) {
 	if !bind(c, &in) {
 		return
 	}
-	o, err := s.schedules.CreateOverride(c.Request.Context(), actorFrom(c), in)
+	out, err := s.schedules.CreateOverrides(c.Request.Context(), actorFrom(c), in)
 	if err != nil {
 		fail(c, err)
 		return
 	}
-	c.JSON(http.StatusCreated, o)
+	c.JSON(http.StatusCreated, gin.H{"items": out})
 }
 
 func (s *Server) updateOverride(c *gin.Context) {

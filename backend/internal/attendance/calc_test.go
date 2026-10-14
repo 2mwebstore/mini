@@ -227,3 +227,65 @@ func TestBlockers(t *testing.T) {
 		t.Error("check-in on leave day must be blocked")
 	}
 }
+
+func TestHalfDays(t *testing.T) {
+	d := time.Date(2026, 10, 8, 0, 0, 0, 0, time.UTC)
+	normal := ShiftDay(&models.WorkSchedule{StartTime: "08:00", EndTime: "17:00", WorkType: models.WorkNormal, GraceMinutes: 10})
+	night := ShiftDay(&models.WorkSchedule{StartTime: "22:00", EndTime: "06:00", WorkType: models.WorkCrossDay, GraceMinutes: 10})
+	evening := ShiftDay(&models.WorkSchedule{StartTime: "18:00", EndTime: "02:00", WorkType: models.WorkCrossDay})
+	cases := []struct {
+		name          string
+		day           Day
+		first, second [2]string
+		next          bool
+	}{
+		{"normal", normal, [2]string{"08:00", "12:30"}, [2]string{"12:30", "17:00"}, false},
+		{"night", night, [2]string{"22:00", "02:00"}, [2]string{"02:00", "06:00"}, true},
+		{"evening", evening, [2]string{"18:00", "22:00"}, [2]string{"22:00", "02:00"}, false},
+	}
+	for _, c := range cases {
+		first, second, next, err := c.day.Halves(d, pp)
+		if err != nil || first != c.first || second != c.second || next != c.next {
+			t.Errorf("%s: halves %v %v next=%v err=%v", c.name, first, second, next, err)
+		}
+	}
+
+	// First half off: late counts from the midpoint. Second half off: early from the midpoint.
+	am := normal.WithHalfOff(models.LeaveFirstHalf, d, pp)
+	if got := am.LateMinutes(d, at(d, "12:35"), pp); got != 0 {
+		t.Errorf("normal, first half off, 12:35 = within grace, got %d late", got)
+	}
+	if got := am.LateMinutes(d, at(d, "12:50"), pp); got != 20 {
+		t.Errorf("normal, first half off, 12:50: want 20 late, got %d", got)
+	}
+	pm := normal.WithHalfOff(models.LeaveSecondHalf, d, pp)
+	if got := pm.EarlyLeaveMinutes(d, at(d, "12:30"), pp); got != 0 {
+		t.Errorf("normal, second half off, leaving 12:30: want 0 early, got %d", got)
+	}
+	if got := pm.EarlyLeaveMinutes(d, at(d, "12:00"), pp); got != 30 {
+		t.Errorf("normal, second half off, leaving 12:00: want 30 early, got %d", got)
+	}
+
+	next := d.AddDate(0, 0, 1)
+	n1 := night.WithHalfOff(models.LeaveFirstHalf, d, pp) // works 02:00-06:00 the next morning
+	if s, _ := n1.StartAt(d, pp); !s.Equal(at(next, "02:00")) {
+		t.Errorf("night, first half off: starts %v", s)
+	}
+	if got := n1.LateMinutes(d, at(next, "02:30"), pp); got != 30 {
+		t.Errorf("night, first half off, 02:30: want 30 late, got %d", got)
+	}
+	if e, _ := n1.EndAt(d, pp); !e.Equal(at(next, "06:00")) {
+		t.Errorf("night, first half off: ends %v", e)
+	}
+	n2 := night.WithHalfOff(models.LeaveSecondHalf, d, pp) // works 22:00-02:00
+	if got := n2.EarlyLeaveMinutes(d, at(next, "02:00"), pp); got != 0 {
+		t.Errorf("night, second half off, leaving 02:00: want 0 early, got %d", got)
+	}
+	if got := n2.EarlyLeaveMinutes(d, at(next, "01:00"), pp); got != 60 {
+		t.Errorf("night, second half off, leaving 01:00: want 60 early, got %d", got)
+	}
+	e2 := evening.WithHalfOff(models.LeaveSecondHalf, d, pp) // works 18:00-22:00, same day
+	if e, _ := e2.EndAt(d, pp); !e.Equal(at(d, "22:00")) || e2.CrossDay {
+		t.Errorf("evening, second half off: ends %v cross=%v", e, e2.CrossDay)
+	}
+}

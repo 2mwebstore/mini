@@ -3,7 +3,6 @@ import { branchService } from '~/services/branch.service'
 import { useAuthStore } from '~/stores/auth'
 import { useLookupsStore } from '~/stores/lookups'
 import type { Branch, BranchInput } from '~/types/api'
-import { roleLabels } from '~/utils/format'
 import type { SelectOption } from '~/utils/options'
 
 definePageMeta({ permission: ['branches.manage', 'branch.settings'] })
@@ -57,7 +56,7 @@ const candidateOptions = computed((): SelectOption[] =>
   candidates.value.map(e => ({
     value: String(e.id),
     label: e.full_name,
-    sub: [e.employee_code, e.branch?.name, e.role ? roleLabels[e.role.code] : ''].filter(Boolean).join(' · '),
+    sub: [e.employee_code, e.branch?.name, e.role?.name ?? ''].filter(Boolean).join(' · '),
     disabled: e.id === branch.data.value?.admin_employee_id,
   })),
 )

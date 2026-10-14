@@ -24,15 +24,6 @@ const greeting = computed(() => {
   return `${part}, ${auth.me?.full_name.split(' ')[0] ?? ''}`
 })
 
-// What the big button does right now — the API's precheck decides, so the app
-// never offers an action the server would refuse.
-const action = computed(() => {
-  const t = today.value
-  if (!t) return null
-  if (t.check_in.allowed) return { to: '/check/in', label: t.attendance?.check_in_at ? 'Submit check-in again' : 'Check in', variant: 'success' as const }
-  if (t.check_out.allowed) return { to: '/check/out', label: t.attendance?.check_out_at ? 'Submit check-out again' : 'Check out', variant: 'primary' as const }
-  return null
-})
 
 const initial = computed(() => (auth.me?.full_name ?? '?').trim().charAt(0).toUpperCase())
 
@@ -42,9 +33,12 @@ const shortcuts = [
   { to: '/leave', icon: 'leave', tint: 'bg-info/15 text-info', title: 'My leave', sub: 'Status of your requests' },
 ] as const
 
+// Check-in and check-out each have their own tile; the API's precheck decides which
+// is available, so the app never offers an action the server would refuse. When
+// neither is (on leave, recorded by an administrator…) and the day isn't done, say why.
 const blockedMessage = computed(() => {
   const t = today.value
-  if (!t || action.value) return ''
+  if (!t || t.check_in.allowed || t.check_out.allowed || t.attendance?.check_out_at) return ''
   return (t.attendance?.check_in_at ? t.check_out.message : t.check_in.message) ?? ''
 })
 </script>
@@ -63,11 +57,11 @@ const blockedMessage = computed(() => {
 
     <StateView :loading="loading && !today" :error="today ? null : error" @retry="load">
       <TodayCard v-if="today" :today="today" :timezone="auth.timezone">
-        <AppButton v-if="action" block :variant="action.variant" class="py-4 text-[17px]" @click="navigateTo(action.to)">
-          <AppIcon :name="action.to === '/check/in' ? 'in' : 'out'" class="size-5" />
-          {{ action.label }}
-        </AppButton>
-        <p v-else-if="blockedMessage" class="rounded-2xl bg-page px-4 py-3 text-center text-[15px] text-hint">
+        <div class="grid grid-cols-2 gap-3">
+          <CheckTile kind="in" :today="today" :timezone="auth.timezone" @go="navigateTo('/check/in')" />
+          <CheckTile kind="out" :today="today" :timezone="auth.timezone" @go="navigateTo('/check/out')" />
+        </div>
+        <p v-if="blockedMessage" class="mt-3 rounded-2xl bg-page px-4 py-3 text-center text-[15px] text-hint">
           {{ blockedMessage }}
         </p>
       </TodayCard>

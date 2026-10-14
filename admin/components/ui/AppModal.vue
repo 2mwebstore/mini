@@ -1,6 +1,6 @@
 <script setup lang="ts">
 const open = defineModel<boolean>({ required: true })
-const props = defineProps<{ title: string; wide?: boolean }>()
+const props = defineProps<{ title: string; wide?: boolean; xwide?: boolean }>()
 
 const dialog = ref<HTMLDialogElement>()
 watch(open, v => (v ? dialog.value?.showModal() : dialog.value?.close()), { flush: 'post' })
@@ -12,7 +12,7 @@ onMounted(() => open.value && dialog.value?.showModal())
   <dialog
     ref="dialog"
     class="m-auto w-[calc(100%-2rem)] rounded-xl border border-border bg-surface p-0 text-fg shadow-xl backdrop:bg-black/40"
-    :class="props.wide ? 'max-w-2xl' : 'max-w-md'"
+    :class="props.xwide ? 'max-w-4xl' : props.wide ? 'max-w-2xl' : 'max-w-md'"
     :aria-label="title"
     @close="open = false"
   >

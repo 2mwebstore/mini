@@ -110,16 +110,15 @@ const zoneOptions = zones.map(z => ({ value: z, label: z.replaceAll('_', ' ') })
           </label>
         </fieldset>
 
-        <fieldset class="card grid gap-4 p-5 sm:grid-cols-2" :disabled="!canEdit">
-          <legend class="sr-only">Location</legend>
-          <h2 class="text-sm font-semibold sm:col-span-2">Location (GPS)</h2>
-          <label class="flex items-center gap-2 text-sm sm:col-span-2"><input v-model="form.gps_enabled" type="checkbox" class="size-4 accent-[var(--primary)]" /> Ask for location at check-in/out</label>
-          <label class="flex items-center gap-2 text-sm" :class="{ 'opacity-50': !form.gps_enabled }"><input v-model="form.gps_required" type="checkbox" class="size-4 accent-[var(--primary)]" :disabled="!form.gps_enabled" /> Location is required</label>
-          <label class="flex items-center gap-2 text-sm" :class="{ 'opacity-50': !form.gps_enabled }"><input v-model="form.gps_reject_outside" type="checkbox" class="size-4 accent-[var(--primary)]" :disabled="!form.gps_enabled" /> Refuse outside the office radius</label>
-          <FormField label="Office latitude" for="s-lat"><input id="s-lat" v-model.number="form.office_latitude" class="input" type="number" step="any" min="-90" max="90" /></FormField>
-          <FormField label="Office longitude" for="s-lng"><input id="s-lng" v-model.number="form.office_longitude" class="input" type="number" step="any" min="-180" max="180" /></FormField>
-          <FormField label="Allowed radius (m)" for="s-radius"><input id="s-radius" v-model.number="form.allowed_radius_meters" class="input" type="number" min="10" max="100000" /></FormField>
-        </fieldset>
+        <section class="card flex flex-col justify-between gap-3 p-5">
+          <div>
+            <h2 class="text-sm font-semibold">Location (GPS)</h2>
+            <p class="mt-1 text-sm text-muted">
+              GPS rules ({{ form.gps_enabled ? (form.gps_required ? 'required' : 'on') : 'off' }} by default) and office locations, for the company and each branch.
+            </p>
+          </div>
+          <NuxtLink to="/settings/location" class="link text-sm font-medium">Open Location (GPS) →</NuxtLink>
+        </section>
 
         <fieldset class="card grid gap-4 p-5 sm:grid-cols-3 lg:col-span-2" :disabled="!canEdit">
           <legend class="sr-only">Scheduled jobs</legend>

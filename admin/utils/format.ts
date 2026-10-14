@@ -141,3 +141,20 @@ export function formatDayMonth(iso: string | null | undefined): string {
   if (!iso) return '—'
   return new Intl.DateTimeFormat('en-GB', { day: '2-digit', month: 'short', timeZone: 'UTC' }).format(new Date(iso))
 }
+
+/** "3 days", "2.5 days". */
+export function fmtDays(n: number): string {
+  return `${n % 1 ? n.toFixed(1) : n} day${n === 1 ? '' : 's'}`
+}
+
+/** "Half day · first half 09:00–13:15", or "3 days" for a full-day request. */
+export function leaveSpan(l: { day_type?: string; half_from?: string | null; half_to?: string | null; days: number }): string {
+  if (!l.day_type || l.day_type === 'FULL') return fmtDays(l.days)
+  const part = l.day_type === 'FIRST_HALF' ? 'first half' : 'second half'
+  return `Half day · ${part}${l.half_from && l.half_to ? ` ${l.half_from}–${l.half_to}` : ''}`
+}
+
+/** The latest review of a check-in or check-out (re-submissions supersede earlier ones). */
+export function latestReview<T extends { id: number; type: string; status: string }>(confs: T[] | undefined, type: 'CHECK_IN' | 'CHECK_OUT'): T | undefined {
+  return (confs ?? []).filter(c => c.type === type && c.status !== 'SUPERSEDED').sort((a, b) => b.id - a.id)[0]
+}

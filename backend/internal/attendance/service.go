@@ -47,14 +47,14 @@ type LocationInput struct {
 	Accuracy  *float64 `json:"accuracy"`
 }
 
-// SubmitInput is a check-in/out from the Mini App: the photo taken in the app and
-// the optional device location.
+// SubmitInput is a check-in/out from the Mini App: the device location (when
+// shared) and, optionally, a photo — the Mini App no longer takes one.
 type SubmitInput struct {
 	PhotoData []byte
 	Location  *LocationInput
 }
 
-// MaxUploadBytes caps uploaded photos (the Mini App downsizes before sending).
+// MaxUploadBytes caps uploaded photos.
 const MaxUploadBytes = 8 << 20
 
 type SubmitResult struct {
@@ -85,12 +85,27 @@ func (s *Service) isHoliday(ctx context.Context, date time.Time) (bool, string) 
 	return false, ""
 }
 
+// onApprovedLeave: approved full-day leave covers date (a half day still works the other half).
 func (s *Service) onApprovedLeave(ctx context.Context, tx *gorm.DB, employeeID uint64, date time.Time) bool {
 	var n int64
 	tx.WithContext(ctx).Model(&models.LeaveRequest{}).
-		Where("employee_id = ? AND status = ? AND start_date <= ? AND end_date >= ?", employeeID, models.LeaveApproved, date, date).
+		Where("employee_id = ? AND status = ? AND day_type = ? AND start_date <= ? AND end_date >= ?",
+			employeeID, models.LeaveApproved, models.LeaveFullDay, date, date).
 		Count(&n)
 	return n > 0
+}
+
+// HalfDayLeave is the employee's approved half-day leave on date, if any.
+func HalfDayLeave(ctx context.Context, db *gorm.DB, employeeID uint64, date time.Time) *models.LeaveRequest {
+	var lr models.LeaveRequest
+	err := db.WithContext(ctx).Preload("LeaveType").
+		Where("employee_id = ? AND status = ? AND day_type IN ? AND start_date = ?",
+			employeeID, models.LeaveApproved, []string{models.LeaveFirstHalf, models.LeaveSecondHalf}, date).
+		First(&lr).Error
+	if err != nil {
+		return nil
+	}
+	return &lr
 }
 
 func latestConfirmation(confs []models.AttendanceConfirmation, typ string) *models.AttendanceConfirmation {
@@ -104,6 +119,29 @@ func latestConfirmation(confs []models.AttendanceConfirmation, typ string) *mode
 	return latest
 }
 
+// ---------- GPS rules ----------
+
+// GPSRules is the location policy for one person's check-ins.
+type GPSRules struct {
+	Enabled, Required, RejectOutside bool
+	Source                           string // "branch" or "company"
+}
+
+// GPSRulesFor: a branch's own GPS rules, or the company's when the branch has none.
+func GPSRulesFor(st *settings.Settings, b *models.Branch) GPSRules {
+	if b != nil && b.GPSEnabled != nil {
+		r := GPSRules{Enabled: *b.GPSEnabled, Source: "branch"}
+		if b.GPSRequired != nil {
+			r.Required = r.Enabled && *b.GPSRequired
+		}
+		if b.GPSRejectOutside != nil {
+			r.RejectOutside = r.Enabled && *b.GPSRejectOutside
+		}
+		return r
+	}
+	return GPSRules{Enabled: st.GPSEnabled, Required: st.GPSRequired, RejectOutside: st.GPSRejectOutside, Source: "company"}
+}
+
 // ---------- which work date an event belongs to ----------
 
 const (
@@ -114,11 +152,23 @@ const (
 	earlyCheckinWindow = 2 * time.Hour
 )
 
-// shiftFor decides the work date of a check-in/out made at now, and that date's
-// schedule. Normally today; but a night shift (cross-day) that started yesterday
+// shiftFor decides the work date of a check-in/out made at now, and the hours to
+// work that date: the shift, less the half on leave for an approved half day.
+func (s *Service) shiftFor(ctx context.Context, db *gorm.DB, emp *models.Employee, now time.Time, loc *time.Location, typ string) (time.Time, Day, error) {
+	date, day, err := s.workDateFor(ctx, db, emp, now, loc, typ)
+	if err != nil || !day.Work {
+		return date, day, err
+	}
+	if lr := HalfDayLeave(ctx, db, emp.ID, date); lr != nil {
+		day = day.WithHalfOff(lr.DayType, date, loc)
+	}
+	return date, day, nil
+}
+
+// workDateFor: normally today; but a night shift (cross-day) that started yesterday
 // still owns a late check-in made before it ends, and its check-out until a few
 // hours after it ends.
-func (s *Service) shiftFor(ctx context.Context, db *gorm.DB, emp *models.Employee, now time.Time, loc *time.Location, typ string) (time.Time, Day, error) {
+func (s *Service) workDateFor(ctx context.Context, db *gorm.DB, emp *models.Employee, now time.Time, loc *time.Location, typ string) (time.Time, Day, error) {
 	today := timeutil.DateOf(now, loc)
 	yday := today.AddDate(0, 0, -1)
 	plan, err := LoadPlanner(ctx, db, []uint64{emp.ID}, yday, today)
@@ -169,7 +219,8 @@ func (s *Service) Precheck(ctx context.Context, actor *auth.Actor, typ string) (
 	if err != nil {
 		return nil, err
 	}
-	res := &PrecheckResult{Allowed: true, NeedGPS: st.GPSEnabled, GPSRequired: st.GPSRequired}
+	gps := GPSRulesFor(st, actor.Employee.Branch)
+	res := &PrecheckResult{Allowed: true, NeedGPS: gps.Enabled, GPSRequired: gps.Required}
 	date, _, err := s.shiftFor(ctx, s.db, &actor.Employee, s.Now(), st.Location, typ)
 	if err != nil {
 		return nil, err
@@ -218,6 +269,17 @@ type TodayStatus struct {
 	Attendance   *models.Attendance `json:"attendance"` // nil until something is recorded
 	CheckIn      *PrecheckResult    `json:"check_in"`
 	CheckOut     *PrecheckResult    `json:"check_out"`
+	HalfLeave    *HalfLeave         `json:"half_leave,omitempty"` // approved half-day leave on Date
+}
+
+// HalfLeave is the half of the day an employee has off; the schedule shown is the other half.
+type HalfLeave struct {
+	DayType    string `json:"day_type"` // FIRST_HALF | SECOND_HALF
+	From       string `json:"from"`
+	To         string `json:"to"`
+	LeaveType  string `json:"leave_type"`
+	ShiftStart string `json:"shift_start"` // the whole shift, for naming the half (morning / first half)
+	WorkType   string `json:"work_type"`
 }
 
 func (s *Service) Today(ctx context.Context, actor *auth.Actor) (*TodayStatus, error) {
@@ -248,6 +310,23 @@ func (s *Service) Today(ctx context.Context, actor *auth.Actor) (*TodayStatus, e
 	}
 	if hol, name := s.isHoliday(ctx, date); hol {
 		out.WorkDay, out.Holiday = false, name
+	}
+	if lr := HalfDayLeave(ctx, s.db, actor.ID(), date); lr != nil && out.WorkDay {
+		h := &HalfLeave{DayType: lr.DayType, WorkType: models.WorkNormal}
+		if plan, err := LoadPlanner(ctx, s.db, []uint64{actor.ID()}, date, date); err == nil {
+			whole := plan.Day(&actor.Employee, date)
+			h.ShiftStart = whole.Start
+			if whole.CrossDay {
+				h.WorkType = models.WorkCrossDay
+			}
+		}
+		if lr.HalfFrom != nil && lr.HalfTo != nil {
+			h.From, h.To = *lr.HalfFrom, *lr.HalfTo
+		}
+		if lr.LeaveType != nil {
+			h.LeaveType = lr.LeaveType.Name
+		}
+		out.HalfLeave = h
 	}
 	var att models.Attendance
 	err = s.db.WithContext(ctx).Preload("Confirmations").Where("employee_id = ? AND work_date = ?", actor.ID(), date).First(&att).Error
@@ -326,9 +405,6 @@ func (s *Service) submit(ctx context.Context, actor *auth.Actor, typ string, in 
 	if !actor.Has(auth.PermAttendanceSelf) {
 		return nil, apperr.ErrForbidden
 	}
-	if len(in.PhotoData) == 0 {
-		return nil, apperr.BadRequest("PHOTO_REQUIRED", "A photo is required.")
-	}
 	st, err := s.settings.Get(ctx)
 	if err != nil {
 		return nil, err
@@ -348,15 +424,16 @@ func (s *Service) submit(ctx context.Context, actor *auth.Actor, typ string, in 
 	}
 	var locRow *models.AttendanceLocation
 	label := "Not provided"
-	if st.GPSEnabled {
+	gps := GPSRulesFor(st, emp.Branch)
+	if gps.Enabled {
 		if in.Location == nil {
-			if st.GPSRequired {
+			if gps.Required {
 				return nil, apperr.BadRequest("LOCATION_REQUIRED", "Please share your current location.")
 			}
 		} else {
 			dist := DistanceMeters(in.Location.Latitude, in.Location.Longitude, officeLat, officeLng)
 			inside := dist <= radius
-			if !inside && st.GPSRejectOutside {
+			if !inside && gps.RejectOutside {
 				return nil, apperr.BadRequest("OUTSIDE_OFFICE", fmt.Sprintf("You are %.0f m from the office (allowed: %.0f m).", dist, radius))
 			}
 			locRow = &models.AttendanceLocation{Type: typ, Latitude: in.Location.Latitude, Longitude: in.Location.Longitude,
@@ -372,17 +449,19 @@ func (s *Service) submit(ctx context.Context, actor *auth.Actor, typ string, in 
 		label = "Received"
 	}
 
-	// --- cheap state check before storing the photo ---
+	// --- cheap state check before storing anything ---
 	if pre, err := s.Precheck(ctx, actor, typ); err != nil {
 		return nil, err
 	} else if !pre.Allowed {
 		return nil, apperr.Conflict("NOT_ALLOWED", pre.Message)
 	}
 
-	// --- photo: validate, reject re-used images, store ---
-	photo, err := s.storePhoto(ctx, emp, typ, date, now, in.PhotoData)
-	if err != nil {
-		return nil, err
+	// --- optional photo: validate, reject re-used images, store ---
+	var photo *models.AttendancePhoto
+	if len(in.PhotoData) > 0 {
+		if photo, err = s.storePhoto(ctx, emp, typ, date, now, in.PhotoData); err != nil {
+			return nil, err
+		}
 	}
 
 	// --- transactional state change ---
@@ -464,17 +543,21 @@ func (s *Service) submit(ctx context.Context, actor *auth.Actor, typ string, in 
 			}
 		}
 
-		photo.AttendanceID = att.ID
-		if err := tx.Create(photo).Error; err != nil {
-			return err
+		conf := models.AttendanceConfirmation{AttendanceID: att.ID, Type: typ, Status: confStatus}
+		if photo != nil {
+			photo.AttendanceID = att.ID
+			if err := tx.Create(photo).Error; err != nil {
+				return err
+			}
+			conf.PhotoID = &photo.ID
 		}
 		if locRow != nil {
 			locRow.AttendanceID = att.ID
 			if err := tx.Create(locRow).Error; err != nil {
 				return err
 			}
+			conf.LocationID = &locRow.ID
 		}
-		conf := models.AttendanceConfirmation{AttendanceID: att.ID, Type: typ, Status: confStatus}
 		if confStatus == models.ConfConfirmed {
 			conf.ReviewedAt = &now
 		}
@@ -489,9 +572,13 @@ func (s *Service) submit(ctx context.Context, actor *auth.Actor, typ string, in 
 		if typ == models.TypeCheckOut {
 			action = audit.ActionCheckOut
 		}
+		details := map[string]any{"at": now, "late_minutes": att.LateMinutes, "working_minutes": att.WorkingMinutes,
+			"location": label, "resubmission": res.Resubmission}
+		if photo != nil {
+			details["photo_key"] = photo.StorageKey
+		}
 		if err := audit.Write(ctx, tx, actor, audit.Entry{Action: action, EntityType: "attendance", EntityID: att.ID, TargetEmployeeID: emp.ID,
-			Details: map[string]any{"at": now, "late_minutes": att.LateMinutes, "working_minutes": att.WorkingMinutes,
-				"location": label, "resubmission": res.Resubmission, "photo_key": photo.StorageKey}}); err != nil {
+			Details: details}); err != nil {
 			return err
 		}
 		res.Attendance = att
@@ -501,10 +588,12 @@ func (s *Service) submit(ctx context.Context, actor *auth.Actor, typ string, in 
 		return nil, err
 	}
 
-	s.notify.AttendanceSubmitted(notification.AttendanceEvent{
-		Attendance: res.Attendance, Employee: emp, Type: typ, ConfirmationID: confID, Pending: res.Pending,
-		PhotoID: photo.ID, PhotoData: in.PhotoData, LocationLabel: label, Loc: loc,
-	})
+	ev := notification.AttendanceEvent{Attendance: res.Attendance, Employee: emp, Type: typ, ConfirmationID: confID, Pending: res.Pending,
+		LocationLabel: label, Loc: loc}
+	if photo != nil {
+		ev.PhotoID, ev.PhotoData = photo.ID, in.PhotoData
+	}
+	s.notify.AttendanceSubmitted(ev)
 	return res, nil
 }
 
@@ -691,7 +780,11 @@ type PendingItem struct {
 	CheckInAt      *time.Time `json:"check_in_at"`
 	CheckOutAt     *time.Time `json:"check_out_at"`
 	LateMinutes    int        `json:"late_minutes"`
-	PhotoID        uint64     `json:"photo_id"`
+	EarlyMinutes   int        `json:"early_leave_minutes"`
+	PhotoID        *uint64    `json:"photo_id"` // nil: no photo (the Mini App no longer takes one)
+	DistanceMeters *float64   `json:"distance_meters"`
+	InsideOffice   *bool      `json:"inside_office"`
+	Accuracy       *float64   `json:"accuracy"`
 }
 
 // Pending lists reviews the actor is allowed to act on.
@@ -704,10 +797,11 @@ func (s *Service) Pending(ctx context.Context, actor *auth.Actor, limit int) ([]
 	}
 	q := s.db.WithContext(ctx).Table("attendance_confirmations c").
 		Select(`c.id AS confirmation_id, a.id AS attendance_id, c.type, e.id AS employee_id, e.employee_code, e.full_name,
-			a.work_date, a.check_in_at, a.check_out_at, a.late_minutes,
-			(SELECT p.id FROM attendance_photos p WHERE p.attendance_id = a.id AND p.type = c.type ORDER BY p.id DESC LIMIT 1) AS photo_id`).
+			a.work_date, a.check_in_at, a.check_out_at, a.late_minutes, a.early_leave_minutes AS early_minutes,
+			c.photo_id, l.distance_meters, l.inside_office, l.accuracy`).
 		Joins("JOIN attendance a ON a.id = c.attendance_id").
 		Joins("JOIN employees e ON e.id = a.employee_id").
+		Joins("LEFT JOIN attendance_locations l ON l.id = c.location_id"). // shared with this submission
 		Where("c.status = ?", models.ConfPending).
 		Order("c.id ASC").Limit(limit)
 	q = auth.ReviewScope(q, actor)
@@ -718,8 +812,11 @@ func (s *Service) Pending(ctx context.Context, actor *auth.Actor, limit int) ([]
 // Get returns one attendance record with photos, locations and reviews, if the actor may see it.
 func (s *Service) Get(ctx context.Context, actor *auth.Actor, id uint64) (*models.Attendance, error) {
 	var att models.Attendance
-	err := s.db.WithContext(ctx).Preload("Employee").Preload("Employee.Department").Preload("Photos").Preload("Locations").
-		Preload("Confirmations").First(&att, id).Error
+	err := s.db.WithContext(ctx).Preload("Employee").Preload("Employee.Department").Preload("Employee.Branch").
+		Preload("Employee.WorkSchedule").Preload("Photos").Preload("Locations", func(db *gorm.DB) *gorm.DB { return db.Order("id") }).
+		Preload("Confirmations", func(db *gorm.DB) *gorm.DB { return db.Order("id") }).
+		Preload("Confirmations.Reviewer", func(db *gorm.DB) *gorm.DB { return db.Select("id", "employee_code", "full_name") }).
+		First(&att, id).Error
 	if errors.Is(err, gorm.ErrRecordNotFound) {
 		return nil, apperr.NotFound("NOT_FOUND", "Attendance record not found.")
 	}
@@ -730,6 +827,44 @@ func (s *Service) Get(ctx context.Context, actor *auth.Actor, id uint64) (*model
 		return nil, apperr.NotFound("NOT_FOUND", "Attendance record not found.")
 	}
 	return &att, nil
+}
+
+// Detail is one record with the day's plan: the hours the employee was expected
+// to work (less a half-day leave), a holiday, and approved leave on the date.
+type Detail struct {
+	Attendance *models.Attendance
+	Schedule   Day
+	Holiday    string
+	Leave      *models.LeaveRequest
+}
+
+// Detail returns Get plus the day's plan.
+func (s *Service) Detail(ctx context.Context, actor *auth.Actor, id uint64) (*Detail, error) {
+	att, err := s.Get(ctx, actor, id)
+	if err != nil {
+		return nil, err
+	}
+	out := &Detail{Attendance: att}
+	plan, err := LoadPlanner(ctx, s.db, []uint64{att.EmployeeID}, att.WorkDate, att.WorkDate)
+	if err != nil {
+		return nil, err
+	}
+	out.Schedule = plan.Day(att.Employee, att.WorkDate)
+	if _, name := s.isHoliday(ctx, att.WorkDate); name != "" {
+		out.Holiday = name
+	}
+	var lr models.LeaveRequest
+	if s.db.WithContext(ctx).Preload("LeaveType").
+		Where("employee_id = ? AND status = ? AND start_date <= ? AND end_date >= ?", att.EmployeeID, models.LeaveApproved, att.WorkDate, att.WorkDate).
+		Order("id DESC").First(&lr).Error == nil {
+		out.Leave = &lr
+		if lr.IsHalfDay() {
+			if st, err := s.settings.Get(ctx); err == nil {
+				out.Schedule = out.Schedule.WithHalfOff(lr.DayType, att.WorkDate, st.Location)
+			}
+		}
+	}
+	return out, nil
 }
 
 // PhotoByID streams a photo after checking the actor may see its attendance record.
@@ -813,7 +948,9 @@ func (s *Service) List(ctx context.Context, actor *auth.Actor, f ListFilter) (*L
 	if err := q.Count(&res.Total).Error; err != nil {
 		return nil, err
 	}
-	err = q.Preload("Employee").Preload("Employee.Branch").Order("attendance.work_date DESC, e.full_name ASC").
+	// Reviews and locations let the list show the check-in and the check-out each with its own status.
+	err = q.Preload("Employee").Preload("Employee.Branch").Preload("Confirmations").Preload("Locations").
+		Order("attendance.work_date DESC, e.full_name ASC").
 		Offset((f.Page - 1) * f.PageSize).Limit(f.PageSize).Find(&res.Items).Error
 	return res, err
 }

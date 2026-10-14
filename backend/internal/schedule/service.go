@@ -578,17 +578,18 @@ func (s *Service) CopyRoster(ctx context.Context, actor *auth.Actor, from, to ti
 // ---------- special / temporary schedules ----------
 
 type OverrideInput struct {
-	EmployeeID     uint64  `json:"employee_id"`
-	StartDate      string  `json:"start_date"`
-	EndDate        string  `json:"end_date"`
-	Kind           string  `json:"kind"` // SHIFT | CUSTOM | OFF
-	WorkScheduleID *uint64 `json:"work_schedule_id"`
-	StartTime      *string `json:"start_time"`
-	EndTime        *string `json:"end_time"`
-	WorkType       *string `json:"work_type"`
-	GraceMinutes   *int    `json:"grace_minutes"`
-	WorkDays       []int   `json:"work_days"`
-	Reason         string  `json:"reason"`
+	EmployeeID     uint64   `json:"employee_id"`
+	EmployeeIDs    []uint64 `json:"employee_ids"` // create only: the same schedule for each of these people
+	StartDate      string   `json:"start_date"`
+	EndDate        string   `json:"end_date"`
+	Kind           string   `json:"kind"` // SHIFT | CUSTOM | OFF
+	WorkScheduleID *uint64  `json:"work_schedule_id"`
+	StartTime      *string  `json:"start_time"`
+	EndTime        *string  `json:"end_time"`
+	WorkType       *string  `json:"work_type"`
+	GraceMinutes   *int     `json:"grace_minutes"`
+	WorkDays       []int    `json:"work_days"`
+	Reason         string   `json:"reason"`
 }
 
 type OverrideFilter struct {
@@ -648,6 +649,84 @@ func (s *Service) CreateOverride(ctx context.Context, actor *auth.Actor, in Over
 		return nil, err
 	}
 	return s.override(ctx, o.ID)
+}
+
+// maxOverrideBatch caps how many people one special schedule is created for at once.
+const maxOverrideBatch = 300
+
+// CreateOverrides gives the same special schedule to each of in.EmployeeIDs (or
+// in.EmployeeID): one row per person, all or nothing. Nobody may already have a
+// special schedule on those dates.
+func (s *Service) CreateOverrides(ctx context.Context, actor *auth.Actor, in OverrideInput) ([]models.ScheduleOverride, error) {
+	ids, seen := []uint64{}, map[uint64]bool{}
+	for _, id := range append(append([]uint64{}, in.EmployeeIDs...), in.EmployeeID) {
+		if id != 0 && !seen[id] {
+			seen[id] = true
+			ids = append(ids, id)
+		}
+	}
+	if len(ids) == 0 {
+		return nil, apperr.BadRequest("EMPLOYEE_REQUIRED", "Choose at least one employee.")
+	}
+	if len(ids) > maxOverrideBatch {
+		return nil, apperr.BadRequest("TOO_MANY_EMPLOYEES", fmt.Sprintf("Choose at most %d employees at a time.", maxOverrideBatch))
+	}
+	rows := make([]models.ScheduleOverride, len(ids))
+	for i, id := range ids {
+		one := in
+		one.EmployeeID = id
+		if err := s.applyOverride(ctx, actor, &rows[i], one); err != nil {
+			return nil, err
+		}
+		rows[i].CreatedBy = actorRef(actor)
+	}
+	err := s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		var clash []string
+		for i := range rows {
+			other, err := findOverlap(tx, &rows[i])
+			if err != nil {
+				return err
+			}
+			if other != nil {
+				var e models.Employee
+				tx.Select("full_name").First(&e, rows[i].EmployeeID)
+				clash = append(clash, fmt.Sprintf("%s (%s – %s)", e.FullName, timeutil.FormatDate(other.StartDate), timeutil.FormatDate(other.EndDate)))
+			}
+		}
+		if len(clash) > 0 {
+			more := ""
+			if len(clash) > 5 {
+				clash, more = clash[:5], fmt.Sprintf(" and %d more", len(clash)-5)
+			}
+			return apperr.Conflict("OVERLAP", "Already on a special schedule then: "+strings.Join(clash, ", ")+more+
+				". Edit those or leave them out.")
+		}
+		for i := range rows {
+			o := &rows[i]
+			if err := tx.Omit(clause.Associations).Create(o).Error; err != nil {
+				return err
+			}
+			details := overrideAudit(o)
+			if len(rows) > 1 {
+				details["batch"] = len(rows)
+			}
+			if err := audit.Write(ctx, tx, actor, audit.Entry{Action: audit.ActionOverrideCreate, EntityType: "schedule_override", EntityID: o.ID,
+				TargetEmployeeID: o.EmployeeID, Details: details}); err != nil {
+				return err
+			}
+		}
+		return nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	created := make([]uint64, len(rows))
+	for i := range rows {
+		created[i] = rows[i].ID
+	}
+	out := []models.ScheduleOverride{}
+	return out, s.db.WithContext(ctx).Preload("Employee").Preload("Employee.Branch").Preload("WorkSchedule").
+		Where("id IN ?", created).Order("id").Find(&out).Error
 }
 
 func (s *Service) UpdateOverride(ctx context.Context, actor *auth.Actor, id uint64, in OverrideInput) (*models.ScheduleOverride, error) {
@@ -782,15 +861,24 @@ func (s *Service) applyOverride(ctx context.Context, actor *auth.Actor, o *model
 	return nil
 }
 
-func checkOverlap(tx *gorm.DB, o *models.ScheduleOverride) error {
+// findOverlap returns another special schedule of the same person on o's dates.
+func findOverlap(tx *gorm.DB, o *models.ScheduleOverride) (*models.ScheduleOverride, error) {
 	var other models.ScheduleOverride
 	err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).
 		Where("employee_id = ? AND id <> ? AND start_date <= ? AND end_date >= ?", o.EmployeeID, o.ID, o.EndDate, o.StartDate).
 		First(&other).Error
 	if errors.Is(err, gorm.ErrRecordNotFound) {
-		return nil
+		return nil, nil
 	}
 	if err != nil {
+		return nil, err
+	}
+	return &other, nil
+}
+
+func checkOverlap(tx *gorm.DB, o *models.ScheduleOverride) error {
+	other, err := findOverlap(tx, o)
+	if err != nil || other == nil {
 		return err
 	}
 	return apperr.Conflict("OVERLAP", fmt.Sprintf("This employee already has a special schedule from %s to %s. Edit that one or pick other dates.",

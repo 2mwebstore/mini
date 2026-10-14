@@ -148,7 +148,7 @@ func (n *Notifier) companyAdmins(ctx context.Context, st *settings.Settings, exc
 	if st.TelegramReviewChatID != 0 {
 		return []recipient{{chatID: st.TelegramReviewChatID}}
 	}
-	return n.dms(ctx, exclude, "e.role_id IN ?", models.CompanyAdminRoles)
+	return n.dms(ctx, exclude, "e.role_id IN ?", models.CompanyWideRoleIDs())
 }
 
 func (n *Notifier) employeeChat(ctx context.Context, employeeID uint64) (int64, bool) {
@@ -226,7 +226,9 @@ func (n *Notifier) AttendanceSubmitted(ev AttendanceEvent) {
 			}
 			var msg *telegram.Message
 			var err error
-			if fileID == "" {
+			if len(ev.PhotoData) == 0 { // check-ins have no photo unless one was sent
+				msg, err = n.tg.SendMessage(ctx, r.chatID, caption, kb)
+			} else if fileID == "" {
 				// The first send uploads the image; Telegram's file_id is reused for the
 				// other reviewers and saved on the photo row.
 				msg, err = n.tg.SendPhotoData(ctx, r.chatID, ev.PhotoData, caption, kb)
@@ -274,7 +276,9 @@ func AttendanceReviewCaption(ev AttendanceEvent) string {
 			fmt.Fprintf(&b, "⚠️ Early leave: %d min\n", ev.Attendance.EarlyLeaveMinutes)
 		}
 	}
-	b.WriteString("📸 Photo attached\n")
+	if len(ev.PhotoData) > 0 {
+		b.WriteString("📸 Photo attached\n")
+	}
 	if ev.LocationLabel != "" {
 		fmt.Fprintf(&b, "📍 Location: %s\n", telegram.Esc(ev.LocationLabel))
 	}
@@ -309,9 +313,9 @@ func (n *Notifier) AttendanceReviewed(att models.Attendance, conf models.Attenda
 			text = fmt.Sprintf("❌ <b>Attendance rejected.</b>\n📅 %s\n🕐 %s: %s\nReason:\n%s",
 				timeutil.FormatDate(att.WorkDate), label, timeutil.FormatClock(at, loc), telegram.Esc(conf.Reason))
 			if conf.Type == models.TypeCheckIn && att.CheckOutAt == nil {
-				text += "\n\nOpen the app to submit a new check-in photo."
+				text += "\n\nOpen the app to check in again."
 			} else if conf.Type == models.TypeCheckOut {
-				text += "\n\nOpen the app to submit a new check-out photo."
+				text += "\n\nOpen the app to check out again."
 			}
 		}
 		msg, err := n.tg.SendMessage(ctx, chat, text, openApp(st, chat, "📱 Open app", ""))
@@ -327,9 +331,8 @@ func (n *Notifier) LeaveSubmitted(lr models.LeaveRequest, emp models.Employee, t
 		if st == nil {
 			return
 		}
-		text := fmt.Sprintf("🏖️ <b>NEW LEAVE REQUEST</b>\n👤 %s (%s)\n📅 %s → %s (%d working day%s)\n📌 %s\n📝 %s\nStatus: 🟡 Pending",
-			telegram.Esc(emp.FullName), telegram.Esc(emp.EmployeeCode),
-			lr.StartDate.Format("02 Jan"), lr.EndDate.Format("02 Jan 2006"), lr.Days, plural(lr.Days),
+		text := fmt.Sprintf("🏖️ <b>NEW LEAVE REQUEST</b>\n👤 %s (%s)\n📅 %s\n📌 %s\n📝 %s\nStatus: 🟡 Pending",
+			telegram.Esc(emp.FullName), telegram.Esc(emp.EmployeeCode), LeaveSpan(lr),
 			telegram.Esc(typeName), telegram.Esc(lr.Reason))
 		for _, r := range n.reviewers(ctx, st, &emp) {
 			msg, err := n.tg.SendMessage(ctx, r.chatID, text, openApp(st, r.chatID, "✅ Review in app", "team"))
@@ -350,11 +353,9 @@ func (n *Notifier) LeaveReviewed(lr models.LeaveRequest) {
 		}
 		var text string
 		if lr.Status == models.LeaveApproved {
-			text = fmt.Sprintf("✅ <b>LEAVE APPROVED</b>\nYour leave from %s to %s has been approved.",
-				lr.StartDate.Format("02 Jan"), lr.EndDate.Format("02 Jan 2006"))
+			text = fmt.Sprintf("✅ <b>LEAVE APPROVED</b>\nYour leave has been approved.\n📅 %s", LeaveSpan(lr))
 		} else {
-			text = fmt.Sprintf("❌ <b>LEAVE REJECTED</b>\nYour leave from %s to %s was not approved.",
-				lr.StartDate.Format("02 Jan"), lr.EndDate.Format("02 Jan 2006"))
+			text = fmt.Sprintf("❌ <b>LEAVE REJECTED</b>\nYour leave was not approved.\n📅 %s", LeaveSpan(lr))
 			if lr.ReviewNote != "" {
 				text += "\nReason: " + telegram.Esc(lr.ReviewNote)
 			}
@@ -434,11 +435,27 @@ func (n *Notifier) BranchAdmins(b models.Branch, typ, text string) {
 	})
 }
 
-func plural(n int) string {
-	if n == 1 {
-		return ""
+// LeaveSpan reads "20 Oct → 22 Oct 2026 (3 working days)", or for a half day
+// "20 Oct 2026, first half 08:00–12:30 (½ day)".
+func LeaveSpan(lr models.LeaveRequest) string {
+	if lr.IsHalfDay() {
+		half := "first half"
+		if lr.DayType == models.LeaveSecondHalf {
+			half = "second half"
+		}
+		if lr.HalfFrom != nil && lr.HalfTo != nil {
+			half += fmt.Sprintf(" %s–%s", *lr.HalfFrom, *lr.HalfTo)
+		}
+		return fmt.Sprintf("%s, %s (½ day)", lr.StartDate.Format("02 Jan 2006"), half)
 	}
-	return "s"
+	days := fmt.Sprintf("%g working day", lr.Days)
+	if lr.Days != 1 {
+		days += "s"
+	}
+	if lr.StartDate.Equal(lr.EndDate) {
+		return fmt.Sprintf("%s (%s)", lr.StartDate.Format("02 Jan 2006"), days)
+	}
+	return fmt.Sprintf("%s → %s (%s)", lr.StartDate.Format("02 Jan"), lr.EndDate.Format("02 Jan 2006"), days)
 }
 
 func truncate(s string, n int) string {

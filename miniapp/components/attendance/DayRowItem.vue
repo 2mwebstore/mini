@@ -16,6 +16,7 @@ defineProps<{ row: DayRow; timezone: string; showName?: boolean }>()
           </template>
           <template v-else>In {{ formatClock(row.check_in_at, timezone) }}</template>
           <template v-if="row.late_minutes"> · late {{ formatMinutes(row.late_minutes) }}</template>
+          <template v-if="row.leave_half"> · {{ row.leave_type }}</template>
         </template>
         <template v-else-if="row.leave_type">{{ row.leave_type }}</template>
         <template v-else-if="showName">{{ row.employee_code }}</template>

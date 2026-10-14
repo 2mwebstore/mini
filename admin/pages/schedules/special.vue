@@ -28,6 +28,8 @@ watch(() => filter.q, () => {
 onMounted(() => {
   lookups.loadEmployees().catch(() => {})
   lookups.loadSchedules().catch(() => {})
+  lookups.loadDepartments().catch(() => {})
+  lookups.loadBranches().catch(() => {})
 })
 
 const days = (o: { start_date: string; end_date: string }) =>
@@ -51,7 +53,7 @@ const typeOptions = [
   { value: 'CROSS_DAY', label: 'Ends next day' },
 ]
 const blank = () => ({
-  id: 0, employee_id: '', start_date: todayISO(tz), end_date: todayISO(tz), kind: 'SHIFT' as OverrideKind, work_schedule_id: '',
+  id: 0, employee_id: '', employee_ids: [] as string[], start_date: todayISO(tz), end_date: todayISO(tz), kind: 'SHIFT' as OverrideKind, work_schedule_id: '',
   start_time: '08:00', end_time: '17:00', work_type: 'NORMAL' as WorkType, grace_minutes: 10, work_days: [1, 2, 3, 4, 5] as number[], reason: '',
 })
 const form = reactive(blank())
@@ -64,8 +66,18 @@ function edit(o?: ScheduleOverride) {
     : {})
   open.value = true
 }
-const employeeOptions = computed((): SelectOption[] =>
-  (lookups.employees ?? []).filter(e => !e.deleted_at && e.status !== 'INACTIVE').map(e => ({ value: String(e.id), label: e.full_name, sub: e.employee_code })))
+// The second line names the department and branch, so searching "Sales" and
+// ticking all matches gives the whole department the schedule.
+const employeeOptions = computed((): SelectOption[] => {
+  const dept = new Map((lookups.departments ?? []).map(d => [d.id, d.name]))
+  const br = new Map((lookups.branches ?? []).map(b => [b.id, b.name]))
+  return (lookups.employees ?? []).filter(e => !e.deleted_at && e.status !== 'INACTIVE').map(e => ({
+    value: String(e.id),
+    label: e.full_name,
+    sub: [e.employee_code, e.department_id ? dept.get(e.department_id) : '', e.branch_id ? br.get(e.branch_id) : ''].filter(Boolean).join(' · '),
+  }))
+})
+const people = computed(() => (form.id ? (form.employee_id ? [form.employee_id] : []) : form.employee_ids))
 const chosenShift = computed(() => lookups.schedules?.find(s => String(s.id) === form.work_schedule_id))
 // Picking a shift starts from its usual days.
 watch(() => form.work_schedule_id, () => {
@@ -76,7 +88,7 @@ watch(() => [form.start_time, form.end_time], ([s, e]) => {
 })
 
 const problem = computed(() => {
-  if (!form.employee_id) return 'Choose an employee.'
+  if (!people.value.length) return form.id ? 'Choose an employee.' : 'Choose at least one employee.'
   if (form.end_date < form.start_date) return 'The end date is before the start date.'
   if (form.kind === 'SHIFT' && !form.work_schedule_id) return 'Choose the shift to work.'
   if (form.kind !== 'OFF' && !form.work_days.length) return 'Choose at least one work day.'
@@ -84,27 +96,30 @@ const problem = computed(() => {
 })
 const preview = computed(() => {
   if (problem.value) return ''
-  const who = lookups.employees?.find(e => String(e.id) === form.employee_id)?.full_name ?? ''
+  const names = people.value.map(id => lookups.employees?.find(e => String(e.id) === id)?.full_name ?? '')
+  const who = names.length === 1 ? names[0] : names.length === 2 ? `${names[0]} and ${names[1]}` : `${names[0]} and ${names.length - 1} others`
   const range = form.start_date === form.end_date ? formatDate(form.start_date) : `${formatDayMonth(form.start_date)} – ${formatDate(form.end_date)}`
   const n = days(form)
   const span = `${range} (${n} day${n === 1 ? '' : 's'})`
-  if (form.kind === 'OFF') return `${who} does not work ${span}.`
+  if (form.kind === 'OFF') return `${who} ${names.length === 1 ? 'does' : 'do'} not work ${span}.`
   const what = form.kind === 'SHIFT' && chosenShift.value
     ? `${chosenShift.value.name} ${shiftHours(chosenShift.value.start_time, chosenShift.value.end_time, chosenShift.value.work_type === 'CROSS_DAY')}`
     : shiftHours(form.start_time, form.end_time, form.work_type === 'CROSS_DAY')
-  return `${who} works ${what} on ${workDaysLabel(form.work_days)}, ${span}; other days off.`
+  return `${who} ${names.length === 1 ? 'works' : 'work'} ${what} on ${workDaysLabel(form.work_days)}, ${span}; other days off.`
 })
 
 const { busy, run } = useAction()
 async function save() {
   if (problem.value) return
-  const input: OverrideInput = { employee_id: Number(form.employee_id), start_date: form.start_date, end_date: form.end_date, kind: form.kind, reason: form.reason.trim() }
+  const who = form.id ? { employee_id: Number(form.employee_id) } : { employee_ids: form.employee_ids.map(Number) }
+  const input: OverrideInput = { ...who, start_date: form.start_date, end_date: form.end_date, kind: form.kind, reason: form.reason.trim() }
   if (form.kind === 'SHIFT') Object.assign(input, { work_schedule_id: Number(form.work_schedule_id), work_days: form.work_days })
   if (form.kind === 'CUSTOM') {
     Object.assign(input, { start_time: form.start_time, end_time: form.end_time, work_type: form.work_type, grace_minutes: Number(form.grace_minutes), work_days: form.work_days })
   }
+  const n = people.value.length
   const ok = await run('save', () => (form.id ? scheduleService.updateOverride(form.id, input) : scheduleService.createOverride(input)),
-    form.id ? 'Special schedule saved' : 'Special schedule added')
+    form.id ? 'Special schedule saved' : n === 1 ? 'Special schedule added' : `Special schedule added for ${n} employees`)
   if (ok) {
     open.value = false
     list.load()
@@ -168,8 +183,11 @@ async function remove(o: ScheduleOverride) {
 
     <AppModal v-model="open" :title="form.id ? 'Edit special schedule' : 'New special schedule'" wide>
       <form id="special-form" class="grid gap-4 sm:grid-cols-2" @submit.prevent="save">
-        <FormField label="Employee" for="sp-emp" class="sm:col-span-2">
-          <SearchSelect id="sp-emp" v-model="form.employee_id" :options="employeeOptions" placeholder="Choose an employee…" required :disabled="!!form.id" />
+        <FormField v-if="form.id" label="Employee" for="sp-emp" class="sm:col-span-2" hint="To give this schedule to more people, add a new special schedule.">
+          <SearchSelect id="sp-emp" v-model="form.employee_id" :options="employeeOptions" required disabled />
+        </FormField>
+        <FormField v-else label="Employees" for="sp-emps" class="sm:col-span-2" hint="Tick one or more people. Search a department or branch, then tick all matches.">
+          <MultiSelect id="sp-emps" v-model="form.employee_ids" :options="employeeOptions" noun="employee" placeholder="Choose employees…" required />
         </FormField>
         <FormField label="From" for="sp-from"><input id="sp-from" v-model="form.start_date" type="date" class="input" required /></FormField>
         <FormField label="To" for="sp-to"><input id="sp-to" v-model="form.end_date" type="date" class="input" :min="form.start_date" required /></FormField>

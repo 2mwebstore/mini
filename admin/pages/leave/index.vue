@@ -4,14 +4,17 @@ import { leaveService } from '~/services/leave.service'
 import { useAuthStore } from '~/stores/auth'
 import { useLookupsStore } from '~/stores/lookups'
 import type { LeaveRequest } from '~/types/api'
-import { formatDate, formatDateRange, leaveStatus } from '~/utils/format'
+import { fmtDays, formatDate, formatDateRange, leaveStatus } from '~/utils/format'
 import { optionsFrom } from '~/utils/options'
 
 const statusOptions = optionsFrom(leaveStatus)
+const dayTypeOptions = [{ value: 'FULL', label: 'Full day' }, { value: 'HALF', label: 'Half day' }]
 
 const auth = useAuthStore()
 const lookups = useLookupsStore()
-const filter = reactive({ status: 'PENDING', branch_id: '', employee_id: '', from: '', to: '' })
+// All statuses by default; ?status=PENDING (dashboard link) pre-selects one.
+const route = useRoute()
+const filter = reactive({ status: typeof route.query.status === 'string' ? route.query.status : '', branch_id: '', employee_id: '', from: '', to: '', day_type: '' })
 
 const list = useResource(() =>
   leaveService.list({
@@ -20,6 +23,7 @@ const list = useResource(() =>
     employee_id: Number(filter.employee_id) || undefined,
     from: filter.from || undefined,
     to: filter.to || undefined,
+    day_type: filter.day_type || undefined,
     limit: 300,
   }),
 )
@@ -45,15 +49,18 @@ const canDecide = (l: LeaveRequest) => l.status === 'PENDING' && auth.isReviewer
 
 <template>
   <div>
-    <PageHeader title="Leave" subtitle="Requests from the Mini App. Approving marks those working days as leave." />
+    <PageHeader title="Leave requests" subtitle="Requests from the Mini App. Approving a full day marks it as leave; a half day only changes the hours expected that day." />
 
-    <div class="card mb-4 grid gap-3 p-4 sm:grid-cols-5">
+    <div class="card mb-4 grid gap-3 p-4 sm:grid-cols-3 lg:grid-cols-6">
       <FormField label="Status" for="l-status">
         <SearchSelect id="l-status" v-model="filter.status" :options="statusOptions" empty-label="All" />
       </FormField>
       <BranchFilter id="l-branch" v-model="filter.branch_id" />
       <FormField label="Employee" for="l-emp">
         <SearchSelect id="l-emp" v-model="filter.employee_id" :options="lookups.employeeOptions" empty-label="All" />
+      </FormField>
+      <FormField label="Day" for="l-day">
+        <SearchSelect id="l-day" v-model="filter.day_type" :options="dayTypeOptions" empty-label="All" />
       </FormField>
       <FormField label="From" for="l-from"><input id="l-from" v-model="filter.from" type="date" class="input" /></FormField>
       <FormField label="To" for="l-to"><input id="l-to" v-model="filter.to" type="date" class="input" /></FormField>
@@ -67,8 +74,16 @@ const canDecide = (l: LeaveRequest) => l.status === 'PENDING' && auth.isReviewer
             <tr v-for="l in list.data.value ?? []" :key="l.id">
               <td><span class="font-medium">{{ l.employee?.full_name }}</span><span class="block text-xs text-muted">{{ l.employee?.employee_code }} · requested {{ formatDate(l.created_at) }}</span></td>
               <td>{{ l.leave_type?.name }}</td>
-              <td class="whitespace-nowrap">{{ formatDateRange(l.start_date, l.end_date) }}</td>
-              <td class="tabular-nums">{{ l.days }}</td>
+              <td class="whitespace-nowrap">
+                {{ formatDateRange(l.start_date, l.end_date) }}
+                <span v-if="l.day_type !== 'FULL'" class="block text-xs text-muted">
+                  {{ l.day_type === 'FIRST_HALF' ? 'First half' : 'Second half' }}<template v-if="l.half_from"> · {{ l.half_from }}–{{ l.half_to }}</template>
+                </span>
+              </td>
+              <td class="whitespace-nowrap tabular-nums">
+                <StatusBadge v-if="l.day_type !== 'FULL'" tone="info" label="½ day" />
+                <template v-else>{{ fmtDays(l.days) }}</template>
+              </td>
               <td class="max-w-xs"><p class="line-clamp-2">{{ l.reason }}</p></td>
               <td>
                 <StatusBadge v-bind="leaveStatus[l.status]" />

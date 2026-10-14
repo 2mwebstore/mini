@@ -5,18 +5,14 @@ package demo
 //	TEST_DATABASE_URL='root:pass@tcp(127.0.0.1:3306)/' go test ./internal/demo -v
 
 import (
-	"bytes"
 	"context"
 	"crypto/rand"
-	"crypto/sha256"
 	"database/sql"
 	"encoding/hex"
 	"errors"
 	"fmt"
-	"io"
 	"os"
 	"strings"
-	"sync"
 	"testing"
 	"time"
 
@@ -31,29 +27,6 @@ import (
 	mysqldrv "github.com/go-sql-driver/mysql"
 	"gorm.io/gorm"
 )
-
-type memStore struct {
-	mu   sync.Mutex
-	objs map[string][]byte
-}
-
-func (m *memStore) Put(_ context.Context, key string, data []byte, _ string) error {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	m.objs[key] = append([]byte(nil), data...)
-	return nil
-}
-func (m *memStore) Get(_ context.Context, key string) (io.ReadCloser, int64, string, error) {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	d, ok := m.objs[key]
-	if !ok {
-		return nil, 0, "", fmt.Errorf("not found")
-	}
-	return io.NopCloser(bytes.NewReader(d)), int64(len(d)), "image/jpeg", nil
-}
-func (m *memStore) Ping(context.Context) error { return nil }
-func (m *memStore) URI(k string) string        { return "mem://" + k }
 
 func testDB(t *testing.T) *gorm.DB {
 	t.Helper()
@@ -94,20 +67,19 @@ func TestSeed(t *testing.T) {
 	ctx := context.Background()
 	box, _ := secret.New(strings.Repeat("j", 40))
 	st := settings.NewService(db, box)
-	store := &memStore{objs: map[string][]byte{}}
 	loc, _ := time.LoadLocation("Asia/Phnom_Penh")
 	// Wednesday mid-afternoon; Constitution Day (Thu 24 Sep) falls inside the history.
 	now := time.Date(2026, 9, 30, 15, 0, 0, 0, loc)
 	const pw = "Demo-pass-123"
 
-	sum, err := Seed(ctx, Deps{DB: db, Store: store, Settings: st}, Options{Password: pw, Now: now})
+	sum, err := Seed(ctx, Deps{DB: db, Settings: st}, Options{Password: pw, Now: now})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(sum.Branches) != 3 || sum.Employees != len(people) || len(sum.Logins) != 7 || sum.AttendanceDays < 250 || sum.LeaveRequests != 8 {
+	if len(sum.Branches) != 3 || sum.Employees != len(people) || len(sum.Logins) != 8 || sum.AttendanceDays < 250 || sum.LeaveRequests != 10 {
 		t.Fatalf("summary: %+v", sum)
 	}
-	if _, err := Seed(ctx, Deps{DB: db, Store: store, Settings: st}, Options{Password: pw, Now: now}); !errors.Is(err, ErrAlreadySeeded) {
+	if _, err := Seed(ctx, Deps{DB: db, Settings: st}, Options{Password: pw, Now: now}); !errors.Is(err, ErrAlreadySeeded) {
 		t.Fatalf("second run: %v", err)
 	}
 
@@ -115,7 +87,7 @@ func TestSeed(t *testing.T) {
 	authSvc := auth.NewService(db, strings.Repeat("j", 40), time.Hour)
 	wantRole := map[string]string{"owner@demo.local": "super_admin", "hr@demo.local": "hr_admin", "dara.manager@demo.local": "manager",
 		"rithy.manager@demo.local": "manager", "main.admin@demo.local": "branch_admin", "siemreap.admin@demo.local": "branch_admin",
-		"battambang.admin@demo.local": "branch_admin"}
+		"battambang.admin@demo.local": "branch_admin", "regional@demo.local": "regional_supervisor"}
 	for _, l := range sum.Logins {
 		res, err := authSvc.Login(ctx, l.Email, pw)
 		if err != nil {
@@ -196,14 +168,17 @@ func TestSeed(t *testing.T) {
 		if a.CheckOutAt != nil {
 			want = 2
 		}
-		if len(a.Photos) != want || len(a.Locations) != want || len(a.Confirmations) != want {
-			t.Errorf("attendance %d: photos %d locations %d confirmations %d, want %d", a.ID, len(a.Photos), len(a.Locations), len(a.Confirmations), want)
+		// No photos (the Mini App does not take them); each submission has its own location.
+		if len(a.Photos) != 0 || len(a.Locations) != want || len(a.Confirmations) != want {
+			t.Errorf("attendance %d: photos %d locations %d confirmations %d, want 0/%d/%d", a.ID, len(a.Photos), len(a.Locations), len(a.Confirmations), want, want)
 		}
-		for _, p := range a.Photos {
-			data := store.objs[p.StorageKey]
-			sum := sha256.Sum256(data)
-			if len(data) == 0 || hex.EncodeToString(sum[:]) != p.ContentSHA256 || p.TelegramUserID == 0 {
-				t.Errorf("photo %d (%s) not stored correctly", p.ID, p.StorageKey)
+		for _, c := range a.Confirmations {
+			ok := false
+			for _, l := range a.Locations {
+				ok = ok || (c.LocationID != nil && *c.LocationID == l.ID && l.Type == c.Type)
+			}
+			if !ok {
+				t.Errorf("attendance %d: %s review is not linked to its location", a.ID, c.Type)
 			}
 		}
 		for _, c := range a.Confirmations {
@@ -228,9 +203,16 @@ func TestSeed(t *testing.T) {
 		Status string
 		N      int
 	}
-	db.Model(&models.LeaveRequest{}).Select("status, COUNT(*) AS n").Group("status").Scan(&leaveByStatus)
-	if fmt.Sprint(leaveByStatus) != "[{APPROVED 3} {CANCELLED 1} {PENDING 3} {REJECTED 1}]" {
+	db.Model(&models.LeaveRequest{}).Select("status, COUNT(*) AS n").Group("status").Order("status").Scan(&leaveByStatus)
+	if fmt.Sprint(leaveByStatus) != "[{APPROVED 4} {CANCELLED 1} {PENDING 4} {REJECTED 1}]" {
 		t.Errorf("leave by status: %v", leaveByStatus)
+	}
+	// Half days take their hours from the shift: the night shift's first half ends at 02:00.
+	var halves []models.LeaveRequest
+	db.Where("day_type <> ?", models.LeaveFullDay).Order("id").Find(&halves)
+	if len(halves) != 2 || halves[0].Days != 0.5 || *halves[0].HalfFrom != "22:00" || *halves[0].HalfTo != "02:00" ||
+		halves[1].DayType != models.LeaveSecondHalf || *halves[1].HalfTo == "" {
+		t.Errorf("half-day leave: %+v", halves)
 	}
 
 	// The owner sees everyone; a branch admin sees only their branch.
@@ -271,5 +253,17 @@ func TestSeed(t *testing.T) {
 	}
 	if sr.StaffCount != 5 {
 		t.Errorf("Siem Reap staff count %d", sr.StaffCount)
+	}
+	reg, err := repSvc.Build(ctx, actor("regional@demo.local"), report.Filter{From: from, To: today})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, s := range reg.Summaries {
+		if s.Branch != "Siem Reap" && s.Branch != "Battambang" && s.EmployeeCode != "D-RG01" {
+			t.Errorf("regional supervisor (SR + BB) sees %s (%s)", s.EmployeeCode, s.Branch)
+		}
+	}
+	if reg.StaffCount != 10 { // 5 Siem Reap + 4 Battambang + herself
+		t.Errorf("regional supervisor staff count %d", reg.StaffCount)
 	}
 }

@@ -20,7 +20,7 @@ export const scheduleService = {
   // special / temporary schedules
   overrides: (q: { when?: string; branch_id?: string; q?: string }) =>
     api.get<Items<ScheduleOverride>>('/schedule-overrides', q).then(r => r.items ?? []),
-  createOverride: (input: OverrideInput) => api.post<ScheduleOverride>('/schedule-overrides', input),
+  createOverride: (input: OverrideInput) => api.post<Items<ScheduleOverride>>('/schedule-overrides', input).then(r => r.items ?? []),
   updateOverride: (id: number, input: OverrideInput) => api.put<ScheduleOverride>(`/schedule-overrides/${id}`, input),
   deleteOverride: (id: number) => api.del(`/schedule-overrides/${id}`),
 }

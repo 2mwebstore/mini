@@ -59,11 +59,37 @@ const (
 	LeaveCancelled = "CANCELLED"
 )
 
+// Role is a named set of permissions (role_permissions). Built-in roles are
+// system roles: they can be edited (except the owner) but not deleted.
 type Role struct {
-	ID          uint8  `gorm:"primaryKey" json:"id"`
-	Code        string `json:"code"`
-	Name        string `json:"name"`
-	Description string `json:"description"`
+	ID          uint8     `gorm:"primaryKey;autoIncrement:false" json:"id"`
+	Code        string    `json:"code"`
+	Name        string    `json:"name"`
+	Description string    `json:"description"`
+	IsSystem    bool      `json:"is_system"`
+	CreatedAt   time.Time `json:"created_at"`
+	UpdatedAt   time.Time `json:"updated_at"`
+}
+
+// RolePermission grants one permission to a role.
+type RolePermission struct {
+	RoleID     uint8  `gorm:"primaryKey;autoIncrement:false"`
+	Permission string `gorm:"primaryKey"`
+}
+
+// UserBranch gives a system user access to one branch (no rows = every branch).
+type UserBranch struct {
+	EmployeeID uint64    `gorm:"primaryKey;autoIncrement:false" json:"employee_id"`
+	BranchID   uint64    `gorm:"primaryKey;autoIncrement:false" json:"branch_id"`
+	CreatedAt  time.Time `json:"created_at"`
+}
+
+// Position is a job title from the managed list.
+type Position struct {
+	ID        uint64    `gorm:"primaryKey" json:"id"`
+	Name      string    `json:"name"`
+	CreatedAt time.Time `json:"created_at"`
+	UpdatedAt time.Time `json:"updated_at"`
 }
 
 type Department struct {
@@ -145,6 +171,9 @@ type Branch struct {
 	OfficeLatitude       *float64  `json:"office_latitude"`
 	OfficeLongitude      *float64  `json:"office_longitude"`
 	AllowedRadiusMeters  *float64  `json:"allowed_radius_meters"`
+	GPSEnabled           *bool     `json:"gps_enabled"` // nil = the company setting
+	GPSRequired          *bool     `json:"gps_required"`
+	GPSRejectOutside     *bool     `json:"gps_reject_outside"`
 	TelegramGroupID      int64     `json:"telegram_group_id"`
 	TelegramReviewChatID int64     `json:"telegram_review_chat_id"`
 	Status               string    `json:"status"`
@@ -166,7 +195,8 @@ type Employee struct {
 	FullName       string     `json:"full_name"`
 	DepartmentID   *uint64    `json:"department_id"`
 	BranchID       *uint64    `json:"branch_id"`
-	Position       string     `json:"position"`
+	Position       string     `json:"position"` // the position's name, kept for display
+	PositionID     *uint64    `json:"position_id"`
 	Phone          string     `json:"phone"`
 	Email          string     `json:"email"`
 	JoinDate       *time.Time `json:"join_date"`
@@ -186,15 +216,17 @@ type Employee struct {
 	HasLogin        bool             `gorm:"-" json:"has_login"` // has an admin panel login
 }
 
-// CompanyAdminRoles lists the company-wide admin roles for SQL "IN ?" filters
-// (as []int: a []uint8 would be sent as a single binary string).
-var CompanyAdminRoles = []int{int(RoleSuperAdmin), int(RoleHRAdmin)}
-
-// IsCompanyAdmin: super and HR admins work across all branches (they have no branch).
-func IsCompanyAdmin(roleID uint8) bool { return roleID == RoleSuperAdmin || roleID == RoleHRAdmin }
-
-// IsAdminRole: roles only a super admin may grant or modify.
-func IsAdminRole(roleID uint8) bool { return IsCompanyAdmin(roleID) || roleID == RoleBranchAdmin }
+// Roles and their permissions are configured in the database; package auth reads
+// them and replaces these defaults (which describe the built-in roles).
+var (
+	// CompanyWideRoleIDs lists roles that see all branches, for SQL "IN ?" filters
+	// (as []int: a []uint8 would be sent as a single binary string).
+	CompanyWideRoleIDs = func() []int { return []int{int(RoleSuperAdmin), int(RoleHRAdmin)} }
+	// IsCompanyAdmin: the role works across branches (such people have no branch).
+	IsCompanyAdmin = func(roleID uint8) bool { return roleID == RoleSuperAdmin || roleID == RoleHRAdmin }
+	// IsAdminRole: only someone allowed to grant admin roles may give this role.
+	IsAdminRole = func(roleID uint8) bool { return IsCompanyAdmin(roleID) || roleID == RoleBranchAdmin }
+)
 
 func (e *Employee) IsActive() bool { return e.Status == EmployeeActive && e.DeletedAt == nil }
 
@@ -285,20 +317,52 @@ type AttendanceConfirmation struct {
 	ID           uint64     `gorm:"primaryKey" json:"id"`
 	AttendanceID uint64     `json:"attendance_id"`
 	Type         string     `json:"type"`
+	PhotoID      *uint64    `json:"photo_id"`    // the photo sent with this submission (none since the app stopped taking them)
+	LocationID   *uint64    `json:"location_id"` // the location shared with it
 	Status       string     `json:"status"`
 	ReviewedBy   *uint64    `json:"reviewed_by"`
 	ReviewedAt   *time.Time `json:"reviewed_at"`
 	Reason       string     `json:"reason"`
 	CreatedAt    time.Time  `json:"created_at"`
 	UpdatedAt    time.Time  `json:"updated_at"`
+	Reviewer     *Employee  `gorm:"foreignKey:ReviewedBy" json:"reviewer,omitempty"`
 }
 
+// LeaveType is a leave category with its yearly allowance and approval policy.
 type LeaveType struct {
-	ID        uint64 `gorm:"primaryKey" json:"id"`
-	Code      string `json:"code"`
-	Name      string `json:"name"`
-	Active    bool   `json:"active"`
-	SortOrder int    `json:"sort_order"`
+	ID                uint64    `gorm:"primaryKey" json:"id"`
+	Code              string    `json:"code"`
+	Name              string    `json:"name"`
+	AnnualDays        float64   `json:"annual_days"` // yearly allowance; 0 = not counted
+	IsPaid            bool      `json:"is_paid"`
+	Approval          string    `json:"approval"`             // LeaveApprovalManual | LeaveApprovalAuto
+	AllowExceed       bool      `json:"allow_exceed"`         // may ask for more than the balance
+	MaxDaysPerRequest int       `json:"max_days_per_request"` // 0 = no limit
+	MinNoticeDays     int       `json:"min_notice_days"`
+	Color             string    `json:"color"`
+	Description       string    `json:"description"`
+	Active            bool      `json:"active"`
+	SortOrder         int       `json:"sort_order"`
+	CreatedAt         time.Time `json:"created_at"`
+	UpdatedAt         time.Time `json:"updated_at"`
+}
+
+// Leave approval policies.
+const (
+	LeaveApprovalManual = "MANUAL" // a reviewer approves
+	LeaveApprovalAuto   = "AUTO"   // approved on submission
+)
+
+// LeaveBalance overrides an employee's entitlement for one type and year.
+type LeaveBalance struct {
+	EmployeeID  uint64    `gorm:"primaryKey;autoIncrement:false" json:"employee_id"`
+	LeaveTypeID uint64    `gorm:"primaryKey;autoIncrement:false" json:"leave_type_id"`
+	Year        int       `gorm:"primaryKey;autoIncrement:false" json:"year"`
+	Allocated   float64   `json:"allocated"`
+	Carried     float64   `json:"carried"`
+	Note        string    `json:"note"`
+	UpdatedBy   *uint64   `json:"updated_by"`
+	UpdatedAt   time.Time `json:"updated_at"`
 }
 
 type LeaveRequest struct {
@@ -307,7 +371,10 @@ type LeaveRequest struct {
 	LeaveTypeID uint64     `json:"leave_type_id"`
 	StartDate   time.Time  `gorm:"type:date" json:"start_date"`
 	EndDate     time.Time  `gorm:"type:date" json:"end_date"`
-	Days        int        `json:"days"`
+	DayType     string     `gorm:"default:FULL" json:"day_type"` // LeaveFullDay | LeaveFirstHalf | LeaveSecondHalf
+	HalfFrom    *string    `json:"half_from"`                    // a half day's hours (HH:MM, company time)
+	HalfTo      *string    `json:"half_to"`
+	Days        float64    `json:"days"` // working days; 0.5 for a half day
 	Reason      string     `json:"reason"`
 	Status      string     `json:"status"`
 	ReviewedBy  *uint64    `json:"reviewed_by"`
@@ -319,6 +386,18 @@ type LeaveRequest struct {
 	Employee  *Employee  `gorm:"foreignKey:EmployeeID" json:"employee,omitempty"`
 	LeaveType *LeaveType `gorm:"foreignKey:LeaveTypeID" json:"leave_type,omitempty"`
 	Reviewer  *Employee  `gorm:"foreignKey:ReviewedBy" json:"reviewer,omitempty"`
+}
+
+// Leave day types: a whole day (or range), or one half of a single working day.
+const (
+	LeaveFullDay    = "FULL"
+	LeaveFirstHalf  = "FIRST_HALF"  // the first half of that day's shift
+	LeaveSecondHalf = "SECOND_HALF" // the second half
+)
+
+// IsHalfDay reports whether the request covers half of one day.
+func (l *LeaveRequest) IsHalfDay() bool {
+	return l.DayType == LeaveFirstHalf || l.DayType == LeaveSecondHalf
 }
 
 type AuditLog struct {

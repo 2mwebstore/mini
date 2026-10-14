@@ -23,6 +23,7 @@ type Day struct {
 	End        string  `json:"end,omitempty"`   // HH:MM; on the next day when CrossDay
 	Grace      int     `json:"grace_minutes"`
 	CrossDay   bool    `json:"cross_day"`
+	StartNext  bool    `json:"start_next_day,omitempty"` // starts after midnight (second half of a night shift)
 	ShiftID    *uint64 `json:"shift_id,omitempty"`
 	ShiftName  string  `json:"shift_name,omitempty"`
 	Color      string  `json:"color,omitempty"`
@@ -44,8 +45,11 @@ func DefaultShift() models.WorkSchedule {
 		GraceMinutes: 10, WorkDays: "1,2,3,4,5", Color: "#2563eb"}
 }
 
-// StartAt is the shift's start on date.
+// StartAt is the shift's start on date (or the next day for StartNext).
 func (d Day) StartAt(date time.Time, loc *time.Location) (time.Time, error) {
+	if d.StartNext {
+		date = date.AddDate(0, 0, 1)
+	}
 	return timeutil.At(date, d.Start, loc)
 }
 
@@ -218,4 +222,42 @@ func (p *Planner) WorkingDays(emp *models.Employee, from, to time.Time, isHolida
 		}
 	}
 	return n
+}
+
+// Halves splits a working day's shift at its midpoint: the first and second half
+// as HH:MM (company time). For a cross-day shift (22:00-06:00) the halves are
+// 22:00-02:00 and 02:00-06:00; secondNext is true when the second half starts
+// after midnight.
+func (d Day) Halves(date time.Time, loc *time.Location) (first, second [2]string, secondNext bool, err error) {
+	start, err := d.StartAt(date, loc)
+	if err != nil {
+		return first, second, false, err
+	}
+	end, err := d.EndAt(date, loc)
+	if err != nil {
+		return first, second, false, err
+	}
+	mid := start.Add(end.Sub(start) / 2).Truncate(time.Minute)
+	m := mid.In(loc).Format("15:04")
+	return [2]string{d.Start, m}, [2]string{m, d.End}, timeutil.DateOf(mid, loc).After(date), nil
+}
+
+// WithHalfOff is the part of the day still to be worked when half of it is on
+// leave: late and early-leave minutes are measured against these hours.
+func (d Day) WithHalfOff(half string, date time.Time, loc *time.Location) Day {
+	if !d.Work {
+		return d
+	}
+	first, second, secondNext, err := d.Halves(date, loc)
+	if err != nil {
+		return d
+	}
+	switch half {
+	case models.LeaveFirstHalf: // works the second half
+		d.Start, d.StartNext = second[0], secondNext
+	case models.LeaveSecondHalf: // works the first half
+		d.End = first[1]
+		d.CrossDay = secondNext
+	}
+	return d
 }

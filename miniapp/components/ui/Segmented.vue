@@ -8,6 +8,7 @@ const model = defineModel<string>({ required: true })
     <button
       v-for="o in options"
       :key="o.value"
+      type="button"
       role="tab"
       :aria-selected="model === o.value"
       class="flex-1 rounded-lg py-1.5 text-sm font-medium transition"

@@ -38,6 +38,7 @@ func (s *Server) mountApp(g *gin.RouterGroup, byActor func(*gin.Context) string)
 
 	g.GET("/leave/types", s.leaveTypes)
 	g.GET("/leave/mine", s.appMyLeave)
+	g.GET("/leave/balances", s.myLeaveBalances)
 	g.GET("/leave/pending", requireReviewer(), s.pendingLeave)
 	g.POST("/leave/preview", s.appLeavePreview)
 	g.POST("/leave", s.appLeaveSubmit)
@@ -165,32 +166,13 @@ func (s *Server) appHistory(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"from": from, "to": to, "rows": rep.Rows, "summary": sum})
 }
 
-// appSubmit takes a multipart form: photo (file), and optional latitude, longitude, accuracy.
+// appSubmit takes a form (multipart or urlencoded): optional latitude, longitude,
+// accuracy, and an optional photo file (the Mini App no longer sends one).
 func (s *Server) appSubmit(typ string) gin.HandlerFunc {
 	return func(c *gin.Context) {
-		fh, err := c.FormFile("photo")
+		data, err := formPhoto(c)
 		if err != nil {
-			var tooBig *http.MaxBytesError
-			if errors.As(err, &tooBig) {
-				fail(c, apperr.New(http.StatusRequestEntityTooLarge, "PHOTO_TOO_LARGE", "The photo is too large. Please take it again."))
-				return
-			}
-			fail(c, apperr.BadRequest("PHOTO_REQUIRED", "A photo is required."))
-			return
-		}
-		if fh.Size > attendance.MaxUploadBytes {
-			fail(c, apperr.New(http.StatusRequestEntityTooLarge, "PHOTO_TOO_LARGE", "The photo is too large. Please take it again."))
-			return
-		}
-		f, err := fh.Open()
-		if err != nil {
-			fail(c, apperr.BadRequest("PHOTO_REQUIRED", "A photo is required."))
-			return
-		}
-		defer f.Close()
-		data, err := io.ReadAll(io.LimitReader(f, attendance.MaxUploadBytes+1))
-		if err != nil || len(data) == 0 {
-			fail(c, apperr.BadRequest("PHOTO_REQUIRED", "A photo is required."))
+			fail(c, err)
 			return
 		}
 		in := attendance.SubmitInput{PhotoData: data}
@@ -215,6 +197,32 @@ func (s *Server) appSubmit(typ string) gin.HandlerFunc {
 		c.JSON(http.StatusOK, gin.H{"type": out.Type, "attendance": out.Attendance, "pending": out.Pending,
 			"resubmission": out.Resubmission, "location_label": out.LocationLabel})
 	}
+}
+
+// formPhoto reads the optional "photo" file (nil when none was sent).
+func formPhoto(c *gin.Context) ([]byte, error) {
+	tooBig := apperr.New(http.StatusRequestEntityTooLarge, "PHOTO_TOO_LARGE", "The photo is too large. Please take it again.")
+	fh, err := c.FormFile("photo")
+	if err != nil {
+		var mbe *http.MaxBytesError
+		if errors.As(err, &mbe) {
+			return nil, tooBig
+		}
+		return nil, nil // no photo
+	}
+	if fh.Size > attendance.MaxUploadBytes {
+		return nil, tooBig
+	}
+	f, err := fh.Open()
+	if err != nil {
+		return nil, apperr.BadRequest("INVALID_PHOTO", "The photo could not be read.")
+	}
+	defer f.Close()
+	data, err := io.ReadAll(io.LimitReader(f, attendance.MaxUploadBytes+1))
+	if err != nil {
+		return nil, apperr.BadRequest("INVALID_PHOTO", "The photo could not be read.")
+	}
+	return data, nil
 }
 
 func formLocation(c *gin.Context) (*attendance.LocationInput, error) {
@@ -251,24 +259,40 @@ func (s *Server) appMyLeave(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"items": items})
 }
 
-// appLeavePreview checks the dates while the form is being filled in (working days,
-// overlap, range limits). Only submitting requires the reason.
+// appLeavePreview checks a request while the form is being filled in: working
+// days, the balance, and the employee's shift on the first date (what a half day
+// means for a normal or a cross-day shift). A refusal comes back as "problem"
+// next to the plan, so the form can still show the shift.
 func (s *Server) appLeavePreview(c *gin.Context) {
 	var in struct {
 		LeaveTypeID uint64 `json:"leave_type_id" binding:"required"`
 		StartDate   string `json:"start_date" binding:"required"`
 		EndDate     string `json:"end_date" binding:"required"`
+		DayType     string `json:"day_type"`
 	}
 	if !bind(c, &in) {
 		return
 	}
-	lr, err := s.leave.Preview(c.Request.Context(), actorFrom(c),
-		leave.SubmitInput{LeaveTypeID: in.LeaveTypeID, StartDate: in.StartDate, EndDate: in.EndDate, Reason: "preview"})
-	if err != nil {
+	lr, bal, plan, err := s.leave.Preview(c.Request.Context(), actorFrom(c),
+		leave.SubmitInput{LeaveTypeID: in.LeaveTypeID, StartDate: in.StartDate, EndDate: in.EndDate, DayType: in.DayType, Reason: "preview"})
+	if plan == nil {
 		fail(c, err)
 		return
 	}
-	c.JSON(http.StatusOK, gin.H{"days": lr.Days, "start_date": lr.StartDate, "end_date": lr.EndDate, "leave_type": lr.LeaveType})
+	out := gin.H{"plan": plan, "balance": bal, "problem": nil, "days": 0}
+	if err != nil {
+		if e := apperr.As(err); e.Status >= 500 {
+			fail(c, err)
+			return
+		} else {
+			out["problem"] = e
+		}
+	}
+	if lr != nil {
+		out["days"], out["day_type"], out["half_from"], out["half_to"] = lr.Days, lr.DayType, lr.HalfFrom, lr.HalfTo
+		out["start_date"], out["end_date"], out["leave_type"] = lr.StartDate, lr.EndDate, lr.LeaveType
+	}
+	c.JSON(http.StatusOK, out)
 }
 
 func (s *Server) appLeaveSubmit(c *gin.Context) {

@@ -53,6 +53,8 @@ export interface Confirmation {
   status: ConfirmationStatus
   reason: string
   reviewed_at: string | null
+  photo_id: number | null
+  location_id: number | null
 }
 
 export interface Attendance {
@@ -91,6 +93,16 @@ export interface TodayStatus {
   attendance: Attendance | null
   check_in: Precheck
   check_out: Precheck
+  half_leave?: HalfLeave // approved half-day leave: the schedule shown is the half still worked
+}
+
+export interface HalfLeave {
+  day_type: HalfDay
+  from: string
+  to: string
+  leave_type: string
+  shift_start: string // the whole shift's start and type, for naming the half
+  work_type: 'NORMAL' | 'CROSS_DAY'
 }
 
 export interface SubmitResult {
@@ -117,6 +129,7 @@ export interface DayRow {
   confirmation_status: ConfirmationStatus | ''
   confirmed_by: string
   leave_type: string
+  leave_half?: HalfDay // half the day was leave ("Annual Leave (first half)" in leave_type)
 }
 
 export interface Summary {
@@ -145,7 +158,34 @@ export interface LeaveType {
   id: number
   code: string
   name: string
+  annual_days: number // yearly allowance; 0 = not counted
+  approval: 'MANUAL' | 'AUTO' // AUTO: approved as soon as it is submitted
+  allow_exceed: boolean
+  max_days_per_request: number
+  min_notice_days: number
+  color: string
+  description: string
 }
+
+/** One leave type's balance for the year (days count in the year a request starts). */
+export interface LeaveBalance {
+  leave_type_id: number
+  code: string
+  name: string
+  color: string
+  year: number
+  tracked: boolean // false: no allowance (not counted)
+  allocated: number
+  carried: number
+  used: number
+  pending: number
+  remaining: number // allocated + carried − used
+  available: number // remaining − pending
+  custom: boolean
+}
+
+export type HalfDay = 'FIRST_HALF' | 'SECOND_HALF'
+export type DayType = 'FULL' | HalfDay
 
 export interface LeaveRequest {
   id: number
@@ -153,7 +193,10 @@ export interface LeaveRequest {
   leave_type_id: number
   start_date: string
   end_date: string
-  days: number
+  day_type: DayType
+  half_from: string | null // a half day's hours (company time)
+  half_to: string | null
+  days: number // 0.5 for a half day
   reason: string
   status: LeaveStatus
   review_note: string
@@ -167,14 +210,32 @@ export interface LeaveInput {
   leave_type_id: number
   start_date: string // YYYY-MM-DD
   end_date: string
+  day_type: DayType
   reason: string
 }
 
+/** The employee's shift on the first requested date: what a half day means for them. */
+export interface DayPlan {
+  date: string
+  work: boolean
+  holiday: boolean
+  shift_name?: string
+  start?: string
+  end?: string
+  work_type: 'NORMAL' | 'CROSS_DAY'
+  first_half: [string, string]
+  second_half: [string, string]
+  second_half_next_day: boolean
+  cross_days: boolean // a night shift falls in the range
+}
+
 export interface LeavePreview {
-  days: number
-  start_date: string
-  end_date: string
-  leave_type: LeaveType
+  days: number // 0 when there is a problem
+  plan: DayPlan
+  balance?: LeaveBalance | null
+  problem: { code: string; message: string } | null // why the request would be refused
+  half_from?: string | null
+  half_to?: string | null
 }
 
 export interface PendingAttendance {
@@ -188,7 +249,11 @@ export interface PendingAttendance {
   check_in_at: string | null
   check_out_at: string | null
   late_minutes: number
-  photo_id: number | null
+  early_leave_minutes: number
+  photo_id: number | null // none: check-ins have no photo
+  distance_meters: number | null
+  inside_office: boolean | null
+  accuracy: number | null
 }
 
 /** Field names come from the Go struct as-is (no JSON tags). */

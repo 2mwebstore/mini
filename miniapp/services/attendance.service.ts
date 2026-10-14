@@ -12,9 +12,9 @@ export const attendanceService = {
 
   history: (month: string) => api.get<HistoryResponse>('/attendance/history', { query: { month } }),
 
-  submit(type: AttendanceType, photo: Blob, location: Coordinates | null) {
+  // No photo: the location (when shared) is all a check-in/out sends.
+  submit(type: AttendanceType, location: Coordinates | null) {
     const form = new FormData()
-    form.append('photo', photo, 'photo.jpg')
     if (location) {
       form.append('latitude', String(location.latitude))
       form.append('longitude', String(location.longitude))

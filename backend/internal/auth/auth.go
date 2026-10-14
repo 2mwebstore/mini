@@ -72,8 +72,8 @@ func (s *Service) Login(ctx context.Context, email, password string) (*LoginResu
 	if err != nil {
 		return nil, err
 	}
-	if !emp.IsActive() || !(&Actor{Employee: *emp}).IsReviewer() {
-		// The admin panel is for reviewers and admins; staff use the Mini App.
+	if !emp.IsActive() || !PanelAccess(emp.RoleID) {
+		// The admin panel is for roles with more than their own records; staff use the Mini App.
 		return nil, apperr.Forbidden("Your account does not have admin panel access.")
 	}
 	now := time.Now()
@@ -114,9 +114,12 @@ func (s *Service) ActorFromJWT(ctx context.Context, raw string) (*Actor, error) 
 		return nil, apperr.ErrUnauthorized
 	}
 	a := &Actor{Employee: *emp, Channel: ChannelDashboard}
-	if !a.IsReviewer() {
+	if !a.PanelAccess() {
 		// Demoted since signing in (e.g. no longer a branch admin): the session ends now.
 		return nil, apperr.ErrUnauthorized
+	}
+	if a.Branches, err = s.branchesOf(ctx, emp.ID); err != nil {
+		return nil, err
 	}
 	return a, nil
 }
@@ -144,7 +147,11 @@ func (s *Service) ActorFromTelegram(ctx context.Context, tgUserID int64) (*Actor
 	if emp.Status != models.EmployeeActive {
 		return nil, apperr.ErrInactive
 	}
-	return &Actor{Employee: *emp, Channel: ChannelTelegram}, nil
+	a := &Actor{Employee: *emp, Channel: ChannelTelegram}
+	if a.Branches, err = s.branchesOf(ctx, emp.ID); err != nil {
+		return nil, err
+	}
+	return a, nil
 }
 
 // TouchTelegramProfile keeps the informational username/name fields fresh.
@@ -154,7 +161,20 @@ func (s *Service) TouchTelegramProfile(ctx context.Context, tgUserID int64, user
 		Updates(map[string]any{"username": username, "first_name": first, "last_name": last})
 }
 
+// branchesOf lists the branches assigned to a system user (none = no restriction).
+func (s *Service) branchesOf(ctx context.Context, empID uint64) ([]uint64, error) {
+	return BranchesOf(ctx, s.db, empID)
+}
+
+// BranchesOf lists the branches assigned to a system user.
+func BranchesOf(ctx context.Context, db *gorm.DB, empID uint64) ([]uint64, error) {
+	var ids []uint64
+	err := db.WithContext(ctx).Model(&models.UserBranch{}).Where("employee_id = ?", empID).Order("branch_id").Pluck("branch_id", &ids).Error
+	return ids, err
+}
+
 func (s *Service) loadEmployee(ctx context.Context, id uint64) (*models.Employee, error) {
+	refreshRoles(ctx, s.db)
 	var e models.Employee
 	err := s.db.WithContext(ctx).Preload("Department").Preload("Branch").Preload("WorkSchedule").Preload("Role").Preload("TelegramAccount").
 		First(&e, id).Error
@@ -174,7 +194,7 @@ func TeamIDs(ctx context.Context, db *gorm.DB, managerID uint64) ([]uint64, erro
 
 // Scope returns nil (everyone) or the employee IDs the actor is allowed to see.
 func Scope(ctx context.Context, db *gorm.DB, a *Actor) ([]uint64, error) {
-	if a.Has(PermAllView) {
+	if a.Has(PermAllView) && a.AllBranches() {
 		return nil, nil
 	}
 	var team, branch []uint64
@@ -184,10 +204,10 @@ func Scope(ctx context.Context, db *gorm.DB, a *Actor) ([]uint64, error) {
 			return nil, err
 		}
 	}
-	if a.Has(PermBranchView) && a.Employee.BranchID != nil {
+	if _, ids := a.BranchScope(); len(ids) > 0 {
 		// Deactivated people stay in scope so their history remains in reports.
 		if err := db.WithContext(ctx).Model(&models.Employee{}).
-			Where("branch_id = ? AND role_id NOT IN ?", *a.Employee.BranchID, models.CompanyAdminRoles).
+			Where("branch_id IN ? AND role_id NOT IN ?", ids, models.CompanyWideRoleIDs()).
 			Pluck("id", &branch).Error; err != nil {
 			return nil, err
 		}

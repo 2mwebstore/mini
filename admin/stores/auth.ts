@@ -11,6 +11,8 @@ export const useAuthStore = defineStore('auth', {
     employee: null as Employee | null,
     role: null as RoleCode | null,
     permissions: [] as Permission[],
+    allBranches: true,
+    branchIds: [] as number[],
     company: { name: '', timezone: 'Asia/Phnom_Penh' },
   }),
   getters: {
@@ -29,6 +31,8 @@ export const useAuthStore = defineStore('auth', {
         this.employee = me.employee
         this.role = me.role
         this.permissions = me.permissions
+        this.allBranches = me.all_branches
+        this.branchIds = me.branch_ids
         this.company = me.company
       } catch (e) {
         if (!(e instanceof ApiError) || e.status !== 401) throw e
@@ -54,6 +58,8 @@ export const useAuthStore = defineStore('auth', {
       this.employee = null
       this.role = null
       this.permissions = []
+      this.allBranches = true
+      this.branchIds = []
     },
   },
 })

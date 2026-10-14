@@ -30,14 +30,15 @@ type Input struct {
 	TelegramUsername string  `json:"telegram_username"`
 	Department       string  `json:"department"` // by name; created if missing
 	DepartmentID     *uint64 `json:"department_id"`
-	BranchID         *uint64 `json:"branch_id"` // required for staff, managers and branch admins
-	Position         *string `json:"position"`
+	BranchID         *uint64 `json:"branch_id"`   // required for staff, managers and branch admins
+	Position         *string `json:"position"`    // by name; created if missing
+	PositionID       *uint64 `json:"position_id"` // from the managed list (0 = none)
 	Phone            *string `json:"phone"`
 	Email            *string `json:"email"`
 	JoinDate         string  `json:"join_date"`
 	WorkScheduleID   *uint64 `json:"work_schedule_id"`
 	ManagerID        *uint64 `json:"manager_id"`
-	Role             string  `json:"role"`   // super_admin | hr_admin | manager | staff (branch_admin: via branches)
+	Role             string  `json:"role"`   // a role code (branch_admin is assigned on the Branches page)
 	Status           string  `json:"status"` // ACTIVE | INACTIVE | SUSPENDED (update only)
 }
 
@@ -220,8 +221,8 @@ func (s *Service) Deactivate(ctx context.Context, actor *auth.Actor, id uint64) 
 }
 
 func (s *Service) apply(ctx context.Context, emp *models.Employee, in Input) error {
-	if in.Position != nil {
-		emp.Position = strings.TrimSpace(*in.Position)
+	if err := s.resolvePosition(ctx, emp, in); err != nil {
+		return err
 	}
 	if in.Phone != nil {
 		emp.Phone = strings.TrimSpace(*in.Phone)
@@ -290,13 +291,43 @@ func (s *Service) resolveDepartment(tx *gorm.DB, emp *models.Employee, in Input)
 	return nil
 }
 
+// resolvePosition sets the position from the managed list (by id, or by name —
+// a new name is added to the list). employees.position keeps the name for display.
+func (s *Service) resolvePosition(ctx context.Context, emp *models.Employee, in Input) error {
+	switch {
+	case in.PositionID != nil && *in.PositionID == 0:
+		emp.PositionID, emp.Position = nil, ""
+	case in.PositionID != nil:
+		var p models.Position
+		if err := s.db.WithContext(ctx).First(&p, *in.PositionID).Error; err != nil {
+			return apperr.BadRequest("INVALID_POSITION", "Unknown position.")
+		}
+		emp.PositionID, emp.Position = &p.ID, p.Name
+	case in.Position != nil:
+		name := strings.TrimSpace(*in.Position)
+		if name == "" {
+			emp.PositionID, emp.Position = nil, ""
+			return nil
+		}
+		if len([]rune(name)) > 100 {
+			return apperr.BadRequest("INVALID_POSITION", "Position name is too long.")
+		}
+		p := models.Position{Name: name}
+		if err := s.db.WithContext(ctx).Where("name = ?", name).FirstOrCreate(&p).Error; err != nil {
+			return err
+		}
+		emp.PositionID, emp.Position = &p.ID, p.Name
+	}
+	return nil
+}
+
 func (s *Service) resolveRole(actor *auth.Actor, code string, def uint8) (uint8, error) {
 	if strings.TrimSpace(code) == "" {
 		return def, nil
 	}
 	id, ok := auth.RoleIDFromCode(strings.ToLower(strings.TrimSpace(code)))
 	if !ok {
-		return 0, apperr.BadRequest("INVALID_ROLE", "Role must be super_admin, hr_admin, manager or staff.")
+		return 0, apperr.BadRequest("INVALID_ROLE", "Unknown role.")
 	}
 	if id == models.RoleBranchAdmin {
 		return 0, apperr.BadRequest("BRANCH_ADMIN_ROLE", "Branch admins are assigned on the Branches page.")
@@ -315,10 +346,12 @@ func (s *Service) resolveBranch(ctx context.Context, actor *auth.Actor, emp *mod
 		return nil
 	}
 	if actor.BranchOnly() {
-		if branchID != nil && actor.Employee.BranchID != nil && *branchID != *actor.Employee.BranchID {
-			return apperr.Forbidden("You can only manage staff in your own branch.")
+		if branchID == nil || *branchID == 0 {
+			branchID = actor.Employee.BranchID // default: the actor's own branch
 		}
-		branchID = actor.Employee.BranchID
+		if branchID != nil && !actor.InBranch(*branchID) {
+			return apperr.Forbidden("You can only manage staff in your assigned branches.")
+		}
 	}
 	if branchID == nil || *branchID == 0 {
 		return apperr.BadRequest("BRANCH_REQUIRED", "Choose a branch.")
@@ -377,6 +410,7 @@ func (s *Service) Get(ctx context.Context, actor *auth.Actor, id uint64) (*model
 type ListFilter struct {
 	Q               string `form:"q"`
 	DepartmentID    uint64 `form:"department_id"`
+	PositionID      uint64 `form:"position_id"`
 	BranchID        uint64 `form:"branch_id"`
 	Status          string `form:"status"`
 	IncludeInactive bool   `form:"include_inactive"`
@@ -396,6 +430,9 @@ func (s *Service) List(ctx context.Context, actor *auth.Actor, f ListFilter) ([]
 	}
 	if f.Status != "" {
 		q = q.Where("status = ?", strings.ToUpper(f.Status))
+	}
+	if f.PositionID != 0 {
+		q = q.Where("position_id = ?", f.PositionID)
 	}
 	if f.DepartmentID != 0 {
 		q = q.Where("department_id = ?", f.DepartmentID)

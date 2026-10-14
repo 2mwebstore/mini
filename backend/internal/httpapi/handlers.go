@@ -64,8 +64,14 @@ func (s *Server) me(c *gin.Context) {
 		return
 	}
 	// The panel formats times in the company timezone; managers can't read /settings.
+	all, branchIDs := a.BranchScope()
+	if branchIDs == nil {
+		branchIDs = []uint64{}
+	}
 	c.JSON(http.StatusOK, gin.H{"employee": a.Employee, "role": auth.RoleCode(a.Employee.RoleID), "permissions": auth.PermissionsFor(a.Employee.RoleID),
-		"company": gin.H{"name": st.CompanyName, "timezone": st.Timezone}})
+		"company": gin.H{"name": st.CompanyName, "timezone": st.Timezone},
+		// where the user's branch / company powers reach: every branch, or these
+		"all_branches": all, "branch_ids": branchIDs})
 }
 
 // ---------- employees ----------
@@ -157,7 +163,7 @@ func (s *Server) createUser(c *gin.Context) {
 }
 
 func (s *Server) listDepartments(c *gin.Context) {
-	out, err := s.employees.Departments(c.Request.Context())
+	out, err := s.employees.DepartmentList(c.Request.Context())
 	if err != nil {
 		fail(c, err)
 		return
@@ -183,18 +189,19 @@ func (s *Server) getAttendance(c *gin.Context) {
 	if !ok {
 		return
 	}
-	a, err := s.attendance.Get(c.Request.Context(), actorFrom(c), id)
+	d, err := s.attendance.Detail(c.Request.Context(), actorFrom(c), id)
 	if err != nil {
 		fail(c, err)
 		return
 	}
+	a := d.Attendance
 	// Served under the admin panel API (/api/v1) or the Mini App (/api/v1/app); link photos under the same prefix.
 	prefix := strings.TrimSuffix(c.FullPath(), "/attendance/:id")
 	photos := make([]gin.H, 0, len(a.Photos))
 	for _, p := range a.Photos {
 		photos = append(photos, gin.H{"id": p.ID, "type": p.Type, "created_at": p.CreatedAt, "url": fmt.Sprintf("%s/attendance/photos/%d", prefix, p.ID)})
 	}
-	c.JSON(http.StatusOK, gin.H{"attendance": a, "photos": photos})
+	c.JSON(http.StatusOK, gin.H{"attendance": a, "photos": photos, "schedule": d.Schedule, "holiday": d.Holiday, "leave": d.Leave})
 }
 
 // attendancePhoto streams the image through the API so storage stays private.
@@ -304,7 +311,17 @@ func (s *Server) listLeave(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"items": out})
 }
 
+// leaveTypes: active types; ?all=1 also inactive ones, with usage counts (admin panel).
 func (s *Server) leaveTypes(c *gin.Context) {
+	if c.Query("all") == "1" {
+		out, err := s.leave.AllTypes(c.Request.Context())
+		if err != nil {
+			fail(c, err)
+			return
+		}
+		c.JSON(http.StatusOK, gin.H{"items": out})
+		return
+	}
 	out, err := s.leave.Types(c.Request.Context())
 	if err != nil {
 		fail(c, err)

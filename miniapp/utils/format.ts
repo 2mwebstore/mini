@@ -1,4 +1,5 @@
-import type { ConfirmationStatus, DayStatus, LeaveStatus } from '~/types/api'
+import type { ConfirmationStatus, DayPlan, DayStatus, LeaveRequest, LeaveStatus } from '~/types/api'
+import type { IconName } from '~/utils/icons'
 
 // Clock times are shown in the company timezone (not the phone's), matching the
 // bot, reports and the server's late/early calculation.
@@ -29,6 +30,28 @@ export function formatMinutes(m: number): string {
   const h = Math.floor(m / 60)
   const r = m % 60
   return h ? (r ? `${h}h ${r}m` : `${h}h`) : `${r}m`
+}
+
+/** "1 day", "2.5 days", "3 working days". */
+export function fmtDays(n: number, unit = 'day'): string {
+  return `${n % 1 ? n.toFixed(1) : n} ${unit}${n === 1 ? '' : 's'}`
+}
+
+/**
+ * What the two halves of a day are called for this shift: a day shift has a
+ * morning and an afternoon; a night (cross-day) or evening shift a first and a
+ * second half (22:00–02:00 and 02:00–06:00).
+ */
+export function halfLabels(p: Pick<DayPlan, 'work_type' | 'first_half'>): [{ label: string; icon: IconName }, { label: string; icon: IconName }] {
+  if (p.work_type === 'NORMAL' && p.first_half[0] < '12:00') return [{ label: 'Morning', icon: 'sun' }, { label: 'Afternoon', icon: 'sunset' }]
+  return [{ label: 'First half', icon: 'clock' }, { label: 'Second half', icon: 'moon' }]
+}
+
+/** "3 working days", or for a half day "Half day · first half 22:00–02:00". */
+export function leaveSpan(l: Pick<LeaveRequest, 'day_type' | 'half_from' | 'half_to' | 'days'>): string {
+  if (l.day_type === 'FULL' || !l.day_type) return fmtDays(l.days, 'working day')
+  const part = l.day_type === 'FIRST_HALF' ? 'first half' : 'second half'
+  return `Half day · ${part}${l.half_from && l.half_to ? ` ${l.half_from}–${l.half_to}` : ''}`
 }
 
 /** YYYY-MM-DD of "now" in the company timezone. */

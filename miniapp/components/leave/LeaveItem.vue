@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import type { LeaveRequest } from '~/types/api'
-import { formatDateRange, leaveStatus } from '~/utils/format'
+import { formatDateRange, leaveSpan, leaveStatus } from '~/utils/format'
 
 defineProps<{ leave: LeaveRequest }>()
 </script>
@@ -11,7 +11,7 @@ defineProps<{ leave: LeaveRequest }>()
       <div class="min-w-0">
         <p class="text-[15px] font-medium">{{ leave.leave_type?.name ?? 'Leave' }}</p>
         <p class="mt-0.5 text-[13px] text-hint">
-          {{ formatDateRange(leave.start_date, leave.end_date) }} · {{ leave.days }} working day{{ leave.days === 1 ? '' : 's' }}
+          {{ formatDateRange(leave.start_date, leave.end_date) }} · {{ leaveSpan(leave) }}
         </p>
       </div>
       <StatusBadge v-bind="leaveStatus[leave.status]" />

@@ -3,7 +3,7 @@ import { employeeService } from '~/services/employee.service'
 import { useAuthStore } from '~/stores/auth'
 import { useLookupsStore } from '~/stores/lookups'
 import type { EmployeeInput } from '~/types/api'
-import { employeeStatus, formatDate, roleLabels } from '~/utils/format'
+import { employeeStatus, formatDate } from '~/utils/format'
 
 const auth = useAuthStore()
 const lookups = useLookupsStore()
@@ -53,7 +53,7 @@ async function deactivate() {
         <PageHeader
           class="mt-3"
           :title="emp.data.value.full_name"
-          :subtitle="[emp.data.value.employee_code, emp.data.value.role ? roleLabels[emp.data.value.role.code] : '', emp.data.value.branch?.name].filter(Boolean).join(' · ')"
+          :subtitle="[emp.data.value.employee_code, emp.data.value.role?.name ?? '', emp.data.value.branch?.name].filter(Boolean).join(' · ')"
         >
           <StatusBadge v-bind="emp.data.value.deleted_at ? { label: 'Deactivated', tone: 'neutral' } : employeeStatus[emp.data.value.status]" />
           <AppButton variant="secondary" @click="navigateTo({ path: '/attendance', query: { employee_id: String(id) } })">Attendance</AppButton>

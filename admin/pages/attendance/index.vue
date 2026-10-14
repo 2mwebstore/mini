@@ -3,7 +3,7 @@ import { attendanceService } from '~/services/attendance.service'
 import { useAuthStore } from '~/stores/auth'
 import { useLookupsStore } from '~/stores/lookups'
 import type { Attendance, AttendanceFilter } from '~/types/api'
-import { confirmationStatus, dayStatus, formatClock, formatDate, formatMinutes, monthStartISO, nextDay, todayISO } from '~/utils/format'
+import { confirmationStatus, dayStatus, formatClock, formatDate, formatMinutes, latestReview, monthStartISO, nextDay, todayISO } from '~/utils/format'
 import { optionsFrom } from '~/utils/options'
 
 const dayStatusOptions = optionsFrom(dayStatus, ['PRESENT', 'LATE', 'EARLY_LEAVE', 'ABSENT', 'LEAVE'])
@@ -79,13 +79,28 @@ async function addRecord() {
 const editing = ref<Attendance | null>(null)
 const editOpen = computed({ get: () => !!editing.value, set: v => !v && (editing.value = null) })
 
+// ---------- view one record ----------
+const viewing = ref<number | null>(null)
+function editFromView(id: number) {
+  const a = list.data.value?.items.find(x => x.id === id)
+  viewing.value = null
+  if (a) editing.value = a
+}
+// Where a check-in/out was made, for the list's pin: inside / outside the office radius.
+function placeOf(a: Attendance, type: 'CHECK_IN' | 'CHECK_OUT') {
+  const r = latestReview(a.confirmations, type)
+  const l = r?.location_id ? a.locations?.find(x => x.id === r.location_id) : undefined
+  if (!l || l.inside_office == null) return null
+  return { inside: l.inside_office, title: `${l.inside_office ? 'Inside' : 'Outside'} the office radius (${Math.round(l.distance_meters ?? 0)} m)` }
+}
+
 const activeEmployees = computed(() => (lookups.employees ?? []).filter(e => !e.deleted_at))
 const activeEmployeeOptions = computed(() => activeEmployees.value.map(e => ({ value: String(e.id), label: e.full_name, sub: e.employee_code })))
 </script>
 
 <template>
   <div>
-    <PageHeader title="Attendance" subtitle="Every check-in and check-out, with photos, location and review history.">
+    <PageHeader title="Attendance" subtitle="Every check-in and check-out, each with its own status, location and review. View a day for the full record.">
       <AppButton v-if="auth.can('attendance.edit')" @click="addOpen = true">Add record</AppButton>
     </PageHeader>
 
@@ -111,7 +126,7 @@ const activeEmployeeOptions = computed(() => activeEmployees.value.map(e => ({ v
       <div v-if="list.data.value" class="card overflow-hidden" :class="{ 'opacity-60': list.loading.value }">
         <div class="overflow-x-auto">
           <table class="table">
-            <thead><tr><th>Date</th><th>Employee</th><th>In</th><th>Out</th><th>Worked</th><th>Late</th><th>Status</th><th>Review</th><th class="text-right">Actions</th></tr></thead>
+            <thead><tr><th>Date</th><th>Employee</th><th>Check in</th><th>Check out</th><th>Worked</th><th>Status</th><th class="text-right">Actions</th></tr></thead>
             <tbody>
               <tr v-for="a in list.data.value.items" :key="a.id" class="hover:bg-surface-2/60">
                 <td class="whitespace-nowrap">{{ formatDate(a.work_date, true) }}</td>
@@ -119,21 +134,41 @@ const activeEmployeeOptions = computed(() => activeEmployees.value.map(e => ({ v
                   <span class="font-medium">{{ a.employee?.full_name }}</span>
                   <span class="block text-xs text-muted">{{ a.employee?.employee_code }}<template v-if="auth.can('all.view') && a.employee?.branch"> · {{ a.employee.branch.name }}</template></span>
                 </td>
-                <td class="tabular-nums">{{ formatClock(a.check_in_at, tz) }}</td>
-                <td class="whitespace-nowrap tabular-nums">
-                  {{ formatClock(a.check_out_at, tz) }}<sup v-if="nextDay(a.work_date, a.check_out_at, tz)" class="ml-0.5 text-[10px] text-muted" title="Next morning (night shift)">+1</sup>
+                <td v-for="t in (['CHECK_IN', 'CHECK_OUT'] as const)" :key="t" class="whitespace-nowrap">
+                  <template v-for="at in [t === 'CHECK_IN' ? a.check_in_at : a.check_out_at]" :key="t">
+                    <span v-if="!at" class="text-muted">—</span>
+                    <template v-else>
+                      <span class="inline-flex items-center gap-1 font-medium tabular-nums">
+                        {{ formatClock(at, tz) }}<sup v-if="t === 'CHECK_OUT' && nextDay(a.work_date, at, tz)" class="text-[10px] text-muted" title="Next morning (night shift)">+1</sup>
+                        <template v-for="p in [placeOf(a, t)]" :key="t">
+                          <svg v-if="p" viewBox="0 0 24 24" class="size-3.5" :class="p.inside ? 'text-success' : 'text-warning'" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" role="img" :aria-label="p.title"><title>{{ p.title }}</title><path d="M12 21s-7-6.2-7-11.5A7 7 0 0 1 19 9.5C19 14.8 12 21 12 21zm0-9a2.5 2.5 0 1 0 0-5 2.5 2.5 0 0 0 0 5z" /></svg>
+                        </template>
+                      </span>
+                      <span class="mt-0.5 flex items-center gap-1 text-xs">
+                        <span v-if="t === 'CHECK_IN'" :class="a.late_minutes ? 'text-warning' : 'text-success'">{{ a.late_minutes ? `Late ${formatMinutes(a.late_minutes)}` : 'On time' }}</span>
+                        <span v-else :class="a.early_leave_minutes ? 'text-warning' : 'text-success'">{{ a.early_leave_minutes ? `Early ${formatMinutes(a.early_leave_minutes)}` : 'On time' }}</span>
+                        <template v-for="r in [latestReview(a.confirmations, t)]" :key="t">
+                          <span v-if="r && r.status !== 'CONFIRMED'" class="text-muted">·</span>
+                          <span v-if="r && r.status !== 'CONFIRMED'" :class="r.status === 'REJECTED' ? 'text-danger' : 'text-warning'">{{ confirmationStatus[r.status].label }}</span>
+                        </template>
+                      </span>
+                    </template>
+                  </template>
                 </td>
                 <td class="tabular-nums">{{ formatMinutes(a.working_minutes) }}</td>
-                <td class="tabular-nums" :class="{ 'text-warning': a.late_minutes }">{{ formatMinutes(a.late_minutes) }}</td>
-                <td><StatusBadge v-bind="dayStatus[a.status]" /></td>
-                <td><StatusBadge v-if="a.check_in_at" v-bind="confirmationStatus[a.confirmation_status]" /></td>
+                <td>
+                  <StatusBadge v-bind="dayStatus[a.status]" />
+                  <span v-if="a.check_in_at && a.confirmation_status !== 'CONFIRMED'" class="mt-0.5 block">
+                    <StatusBadge v-bind="confirmationStatus[a.confirmation_status]" />
+                  </span>
+                </td>
                 <td class="whitespace-nowrap text-right">
                   <div class="inline-flex items-center gap-1">
                     <AppButton v-if="auth.can('attendance.edit')" size="sm" variant="secondary" :aria-label="`Edit ${a.employee?.full_name} ${formatDate(a.work_date)}`" @click="editing = a">
                       <svg viewBox="0 0 24 24" class="size-3.5" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 20h9M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4z" /></svg>
                       Edit
                     </AppButton>
-                    <NuxtLink :to="`/attendance/${a.id}`" class="rounded-md px-2 py-1 text-sm text-primary hover:bg-surface-2">View</NuxtLink>
+                    <AppButton size="sm" variant="ghost" :aria-label="`View ${a.employee?.full_name} ${formatDate(a.work_date)}`" @click="viewing = a.id">View</AppButton>
                   </div>
                 </td>
               </tr>
@@ -145,6 +180,7 @@ const activeEmployeeOptions = computed(() => activeEmployees.value.map(e => ({ v
     </StateView>
 
     <AttendanceEditModal v-model="editOpen" :record="editing" @saved="list.load()" />
+    <AttendanceViewModal :id="viewing" @close="viewing = null" @changed="list.load()" @edit="editFromView" />
 
     <AppModal v-model="addOpen" title="Add attendance record">
       <form id="add-form" class="grid gap-3 sm:grid-cols-2" @submit.prevent="addRecord">

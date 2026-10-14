@@ -57,7 +57,7 @@ const rows = computed(() => [...(daily.data.value?.rows ?? [])].sort((a, b) => w
       <span class="text-sm"><b>{{ pending.data.value.attendance + pending.data.value.leave }}</b> waiting for review</span>
       <span class="flex gap-4 text-sm font-medium text-warning">
         <NuxtLink v-if="pending.data.value.attendance" :to="pendingAttendanceLink" class="hover:underline">{{ pending.data.value.attendance }} attendance →</NuxtLink>
-        <NuxtLink v-if="pending.data.value.leave" to="/leave" class="hover:underline">{{ pending.data.value.leave }} leave →</NuxtLink>
+        <NuxtLink v-if="pending.data.value.leave" to="/leave?status=PENDING" class="hover:underline">{{ pending.data.value.leave }} leave →</NuxtLink>
       </span>
     </div>
 

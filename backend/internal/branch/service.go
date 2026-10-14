@@ -33,27 +33,39 @@ var codeRe = regexp.MustCompile(`^[A-Za-z0-9_-]{2,32}$`)
 
 // Input is a create/update body; nil fields are left unchanged on update.
 type Input struct {
-	Code                 *string  `json:"code"`
-	Name                 *string  `json:"name"`
-	Address              *string  `json:"address"`
-	Status               *string  `json:"status"` // ACTIVE | INACTIVE
-	OfficeLatitude       *float64 `json:"office_latitude"`
-	OfficeLongitude      *float64 `json:"office_longitude"`
-	AllowedRadiusMeters  *float64 `json:"allowed_radius_meters"`
-	UseCompanyOffice     bool     `json:"use_company_office"` // clears the branch's own office location
-	TelegramGroupID      *int64   `json:"telegram_group_id"`
-	TelegramReviewChatID *int64   `json:"telegram_review_chat_id"`
+	Code                 *string   `json:"code"`
+	Name                 *string   `json:"name"`
+	Address              *string   `json:"address"`
+	Status               *string   `json:"status"` // ACTIVE | INACTIVE
+	OfficeLatitude       *float64  `json:"office_latitude"`
+	OfficeLongitude      *float64  `json:"office_longitude"`
+	AllowedRadiusMeters  *float64  `json:"allowed_radius_meters"`
+	UseCompanyOffice     bool      `json:"use_company_office"` // clears the branch's own office location
+	TelegramGroupID      *int64    `json:"telegram_group_id"`
+	TelegramReviewChatID *int64    `json:"telegram_review_chat_id"`
+	GPS                  *GPSInput `json:"gps"` // the branch's GPS rules
+}
+
+// GPSInput: Inherit uses the company's GPS settings; otherwise the three rules apply.
+type GPSInput struct {
+	Inherit       bool `json:"inherit"`
+	Enabled       bool `json:"enabled"`
+	Required      bool `json:"required"`
+	RejectOutside bool `json:"reject_outside"`
 }
 
 // List returns the branches the actor may see: all for company-wide staff
-// (super/HR admins), otherwise only the actor's own branch.
+// without assigned branches, otherwise their assigned branches and their own.
 func (s *Service) List(ctx context.Context, actor *auth.Actor) ([]models.Branch, error) {
 	q := s.db.WithContext(ctx).Preload("Admin").Order("name")
-	if !actor.Has(auth.PermAllView) {
-		if actor.Employee.BranchID == nil {
+	if all, ids := actor.BranchScope(); !all {
+		if b := actor.Employee.BranchID; b != nil {
+			ids = append(ids, *b)
+		}
+		if len(ids) == 0 {
 			return []models.Branch{}, nil
 		}
-		q = q.Where("id = ?", *actor.Employee.BranchID)
+		q = q.Where("id IN ?", ids)
 	}
 	out := []models.Branch{}
 	if err := q.Find(&out).Error; err != nil {
@@ -63,7 +75,7 @@ func (s *Service) List(ctx context.Context, actor *auth.Actor) ([]models.Branch,
 }
 
 func (s *Service) Get(ctx context.Context, actor *auth.Actor, id uint64) (*models.Branch, error) {
-	if !actor.Has(auth.PermAllView) && (actor.Employee.BranchID == nil || *actor.Employee.BranchID != id) {
+	if !actor.InBranch(id) && (actor.Employee.BranchID == nil || *actor.Employee.BranchID != id) {
 		return nil, apperr.NotFound("BRANCH_NOT_FOUND", "Branch not found.")
 	}
 	var b models.Branch
@@ -108,7 +120,7 @@ func (s *Service) Create(ctx context.Context, actor *auth.Actor, in Input) (*mod
 // office location and Telegram chats.
 func (s *Service) Update(ctx context.Context, actor *auth.Actor, id uint64, in Input) (*models.Branch, error) {
 	owner := actor.Has(auth.PermBranchesManage)
-	own := actor.Has(auth.PermBranchSettings) && actor.Employee.BranchID != nil && *actor.Employee.BranchID == id
+	own := actor.Has(auth.PermBranchSettings) && ((actor.Employee.BranchID != nil && *actor.Employee.BranchID == id) || actor.InBranch(id))
 	if !owner && !own {
 		return nil, apperr.ErrForbidden
 	}
@@ -226,6 +238,15 @@ func apply(b *models.Branch, in Input) error {
 		}
 		b.Status = st
 	}
+	if g := in.GPS; g != nil {
+		if g.Inherit {
+			b.GPSEnabled, b.GPSRequired, b.GPSRejectOutside = nil, nil, nil
+		} else {
+			// Required / reject-outside only make sense with GPS on.
+			on, req, rej := g.Enabled, g.Enabled && g.Required, g.Enabled && g.RejectOutside
+			b.GPSEnabled, b.GPSRequired, b.GPSRejectOutside = &on, &req, &rej
+		}
+	}
 	if in.UseCompanyOffice {
 		b.OfficeLatitude, b.OfficeLongitude, b.AllowedRadiusMeters = nil, nil, nil
 	} else if in.OfficeLatitude != nil || in.OfficeLongitude != nil || in.AllowedRadiusMeters != nil {
@@ -252,7 +273,8 @@ func apply(b *models.Branch, in Input) error {
 func snapshot(b *models.Branch) map[string]any {
 	return map[string]any{"code": b.Code, "name": b.Name, "address": b.Address, "status": b.Status,
 		"office_latitude": b.OfficeLatitude, "office_longitude": b.OfficeLongitude, "allowed_radius_meters": b.AllowedRadiusMeters,
-		"telegram_group_id": b.TelegramGroupID, "telegram_review_chat_id": b.TelegramReviewChatID}
+		"telegram_group_id": b.TelegramGroupID, "telegram_review_chat_id": b.TelegramReviewChatID,
+		"gps_enabled": b.GPSEnabled, "gps_required": b.GPSRequired, "gps_reject_outside": b.GPSRejectOutside}
 }
 
 // countStaff fills StaffCount (active employees) for each branch.

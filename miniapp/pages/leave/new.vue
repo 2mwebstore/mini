@@ -1,9 +1,10 @@
 <script setup lang="ts">
+import type { PickOption } from '~/components/ui/SearchSelect.vue'
 import type { ApiError } from '~/services/api'
 import { leaveService } from '~/services/leave.service'
 import { useAuthStore } from '~/stores/auth'
-import type { LeavePreview } from '~/types/api'
-import { todayISO } from '~/utils/format'
+import type { DayPlan, HalfDay, LeaveBalance, LeavePreview } from '~/types/api'
+import { fmtDays, halfLabels, todayISO } from '~/utils/format'
 
 definePageMeta({ layout: 'plain' })
 
@@ -12,27 +13,48 @@ const auth = useAuthStore()
 useBackButton(() => (window.history.state?.back ? router.back() : navigateTo('/leave', { replace: true })))
 
 const { data: types, error: typesError, loading: typesLoading, load: loadTypes } = useResource(() => leaveService.types())
+// Balances are a nice-to-have on this form: if they fail to load, the picker just shows names.
+const balances = ref<Map<number, LeaveBalance>>(new Map())
+onMounted(async () => {
+  try {
+    balances.value = new Map((await leaveService.balances()).filter(b => b.tracked).map(b => [b.leave_type_id, b]))
+  } catch {}
+})
 
 const today = todayISO(auth.timezone)
-const form = reactive({ leaveTypeId: 0, start: today, end: today, reason: '' })
+const form = reactive({ leaveTypeId: '', whole: 'FULL' as 'FULL' | 'HALF', half: 'FIRST_HALF' as HalfDay, start: today, end: today, reason: '' })
+const chosenType = computed(() => types.value?.find(t => String(t.id) === form.leaveTypeId))
+const typeOptions = computed((): PickOption[] => (types.value ?? []).map(t => {
+  const b = balances.value.get(t.id)
+  return {
+    value: String(t.id),
+    label: t.name,
+    sub: t.approval === 'AUTO' ? 'Approved automatically' : t.description || undefined,
+    color: t.color,
+    hint: b ? `${fmtDays(Math.max(0, b.available))} left` : undefined,
+    hintTone: b && b.available <= 0 ? 'warning' : 'hint',
+  }
+}))
 watch(types, t => {
-  if (t?.length && !form.leaveTypeId) form.leaveTypeId = t[0]!.id
+  if (t?.length && !form.leaveTypeId) form.leaveTypeId = String(t[0]!.id)
 })
-watch(
-  () => form.start,
-  s => {
-    if (form.end < s) form.end = s
-  },
-)
+// A half day is one date; a full-day range keeps its end after its start.
+watch(() => [form.start, form.whole] as const, ([s, whole]) => {
+  if (whole === 'HALF' || form.end < s) form.end = s
+})
+const dayType = computed(() => (form.whole === 'HALF' ? form.half : 'FULL'))
 
-// Working days + server-side checks (overlap, range), refreshed as dates change.
+// Working days, the balance and the shift on the first date (what a half day
+// means for this person: a morning/afternoon, or the halves of a night shift),
+// refreshed as the form changes. A refusal comes back as preview.problem.
 const preview = ref<LeavePreview | null>(null)
+const plan = ref<DayPlan | null>(null) // kept while the next preview loads
 const previewError = ref('')
 let timer: ReturnType<typeof setTimeout> | undefined
 let seq = 0
 watch(
-  () => [form.leaveTypeId, form.start, form.end] as const,
-  ([typeId, start, end]) => {
+  () => [form.leaveTypeId, dayType.value, form.start, form.end] as const,
+  ([typeId, dt, start, end]) => {
     clearTimeout(timer)
     preview.value = null
     previewError.value = ''
@@ -40,26 +62,40 @@ watch(
     const mine = ++seq
     timer = setTimeout(async () => {
       try {
-        const p = await leaveService.preview({ leave_type_id: typeId, start_date: start, end_date: end })
-        if (mine === seq) preview.value = p
+        const p = await leaveService.preview({ leave_type_id: Number(typeId), start_date: start, end_date: end, day_type: dt })
+        if (mine !== seq) return
+        preview.value = p
+        plan.value = p.plan
       } catch (e) {
         if (mine === seq) previewError.value = (e as ApiError).message
       }
     }, 300)
   },
+  { immediate: true },
 )
 onBeforeUnmount(() => clearTimeout(timer))
 
+const halves = computed(() => {
+  const p = plan.value
+  if (!p?.work) return null
+  const names = halfLabels(p)
+  return [
+    { value: 'FIRST_HALF' as const, ...names[0], from: p.first_half[0], to: p.first_half[1], next: false },
+    { value: 'SECOND_HALF' as const, ...names[1], from: p.second_half[0], to: p.second_half[1], next: p.second_half_next_day },
+  ]
+})
+const problem = computed(() => previewError.value || preview.value?.problem?.message || '')
+
 const submitting = ref(false)
 const submitError = ref('')
-const valid = computed(() => !!preview.value && form.reason.trim().length > 0)
+const valid = computed(() => !!preview.value && !preview.value.problem && form.reason.trim().length > 0)
 
 async function submit() {
   if (!valid.value || submitting.value) return
   submitting.value = true
   submitError.value = ''
   try {
-    await leaveService.submit({ leave_type_id: form.leaveTypeId, start_date: form.start, end_date: form.end, reason: form.reason.trim() })
+    await leaveService.submit({ leave_type_id: Number(form.leaveTypeId), start_date: form.start, end_date: form.end, day_type: dayType.value, reason: form.reason.trim() })
     haptic('success')
     await navigateTo('/leave', { replace: true })
   } catch (e) {
@@ -77,6 +113,7 @@ const { native } = useMainButton({
   loading: submitting,
   onClick: submit,
 })
+const dateInput = 'mt-1 w-full rounded-xl border border-separator bg-surface px-3 py-2.5 text-[15px] text-fg'
 </script>
 
 <template>
@@ -85,36 +122,71 @@ const { native } = useMainButton({
 
     <StateView :loading="typesLoading && !types" :error="typesError" :empty="types?.length === 0" empty-text="No leave types are set up yet." @retry="loadTypes">
       <form class="flex flex-col gap-4" @submit.prevent="submit">
-        <AppCard title="Type">
-          <div class="flex flex-wrap gap-2" role="radiogroup" aria-label="Leave type">
-            <button
-              v-for="t in types"
-              :key="t.id"
-              type="button"
-              role="radio"
-              :aria-checked="form.leaveTypeId === t.id"
-              class="rounded-full px-3.5 py-1.5 text-sm font-medium transition"
-              :class="form.leaveTypeId === t.id ? 'bg-primary text-primary-fg' : 'bg-page text-fg'"
-              @click="form.leaveTypeId = t.id"
-            >{{ t.name }}</button>
-          </div>
+        <AppCard title="Leave type">
+          <SearchSelect v-model="form.leaveTypeId" :options="typeOptions" title="Leave type" placeholder="Choose a leave type" />
+          <p v-if="chosenType && (chosenType.max_days_per_request || chosenType.min_notice_days)" class="mt-2 text-[13px] text-hint">
+            <template v-if="chosenType.max_days_per_request">Up to {{ fmtDays(chosenType.max_days_per_request) }} per request.</template>
+            <template v-if="chosenType.min_notice_days"> Ask {{ fmtDays(chosenType.min_notice_days) }} ahead.</template>
+          </p>
         </AppCard>
 
-        <AppCard title="Dates">
-          <div class="grid grid-cols-2 gap-3">
+        <AppCard title="When">
+          <Segmented v-model="form.whole" :options="[{ value: 'FULL', label: 'Full day' }, { value: 'HALF', label: 'Half day' }]" />
+
+          <div v-if="form.whole === 'FULL'" class="mt-3 grid grid-cols-2 gap-3">
             <label class="text-[13px] text-hint">
               From
-              <input v-model="form.start" type="date" required class="mt-1 w-full rounded-xl border border-separator px-3 py-2.5 text-[15px] text-fg" />
+              <input v-model="form.start" type="date" required :class="dateInput" />
             </label>
             <label class="text-[13px] text-hint">
               To
-              <input v-model="form.end" type="date" required :min="form.start" class="mt-1 w-full rounded-xl border border-separator px-3 py-2.5 text-[15px] text-fg" />
+              <input v-model="form.end" type="date" required :min="form.start" :class="dateInput" />
             </label>
           </div>
-          <p class="mt-3 text-sm" :class="previewError ? 'text-danger' : 'text-hint'" aria-live="polite">
-            <template v-if="previewError">{{ previewError }}</template>
-            <template v-else-if="preview">{{ preview.days }} working day{{ preview.days === 1 ? '' : 's' }}</template>
-            <template v-else>Checking dates…</template>
+          <template v-else>
+            <label class="mt-3 block text-[13px] text-hint">
+              Date
+              <input v-model="form.start" type="date" required :class="dateInput" />
+            </label>
+            <div v-if="halves" class="mt-3 grid grid-cols-2 gap-2" role="radiogroup" aria-label="Which half">
+              <button
+                v-for="h in halves"
+                :key="h.value"
+                type="button"
+                role="radio"
+                :aria-checked="form.half === h.value"
+                class="flex flex-col items-start gap-0.5 rounded-2xl border-2 px-3 py-2.5 text-left transition"
+                :class="form.half === h.value ? 'border-primary bg-primary/10' : 'border-separator'"
+                @click="form.half = h.value"
+              >
+                <span class="flex items-center gap-1.5 text-[15px] font-semibold">
+                  <AppIcon :name="h.icon" class="size-4" :class="form.half === h.value ? 'text-accent' : 'text-hint'" />{{ h.label }}
+                </span>
+                <span class="text-[13px] tabular-nums text-hint">{{ h.from }} – {{ h.to }}<span v-if="h.next" class="block">next day</span></span>
+              </button>
+            </div>
+          </template>
+
+          <!-- the person's shift that day: normal or cross-day -->
+          <p v-if="plan?.work && (form.whole === 'HALF' || form.start === form.end)" class="mt-3 flex items-center gap-1.5 text-[13px] text-hint">
+            <AppIcon :name="plan.work_type === 'CROSS_DAY' ? 'moon' : 'clock'" class="size-4 shrink-0" />
+            <span>
+              Your shift: {{ plan.shift_name || 'Schedule' }} {{ plan.start }} – {{ plan.end }}<template v-if="plan.work_type === 'CROSS_DAY'"> (ends next day)</template>
+            </span>
+          </p>
+          <p v-else-if="plan?.cross_days && form.whole === 'FULL'" class="mt-3 flex items-center gap-1.5 text-[13px] text-hint">
+            <AppIcon name="moon" class="size-4 shrink-0" />
+            <span>Night shifts count on the date they start.</span>
+          </p>
+
+          <p class="mt-3 text-sm" :class="problem ? 'text-danger' : 'text-hint'" aria-live="polite">
+            <template v-if="problem">{{ problem }}</template>
+            <template v-else-if="preview">
+              <template v-if="form.whole === 'HALF'">Half a working day</template>
+              <template v-else>{{ fmtDays(preview.days, 'working day') }}</template>
+              <template v-if="preview.balance?.tracked"> · {{ fmtDays(Math.max(0, preview.balance.available - preview.days)) }} left after this</template>
+            </template>
+            <template v-else>Checking…</template>
           </p>
         </AppCard>
 
@@ -126,7 +198,7 @@ const { native } = useMainButton({
             required
             aria-label="Reason"
             placeholder="Why do you need leave?"
-            class="w-full rounded-xl border border-separator p-3 text-[15px] outline-none focus:border-primary"
+            class="w-full rounded-xl border border-separator bg-surface p-3 text-[15px] outline-none focus:border-primary"
           />
         </AppCard>
 

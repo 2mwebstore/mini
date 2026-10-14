@@ -6,9 +6,10 @@ export type Permission =
   | 'attendance.self' | 'leave.self' | 'team.view' | 'team.review' | 'all.view' | 'all.review'
   | 'attendance.edit' | 'staff.manage' | 'report.export' | 'settings.view' | 'settings.edit'
   | 'audit.view' | 'roles.assign_admin' | 'branch.view' | 'branch.review' | 'branch.settings' | 'branches.manage'
-  | 'schedules.manage'
+  | 'schedules.manage' | 'leave.manage' | 'users.manage'
 
-export type RoleCode = 'super_admin' | 'hr_admin' | 'branch_admin' | 'manager' | 'staff'
+/** Built-in: super_admin, hr_admin, branch_admin, manager, staff — plus roles created in Role management. */
+export type RoleCode = string
 export type EmployeeStatus = 'ACTIVE' | 'INACTIVE' | 'SUSPENDED'
 export type AttendanceType = 'CHECK_IN' | 'CHECK_OUT'
 export type ConfirmationStatus = 'PENDING' | 'CONFIRMED' | 'REJECTED' | 'SUPERSEDED'
@@ -25,6 +26,9 @@ export interface Branch {
   office_latitude: number | null
   office_longitude: number | null
   allowed_radius_meters: number | null
+  gps_enabled: boolean | null // null = the company setting
+  gps_required: boolean | null
+  gps_reject_outside: boolean | null
   telegram_group_id: number
   telegram_review_chat_id: number
   status: 'ACTIVE' | 'INACTIVE'
@@ -44,11 +48,76 @@ export interface BranchInput {
   use_company_office?: boolean
   telegram_group_id?: number
   telegram_review_chat_id?: number
+  /** inherit: use the company's GPS settings. */
+  gps?: { inherit?: boolean; enabled?: boolean; required?: boolean; reject_outside?: boolean }
 }
 
 export interface Department {
   id: number
   name: string
+  employees?: number
+}
+
+/** A department or position from the managed lists. */
+export interface OrgItem {
+  id: number
+  name: string
+  employees: number
+}
+
+// ---------- access: roles, system users, branch access ----------
+
+export interface PermissionInfo {
+  code: Permission
+  group: string
+  label: string
+  description: string
+}
+
+export interface Role {
+  id: number
+  code: RoleCode
+  name: string
+  description: string
+  is_system: boolean
+  permissions: Permission[]
+  employees: number
+  users: number
+  locked: boolean // the owner role: always every permission
+}
+
+export interface RoleInput {
+  name?: string
+  description?: string
+  permissions?: Permission[]
+}
+
+export interface SystemUser {
+  id: number
+  employee_id: number
+  employee_code: string
+  full_name: string
+  email: string
+  status: 'ACTIVE' | 'INACTIVE'
+  last_login_at: string | null
+  created_at: string
+  role_id: number
+  role: RoleCode
+  role_name: string
+  branch_id: number | null
+  branch_name: string
+  /** all = every branch; branches = branch_ids; team = their team only; none = no panel access */
+  scope: 'all' | 'branches' | 'team' | 'none'
+  branch_ids: number[]
+  self: boolean
+}
+
+export interface SystemUserInput {
+  employee_id?: number
+  email?: string
+  password?: string
+  status?: 'ACTIVE' | 'INACTIVE'
+  role?: RoleCode
 }
 
 /** NORMAL ends the same day; CROSS_DAY is a night shift ending the next day (22:00–06:00). */
@@ -157,7 +226,8 @@ export interface ScheduleOverride {
 }
 
 export interface OverrideInput {
-  employee_id: number
+  employee_id?: number
+  employee_ids?: number[] // create: the same schedule for each of these people
   start_date: string
   end_date: string
   kind: OverrideKind
@@ -177,6 +247,7 @@ export interface Employee {
   department_id: number | null
   branch_id: number | null
   position: string
+  position_id: number | null
   phone: string
   email: string
   join_date: string | null
@@ -202,7 +273,8 @@ export interface EmployeeInput {
   department?: string // by name; created if missing
   department_id?: number // 0 clears
   branch_id?: number
-  position?: string
+  position?: string // by name; created if missing
+  position_id?: number // from the list (0 clears)
   phone?: string
   email?: string
   join_date?: string
@@ -217,6 +289,8 @@ export interface MeResponse {
   role: RoleCode
   permissions: Permission[]
   company: { name: string; timezone: string }
+  all_branches: boolean // false: limited to branch_ids (Branch assignment) or own branch
+  branch_ids: number[]
 }
 
 export interface AttendancePhoto {
@@ -241,10 +315,27 @@ export interface Confirmation {
   id: number
   type: AttendanceType
   status: ConfirmationStatus
+  photo_id: number | null // the photo / location sent with this submission
+  location_id: number | null
   reviewed_by: number | null
   reviewed_at: string | null
   reason: string
   created_at: string
+  reviewer?: { id: number; employee_code: string; full_name: string }
+}
+
+/** The hours an employee was expected to work on a date (less a half-day leave). */
+export interface PlannedDay {
+  work: boolean
+  start?: string
+  end?: string
+  grace_minutes: number
+  cross_day: boolean
+  start_next_day?: boolean
+  shift_name?: string
+  color?: string
+  source: 'DEFAULT' | 'ROSTER' | 'SPECIAL'
+  note?: string
 }
 
 export interface Attendance {
@@ -268,6 +359,9 @@ export interface Attendance {
 export interface AttendanceDetail {
   attendance: Attendance
   photos: AttendancePhoto[]
+  schedule: PlannedDay
+  holiday: string
+  leave: LeaveRequest | null // approved leave on the date (full or half day)
 }
 
 export interface Page<T> {
@@ -312,18 +406,72 @@ export interface PendingAttendance {
   photo_id: number | null
 }
 
+export type LeaveApproval = 'MANUAL' | 'AUTO'
+
+/** A leave category with its yearly allowance and approval policy. */
 export interface LeaveType {
   id: number
   code: string
   name: string
+  annual_days: number // 0 = not counted
+  is_paid: boolean
+  approval: LeaveApproval
+  allow_exceed: boolean
+  max_days_per_request: number // 0 = no limit
+  min_notice_days: number
+  color: string
+  description: string
+  active: boolean
+  sort_order: number
+  requests?: number
 }
+
+export type LeaveTypeInput = Partial<Omit<LeaveType, 'id' | 'requests'>>
+
+export interface LeaveBalance {
+  leave_type_id: number
+  code: string
+  name: string
+  color: string
+  year: number
+  tracked: boolean
+  allocated: number
+  carried: number
+  used: number
+  pending: number
+  remaining: number
+  available: number
+  custom: boolean
+  note?: string
+}
+
+export interface EmployeeBalances {
+  employee_id: number
+  employee_code: string
+  full_name: string
+  branch: string
+  department: string
+  can_edit: boolean
+  balances: LeaveBalance[]
+}
+
+export interface BalancesResponse {
+  year: number
+  items: EmployeeBalances[]
+  types: LeaveType[]
+}
+
+export type DayType = 'FULL' | 'FIRST_HALF' | 'SECOND_HALF'
 
 export interface LeaveRequest {
   id: number
   employee_id: number
   start_date: string
   end_date: string
-  days: number
+  day_type: DayType
+  half_from: string | null // a half day's hours (from that day's shift)
+  half_to: string | null
+  days: number // 0.5 for a half day
   reason: string
   status: LeaveStatus
   reviewed_at: string | null
@@ -352,6 +500,7 @@ export interface DayRow {
   confirmation_status: ConfirmationStatus | ''
   confirmed_by: string
   leave_type: string
+  leave_half?: 'FIRST_HALF' | 'SECOND_HALF' // half the day was leave
   shift?: string // the day's scheduled shift (absent on days off)
   shift_start?: string
   shift_end?: string

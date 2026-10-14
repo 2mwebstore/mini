@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"time"
 
+	"attendance/backend/internal/access"
 	"attendance/backend/internal/attendance"
 	"attendance/backend/internal/auth"
 	"attendance/backend/internal/branch"
@@ -38,6 +39,7 @@ type Deps struct {
 	Leave      *leave.Service
 	Reports    *report.Service
 	Schedules  *schedule.Service
+	Access     *access.Service
 	Telegram   *telegram.Client // verifies bot tokens and updates the bot's menu button
 }
 
@@ -54,12 +56,13 @@ type Server struct {
 	leave      *leave.Service
 	reports    *report.Service
 	schedules  *schedule.Service
+	access     *access.Service
 	tg         *telegram.Client
 }
 
 func New(cfg *config.Config, d Deps) *Server {
 	return &Server{cfg: cfg, db: d.DB, rdb: d.Redis, store: d.Store, auth: d.Auth, settings: d.Settings, employees: d.Employees,
-		branches: d.Branches, attendance: d.Attendance, leave: d.Leave, reports: d.Reports, schedules: d.Schedules, tg: d.Telegram}
+		branches: d.Branches, attendance: d.Attendance, leave: d.Leave, reports: d.Reports, schedules: d.Schedules, access: d.Access, tg: d.Telegram}
 }
 
 func (s *Server) Router() *gin.Engine {
@@ -108,6 +111,25 @@ func (s *Server) Router() *gin.Engine {
 	api.PUT("/branches/:id", s.updateBranch) // owner, or the branch's own admin (ops fields only)
 	api.PUT("/branches/:id/admin", require(auth.PermBranchesManage), s.assignBranchAdmin)
 	api.GET("/departments", s.listDepartments)
+	api.POST("/departments", require(auth.PermStaffManage), s.saveDepartment)
+	api.PUT("/departments/:id", require(auth.PermStaffManage), s.saveDepartment)
+	api.DELETE("/departments/:id", require(auth.PermStaffManage), s.deleteDepartment)
+	api.GET("/positions", s.listPositions)
+	api.POST("/positions", require(auth.PermStaffManage), s.savePosition)
+	api.PUT("/positions/:id", require(auth.PermStaffManage), s.savePosition)
+	api.DELETE("/positions/:id", require(auth.PermStaffManage), s.deletePosition)
+
+	api.GET("/roles", s.listRoles)
+	api.GET("/roles/permissions", require(auth.PermUsersManage), s.permissionCatalog)
+	api.POST("/roles", require(auth.PermUsersManage), s.createRole)
+	api.PUT("/roles/:id", require(auth.PermUsersManage), s.updateRole)
+	api.DELETE("/roles/:id", require(auth.PermUsersManage), s.deleteRole)
+	api.GET("/system-users", require(auth.PermUsersManage), s.listSystemUsers)
+	api.POST("/system-users", require(auth.PermUsersManage), s.createSystemUser)
+	api.PUT("/system-users/:id", require(auth.PermUsersManage), s.updateSystemUser)
+	api.POST("/system-users/:id/password", require(auth.PermUsersManage), s.resetPassword)
+	api.DELETE("/system-users/:id", require(auth.PermUsersManage), s.deleteSystemUser)
+	api.PUT("/system-users/:id/branches", require(auth.PermUsersManage), s.setUserBranches)
 	api.GET("/work-schedules", s.listShifts)
 	api.POST("/work-schedules", require(auth.PermSchedulesManage), s.createShift)
 	api.PUT("/work-schedules/:id", require(auth.PermSchedulesManage), s.updateShift)
@@ -132,6 +154,12 @@ func (s *Server) Router() *gin.Engine {
 
 	api.GET("/leave", s.listLeave)
 	api.GET("/leave/types", s.leaveTypes)
+	api.POST("/leave/types", require(auth.PermLeaveManage), s.createLeaveType)
+	api.PUT("/leave/types/:id", require(auth.PermLeaveManage), s.updateLeaveType)
+	api.DELETE("/leave/types/:id", require(auth.PermLeaveManage), s.deleteLeaveType)
+	api.GET("/leave/balances", s.leaveBalances)
+	api.PUT("/leave/balances", require(auth.PermLeaveManage), s.setLeaveBalance)
+	api.DELETE("/leave/balances", require(auth.PermLeaveManage), s.resetLeaveBalance)
 	api.GET("/leave/pending", requireReviewer(), s.pendingLeave)
 	api.GET("/leave/:id", s.getLeave)
 	api.POST("/leave/:id/approve", requireReviewer(), s.reviewLeave(true))

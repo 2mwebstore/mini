@@ -30,6 +30,7 @@ import (
 	"testing"
 	"time"
 
+	"attendance/backend/internal/access"
 	"attendance/backend/internal/attendance"
 	"attendance/backend/internal/auth"
 	"attendance/backend/internal/branch"
@@ -268,6 +269,12 @@ func (h *harness) set(local string) {
 	*h.clock = t.UTC()
 }
 
+func errCodeOf(v any) string {
+	m, _ := v.(map[string]any)
+	s, _ := m["code"].(string)
+	return s
+}
+
 func errCode(m map[string]any) string {
 	if e, ok := m["error"].(map[string]any); ok {
 		return fmt.Sprint(e["code"])
@@ -350,7 +357,7 @@ func TestIntegration(t *testing.T) {
 	schedSvc := schedule.NewService(gdb, st)
 	schedSvc.Now = now
 	srv := New(conf, Deps{DB: gdb, Redis: rdb, Store: store, Auth: authSvc, Settings: st, Employees: empSvc,
-		Branches: branch.NewService(gdb), Attendance: attSvc, Leave: leaveSvc, Reports: repSvc, Schedules: schedSvc, Telegram: tgc})
+		Branches: branch.NewService(gdb), Attendance: attSvc, Leave: leaveSvc, Reports: repSvc, Schedules: schedSvc, Access: access.NewService(gdb), Telegram: tgc})
 	h := &harness{t: t, srv: srv.Router(), db: rawDB, clock: &clock}
 
 	// ---------- people ----------
@@ -455,9 +462,6 @@ func TestIntegration(t *testing.T) {
 	if ci, _ := body["check_in"].(map[string]any); code != 200 || body["work_day"] != true || body["attendance"] != nil || ci["allowed"] != true {
 		t.Fatalf("today before check-in: %d %v", code, body)
 	}
-	if code, body, _ := h.app("POST", "/attendance/check-in", daraTG, map[string]string{}); code != 400 || errCode(body) != "PHOTO_REQUIRED" {
-		t.Fatalf("check-in without photo: %d %v", code, body)
-	}
 	if code, body, _ := h.app("POST", "/attendance/check-in", daraTG, map[string]string{"photo": "not an image"}); code != 400 || errCode(body) != "INVALID_PHOTO" {
 		t.Fatalf("non-image upload: %d %v", code, body)
 	}
@@ -533,6 +537,9 @@ func TestIntegration(t *testing.T) {
 	if ph, _ := body["photos"].([]any); code != 200 || len(ph) != 1 || ph[0].(map[string]any)["url"] != "/api/v1/app"+photoPath {
 		t.Fatalf("attendance detail photo URLs must use the app prefix: %d %v", code, body)
 	}
+	if sc, _ := body["schedule"].(map[string]any); sc == nil || sc["work"] != true || sc["start"] != "09:00" || sc["end"] != "17:30" {
+		t.Fatalf("attendance detail must include the day's schedule: %v", body["schedule"])
+	}
 	if code, body, _ := h.app("POST", fmt.Sprintf("/attendance/confirmations/%d/confirm", confID), sokhaTG, nil); code != 403 {
 		t.Fatalf("staff must not confirm: %d %v", code, body)
 	}
@@ -572,8 +579,20 @@ func TestIntegration(t *testing.T) {
 		t.Fatalf("employee must be told (with an app button) about the rejection: %v", msgs)
 	}
 	h.set("2026-10-08 17:40")
-	if code, body, _ := h.app("POST", "/attendance/check-out", daraTG, map[string]string{"photo": photo("dara-out2")}); code != 200 || body["resubmission"] != true {
-		t.Fatalf("re-submit check-out: %d %v", code, body)
+	// The Mini App sends no photo: the reviewer gets a text message instead.
+	sentPhotos := len(ftg.calls("sendPhoto", 0))
+	if code, body, _ := h.app("POST", "/attendance/check-out", daraTG, map[string]string{"latitude": "11.5564", "longitude": "104.9282"}); code != 200 || body["resubmission"] != true {
+		t.Fatalf("re-submit check-out without a photo: %d %v", code, body)
+	}
+	if n := len(ftg.calls("sendPhoto", 0)); n != sentPhotos {
+		t.Fatalf("no photo, so no sendPhoto: %d -> %d", sentPhotos, n)
+	}
+	if m := ftg.calls("sendMessage", mgrTG); len(m) == 0 || !strings.Contains(fmt.Sprint(m[len(m)-1]["text"]), "Check-Out") || strings.Contains(fmt.Sprint(m[len(m)-1]["text"]), "Photo") {
+		t.Fatalf("reviewer must get a text notification for a photo-less check-out: %v", m)
+	}
+	code, body, _ = h.app("GET", "/attendance/pending", mgrTG, nil)
+	if items, _ := body["items"].([]any); code != 200 || len(items) != 1 || items[0].(map[string]any)["photo_id"] != nil || items[0].(map[string]any)["type"] != "CHECK_OUT" {
+		t.Fatalf("pending check-out without a photo must have photo_id null: %d %v", code, body)
 	}
 	if code, body, _ := h.app("POST", "/attendance/check-out", daraTG, map[string]string{"photo": photo("dara-out3")}); code != 409 {
 		t.Fatalf("double check-out must be 409: %d %v", code, body)
@@ -666,6 +685,57 @@ func TestIntegration(t *testing.T) {
 		t.Fatalf("cancel leave: %d %v", code, body)
 	}
 
+	// ---------- half-day leave: the halves come from that day's shift (09:00-17:30) ----------
+	half := map[string]any{"leave_type_id": 1, "start_date": "2026-10-22", "end_date": "2026-10-22", "day_type": "FIRST_HALF"}
+	code, body, _ = h.app("POST", "/leave/preview", sokhaTG, half)
+	plan, _ := body["plan"].(map[string]any)
+	if code != 200 || body["days"] != 0.5 || body["problem"] != nil || plan["work_type"] != "NORMAL" ||
+		fmt.Sprint(plan["first_half"]) != "[09:00 13:15]" || fmt.Sprint(plan["second_half"]) != "[13:15 17:30]" {
+		t.Fatalf("half-day preview: %d %v", code, body)
+	}
+	code, body, _ = h.app("POST", "/leave/preview", sokhaTG, map[string]any{"leave_type_id": 1, "start_date": "2026-10-22", "end_date": "2026-10-23", "day_type": "FIRST_HALF"})
+	if p, _ := body["problem"].(map[string]any); code != 200 || p["code"] != "HALF_DAY_ONE_DATE" || body["plan"] == nil {
+		t.Fatalf("a half day spanning two dates must come back as a problem next to the plan: %d %v", code, body)
+	}
+	if code, body, _ := h.app("POST", "/leave/preview", sokhaTG, map[string]any{"leave_type_id": 1, "start_date": "2026-10-24", "end_date": "2026-10-24", "day_type": "SECOND_HALF"}); code != 200 || errCodeOf(body["problem"]) != "NO_WORKING_DAYS" {
+		t.Fatalf("a half day on a Saturday: %d %v", code, body)
+	}
+	half["reason"] = "Dentist"
+	code, body, _ = h.app("POST", "/leave", sokhaTG, half)
+	if code != 201 || body["days"] != 0.5 || body["day_type"] != "FIRST_HALF" || body["half_from"] != "09:00" || body["half_to"] != "13:15" {
+		t.Fatalf("half-day submit: %d %v", code, body)
+	}
+	halfID := uint64(num(body, "id"))
+	if code, body, _ := h.app("POST", "/leave", sokhaTG, half); code != 409 || errCode(body) != "OVERLAP" {
+		t.Fatalf("the same half twice must be refused: %d %v", code, body)
+	}
+	if code, body, _ := h.app("POST", "/leave", sokhaTG, map[string]any{"leave_type_id": 1, "start_date": "2026-10-22", "end_date": "2026-10-22", "reason": "x"}); code != 409 || errCode(body) != "OVERLAP" {
+		t.Fatalf("a full day over a half day must be refused: %d %v", code, body)
+	}
+	code, body, _ = h.app("POST", "/leave", sokhaTG, map[string]any{"leave_type_id": 1, "start_date": "2026-10-22", "end_date": "2026-10-22", "day_type": "SECOND_HALF", "reason": "Rest"})
+	if code != 201 || body["half_from"] != "13:15" {
+		t.Fatalf("the other half of the same date is allowed: %d %v", code, body)
+	}
+	if code, body, _ := h.app("POST", fmt.Sprintf("/leave/%d/cancel", uint64(num(body, "id"))), sokhaTG, nil); code != 200 {
+		t.Fatalf("cancel second half: %d %v", code, body)
+	}
+	if code, body, _ := h.app("POST", fmt.Sprintf("/leave/%d/approve", halfID), hrTG, nil); code != 200 || body["status"] != models.LeaveApproved {
+		t.Fatalf("approve half day: %d %v", code, body)
+	}
+	h.db.QueryRow("SELECT COUNT(*) FROM attendance WHERE status='LEAVE' AND work_date='2026-10-22'").Scan(&leaveRows)
+	if leaveRows != 0 {
+		t.Fatal("a half day must not mark the whole day as leave")
+	}
+	// Morning off: she starts at 13:15 — 13:20 is within grace, 13:40 is 25 min late.
+	h.set("2026-10-22 13:20")
+	code, body, _ = h.app("GET", "/attendance/today", sokhaTG, nil)
+	if hl, _ := body["half_leave"].(map[string]any); code != 200 || hl["day_type"] != "FIRST_HALF" || body["schedule_start"] != "13:15" || body["check_in"].(map[string]any)["allowed"] != true {
+		t.Fatalf("today with a morning off: %d %v", code, body)
+	}
+	if code, body, _ := h.app("POST", "/attendance/check-in", sokhaTG, map[string]string{}); code != 200 || num(body, "attendance", "late_minutes") != 0 {
+		t.Fatalf("check-in after a morning off (no photo, on time): %d %v", code, body)
+	}
+
 	// ---------- weekend is never absent; day close marks absent ----------
 	h.set("2026-10-08 23:55")
 	sch := scheduler.New(gdb, rdb, st, repSvc, notifier)
@@ -726,6 +796,23 @@ func TestIntegration(t *testing.T) {
 	if code != 200 || body["status"] != models.StatusPresent || body["confirmation_status"] != models.ConfConfirmed {
 		t.Fatalf("manual edit: %d %v", code, body)
 	}
+	// ---------- one special schedule for several people ----------
+	batch := map[string]any{"employee_ids": []uint64{dara.ID, sokha.ID}, "start_date": "2026-11-02", "end_date": "2026-11-06", "kind": "OFF", "reason": "Training"}
+	code, body, _ = h.admin("POST", "/schedule-overrides", jwt, batch)
+	if items, _ := body["items"].([]any); code != 201 || len(items) != 2 {
+		t.Fatalf("special schedule for two people: %d %v", code, body)
+	}
+	batch["employee_ids"] = []uint64{sokha.ID, hr.ID}
+	if code, body, _ := h.admin("POST", "/schedule-overrides", jwt, batch); code != 409 || errCode(body) != "OVERLAP" || !strings.Contains(fmt.Sprint(body), "Sokha Chan") {
+		t.Fatalf("a batch with someone already on a special schedule must be refused, naming them: %d %v", code, body)
+	}
+	var specials int
+	h.db.QueryRow("SELECT COUNT(*) FROM schedule_overrides WHERE start_date = '2026-11-02'").Scan(&specials)
+	if specials != 2 {
+		t.Fatalf("a refused batch must create nothing: %d rows", specials)
+	}
+	h.db.Exec("DELETE FROM schedule_overrides WHERE start_date = '2026-11-02'")
+
 	var auditN int
 	h.db.QueryRow("SELECT COUNT(*) FROM audit_logs WHERE action='attendance.manual_edit'").Scan(&auditN)
 	if auditN != 1 {
@@ -1137,10 +1224,11 @@ func TestIntegration(t *testing.T) {
 		t.Fatalf("managers cannot set special schedules, got %d", code)
 	}
 	code, body, _ = h.admin("POST", "/schedule-overrides", jwt, special)
-	if code != 201 || body["kind"] != "CUSTOM" {
+	created, _ := body["items"].([]any)
+	if code != 201 || len(created) != 1 || created[0].(map[string]any)["kind"] != "CUSTOM" {
 		t.Fatalf("create special schedule: %d %v", code, body)
 	}
-	specialID := uint64(num(body, "id"))
+	specialID := uint64(num(created[0].(map[string]any), "id"))
 	overlap := map[string]any{"employee_id": dara.ID, "start_date": "2026-10-29", "end_date": "2026-10-30", "kind": "OFF", "reason": "x"}
 	if code, body, _ := h.admin("POST", "/schedule-overrides", jwt, overlap); code != 409 || errCode(body) != "OVERLAP" {
 		t.Fatalf("special schedules of one person cannot overlap: %d %v", code, body)
@@ -1158,7 +1246,7 @@ func TestIntegration(t *testing.T) {
 	if code, body, _ := h.app("POST", "/attendance/check-in", daraTG, withPhoto("dara-special")); code != 200 || num(body, "attendance", "late_minutes") != 20 {
 		t.Fatalf("lateness follows the special hours: %d %v", code, body)
 	}
-	if code, body, _ := h.app("POST", "/leave/preview", daraTG, map[string]any{"leave_type_id": 1, "start_date": "2026-10-30", "end_date": "2026-10-30"}); code != 400 || errCode(body) != "NO_WORKING_DAYS" {
+	if code, body, _ := h.app("POST", "/leave/preview", daraTG, map[string]any{"leave_type_id": 1, "start_date": "2026-10-30", "end_date": "2026-10-30"}); code != 200 || errCodeOf(body["problem"]) != "NO_WORKING_DAYS" {
 		t.Fatalf("a special day off is not a working day for leave: %d %v", code, body)
 	}
 	if code, body, _ := h.admin("GET", "/schedule-overrides?when=upcoming", jwt, nil); code != 200 || len(body["items"].([]any)) != 1 {
@@ -1188,6 +1276,223 @@ func TestIntegration(t *testing.T) {
 	h.db.QueryRow("SELECT COUNT(*) FROM audit_logs WHERE action IN ('shift.create','roster.update','roster.copy','schedule_override.create','schedule_override.delete','shift.delete')").Scan(&schedAudit)
 	if schedAudit < 9 {
 		t.Fatalf("schedule changes are audited, got %d entries", schedAudit)
+	}
+
+	// ---------- role management ----------
+	code, body, _ = h.admin("GET", "/roles/permissions", ownerJWT, nil)
+	if code != 200 || len(body["items"].([]any)) < 20 {
+		t.Fatalf("permission catalog: %d %v", code, body)
+	}
+	if code, _, _ := h.admin("GET", "/roles/permissions", jwt, nil); code != 403 {
+		t.Fatalf("HR cannot manage roles, got %d", code)
+	}
+	regional := map[string]any{"name": "Regional Supervisor", "description": "Oversees a few branches",
+		"permissions": []string{"attendance.self", "leave.self", "team.view", "team.review", "all.view", "all.review", "attendance.edit", "report.export"}}
+	code, body, _ = h.admin("POST", "/roles", ownerJWT, regional)
+	if code != 201 || body["code"] != "regional_supervisor" || num(body, "id") < 6 {
+		t.Fatalf("create role: %d %v", code, body)
+	}
+	regionalID := int(num(body, "id"))
+	if code, body, _ := h.admin("POST", "/roles", ownerJWT, map[string]any{"name": "Bad", "permissions": []string{"everything"}}); code != 400 || errCode(body) != "INVALID_PERMISSION" {
+		t.Fatalf("unknown permission: %d %v", code, body)
+	}
+	if code, body, _ := h.admin("PUT", "/roles/1", ownerJWT, map[string]any{"permissions": []string{"attendance.self"}}); code != 400 || errCode(body) != "ROLE_LOCKED" {
+		t.Fatalf("the owner role keeps every permission: %d %v", code, body)
+	}
+	if code, body, _ := h.admin("DELETE", "/roles/3", ownerJWT, nil); code != 409 || errCode(body) != "ROLE_SYSTEM" {
+		t.Fatalf("built-in roles cannot be deleted: %d %v", code, body)
+	}
+	code, body, _ = h.admin("GET", "/roles", jwt, nil)
+	if code != 200 || len(body["items"].([]any)) != 6 {
+		t.Fatalf("roles list: %d %v", code, body)
+	}
+
+	// ---------- system users & branch assignment ----------
+	code, body, _ = h.admin("GET", "/system-users", ownerJWT, nil)
+	if code != 200 || len(body["items"].([]any)) < 3 {
+		t.Fatalf("system users: %d %v", code, body)
+	}
+	if code, body, _ := h.admin("POST", "/system-users", ownerJWT, map[string]any{"employee_id": sokha.ID, "email": "sokha@example.com", "password": "sokha-password-123"}); code != 400 || errCode(body) != "NO_PANEL_ROLE" {
+		t.Fatalf("staff need a panel role before a login: %d %v", code, body)
+	}
+	code, body, _ = h.admin("POST", "/system-users", ownerJWT, map[string]any{"employee_id": sokha.ID, "email": "sokha@example.com", "password": "sokha-password-123", "role": "regional_supervisor"})
+	if code != 201 || body["role"] != "regional_supervisor" || body["scope"] != "all" {
+		t.Fatalf("create system user with a role: %d %v", code, body)
+	}
+	sokhaUser := uint64(num(body, "id"))
+	sokhaJWT, _ := h.login("sokha@example.com", "sokha-password-123")
+	visible := func(tok string) []string {
+		_, body, _ := h.admin("GET", "/employees", tok, nil)
+		var codes []string
+		for _, e := range body["items"].([]any) {
+			codes = append(codes, fmt.Sprint(e.(map[string]any)["employee_code"]))
+		}
+		sort.Strings(codes)
+		return codes
+	}
+	if v := visible(sokhaJWT); len(v) < 5 {
+		t.Fatalf("no assigned branches = every branch: %v", v)
+	}
+	code, body, _ = h.admin("PUT", fmt.Sprintf("/system-users/%d/branches", sokhaUser), ownerJWT, map[string]any{"branch_ids": []uint64{srID}})
+	if code != 200 || body["scope"] != "branches" {
+		t.Fatalf("assign a branch: %d %v", code, body)
+	}
+	if v := strings.Join(visible(sokhaJWT), ","); !strings.Contains(v, "GT040") || strings.Contains(v, "GT001") || strings.Contains(v, "GT010") {
+		t.Fatalf("a user limited to Siem Reap sees Siem Reap staff only (not Main branch, not HR): %v", v)
+	}
+	if code, _, _ := h.admin("GET", fmt.Sprintf("/employees/%d", dara.ID), sokhaJWT, nil); code != 404 && code != 403 {
+		t.Fatalf("someone in another branch is out of reach, got %d", code)
+	}
+	if code, body, _ := h.admin("GET", "/branches", sokhaJWT, nil); code != 200 || len(body["items"].([]any)) != 1 {
+		t.Fatalf("branch list follows the assignment: %d %v", code, body)
+	}
+	if code, body, _ := h.admin("POST", fmt.Sprintf("/system-users/%d/password", sokhaUser), ownerJWT, map[string]any{"password": "short"}); code != 400 || errCode(body) != "WEAK_PASSWORD" {
+		t.Fatalf("weak password: %d %v", code, body)
+	}
+	if code, _, _ := h.admin("POST", fmt.Sprintf("/system-users/%d/password", sokhaUser), ownerJWT, map[string]any{"password": "brand-new-password-1"}); code != 204 {
+		t.Fatalf("reset password: %d", code)
+	}
+	h.login("sokha@example.com", "brand-new-password-1")
+	if code, _, _ := h.admin("PUT", fmt.Sprintf("/system-users/%d", sokhaUser), ownerJWT, map[string]any{"status": "INACTIVE"}); code != 200 {
+		t.Fatalf("disable login: %d", code)
+	}
+	if w, _ := h.do("POST", "/api/v1/auth/login", map[string]any{"email": "sokha@example.com", "password": "brand-new-password-1"}); w.Code != 401 {
+		t.Fatalf("a disabled login cannot sign in, got %d", w.Code)
+	}
+	var ownerUser uint64
+	h.db.QueryRow("SELECT id FROM users WHERE employee_id = ?", owner.ID).Scan(&ownerUser)
+	if code, body, _ := h.admin("PUT", fmt.Sprintf("/system-users/%d", ownerUser), ownerJWT, map[string]any{"status": "INACTIVE"}); code != 400 || errCode(body) != "SELF_DISABLE" {
+		t.Fatalf("cannot disable yourself: %d %v", code, body)
+	}
+	if code, body, _ := h.admin("DELETE", fmt.Sprintf("/roles/%d", regionalID), ownerJWT, nil); code != 409 || errCode(body) != "ROLE_IN_USE" {
+		t.Fatalf("a role in use cannot be deleted: %d %v", code, body)
+	}
+	if code, _, _ := h.admin("DELETE", fmt.Sprintf("/system-users/%d", sokhaUser), ownerJWT, nil); code != 204 {
+		t.Fatalf("delete login: %d", code)
+	}
+
+	// ---------- departments & positions ----------
+	code, body, _ = h.admin("POST", "/positions", jwt, map[string]any{"name": "Driver"})
+	if code != 201 {
+		t.Fatalf("create position: %d %v", code, body)
+	}
+	driverID := uint64(num(body, "id"))
+	if code, body, _ := h.admin("POST", "/positions", jwt, map[string]any{"name": "Driver"}); code != 409 || errCode(body) != "NAME_TAKEN" {
+		t.Fatalf("duplicate position: %d %v", code, body)
+	}
+	if code, _, _ := h.admin("POST", "/positions", mgrJWT, map[string]any{"name": "Cook"}); code != 403 {
+		t.Fatalf("managers cannot edit the lists, got %d", code)
+	}
+	if code, body, _ := h.admin("PUT", fmt.Sprintf("/employees/%d", dara.ID), jwt, map[string]any{"position_id": driverID}); code != 200 || body["position"] != "Driver" {
+		t.Fatalf("set position from the list: %d %v", code, body)
+	}
+	if code, body, _ := h.admin("GET", fmt.Sprintf("/employees?position_id=%d", driverID), jwt, nil); code != 200 || len(body["items"].([]any)) != 1 {
+		t.Fatalf("filter employees by position: %d %v", code, body)
+	}
+	if code, _, _ := h.admin("PUT", fmt.Sprintf("/positions/%d", driverID), jwt, map[string]any{"name": "Senior Driver"}); code != 200 {
+		t.Fatalf("rename position: %d", code)
+	}
+	if _, body, _ := h.admin("GET", fmt.Sprintf("/employees/%d", dara.ID), jwt, nil); body["position"] != "Senior Driver" {
+		t.Fatalf("renaming a position renames it on employees: %v", body["position"])
+	}
+	if code, body, _ := h.admin("DELETE", fmt.Sprintf("/positions/%d", driverID), jwt, nil); code != 409 || errCode(body) != "IN_USE" {
+		t.Fatalf("a position in use cannot be deleted: %d %v", code, body)
+	}
+	code, body, _ = h.admin("POST", "/departments", jwt, map[string]any{"name": "Logistics"})
+	if code != 201 {
+		t.Fatalf("create department: %d %v", code, body)
+	}
+	if code, _, _ := h.admin("DELETE", fmt.Sprintf("/departments/%d", uint64(num(body, "id"))), jwt, nil); code != 204 {
+		t.Fatalf("delete an unused department: %d", code)
+	}
+
+	// ---------- leave types, policies and balances ----------
+	h.set("2026-11-02 09:00") // Monday
+	wfh := map[string]any{"code": "wfh", "name": "Work from home", "annual_days": 10, "approval": "AUTO", "color": "#0ea5e9"}
+	if code, _, _ := h.admin("POST", "/leave/types", mgrJWT, wfh); code != 403 {
+		t.Fatalf("managers cannot edit leave types, got %d", code)
+	}
+	code, body, _ = h.admin("POST", "/leave/types", jwt, wfh)
+	if code != 201 || body["code"] != "WFH" {
+		t.Fatalf("create leave type: %d %v", code, body)
+	}
+	wfhID := uint64(num(body, "id"))
+	code, body, _ = h.app("POST", "/leave", daraTG, map[string]any{"leave_type_id": wfhID, "start_date": "2026-11-05", "end_date": "2026-11-05", "reason": "Plumber visit"})
+	if code != 201 || body["status"] != models.LeaveApproved {
+		t.Fatalf("an AUTO type is approved on submission: %d %v", code, body)
+	}
+	var wfhDay string
+	h.db.QueryRow("SELECT status FROM attendance WHERE employee_id = ? AND work_date = '2026-11-05'", dara.ID).Scan(&wfhDay)
+	if wfhDay != models.StatusLeave {
+		t.Fatalf("auto-approved leave marks the day LEAVE, got %q", wfhDay)
+	}
+	if code, body, _ := h.admin("DELETE", fmt.Sprintf("/leave/types/%d", wfhID), jwt, nil); code != 409 || errCode(body) != "TYPE_IN_USE" {
+		t.Fatalf("a used leave type can only be turned off: %d %v", code, body)
+	}
+	// HR gives Dara 3 days of annual leave this year.
+	if code, body, _ := h.admin("PUT", "/leave/balances", jwt, map[string]any{"employee_id": dara.ID, "leave_type_id": 1, "year": 2026, "allocated": 3, "carried": 0, "note": "Joined mid-year"}); code != 204 {
+		t.Fatalf("set balance: %d %v", code, body)
+	}
+	four := map[string]any{"leave_type_id": 1, "start_date": "2026-11-16", "end_date": "2026-11-19", "reason": "Trip"}
+	if code, body, _ := h.app("POST", "/leave/preview", daraTG, four); code != 200 || errCodeOf(body["problem"]) != "INSUFFICIENT_BALANCE" {
+		t.Fatalf("4 days with 3 left must be refused: %d %v", code, body)
+	}
+	if code, body, _ := h.app("POST", "/leave", daraTG, four); code != 400 || errCode(body) != "INSUFFICIENT_BALANCE" {
+		t.Fatalf("submitting 4 days with 3 left must be refused: %d %v", code, body)
+	}
+	three := map[string]any{"leave_type_id": 1, "start_date": "2026-11-16", "end_date": "2026-11-18", "reason": "Trip"}
+	code, body, _ = h.app("POST", "/leave/preview", daraTG, three)
+	if bal, _ := body["balance"].(map[string]any); code != 200 || bal["allocated"] != 3.0 || bal["available"] != 3.0 || bal["custom"] != true {
+		t.Fatalf("preview shows the balance: %d %v", code, body)
+	}
+	if code, body, _ := h.app("POST", "/leave", daraTG, three); code != 201 {
+		t.Fatalf("3 days fit: %d %v", code, body)
+	}
+	code, body, _ = h.app("GET", "/leave/balances", daraTG, nil)
+	var annual map[string]any
+	for _, b := range body["items"].([]any) {
+		if b.(map[string]any)["code"] == "ANNUAL" {
+			annual = b.(map[string]any)
+		}
+	}
+	if code != 200 || annual == nil || annual["pending"] != 3.0 || annual["available"] != 0.0 {
+		t.Fatalf("my balances count pending days: %d %v", code, annual)
+	}
+	code, body, _ = h.admin("GET", "/leave/balances?year=2026", jwt, nil)
+	if code != 200 || len(body["items"].([]any)) == 0 || len(body["types"].([]any)) < 5 {
+		t.Fatalf("balances report: %d %v", code, body)
+	}
+	if code, _, _ := h.admin("DELETE", fmt.Sprintf("/leave/balances?employee_id=%d&leave_type_id=1&year=2026", dara.ID), jwt, nil); code != 204 {
+		t.Fatalf("reset balance: %d", code)
+	}
+	if _, body, _ := h.app("GET", "/leave/balances", daraTG, nil); body["items"].([]any)[0].(map[string]any)["allocated"] != 18.0 {
+		t.Fatalf("back to the type's 18 days: %v", body["items"].([]any)[0])
+	}
+	if code, _, _ := h.admin("PUT", "/leave/types/3", jwt, map[string]any{"max_days_per_request": 1, "min_notice_days": 7}); code != 200 {
+		t.Fatalf("update policy: %d", code)
+	}
+	if code, body, _ := h.app("POST", "/leave/preview", daraTG, map[string]any{"leave_type_id": 3, "start_date": "2026-11-23", "end_date": "2026-11-24", "reason": "x"}); code != 200 || errCodeOf(body["problem"]) != "TOO_MANY_DAYS" {
+		t.Fatalf("max days per request: %d %v", code, body)
+	}
+	if code, body, _ := h.app("POST", "/leave/preview", daraTG, map[string]any{"leave_type_id": 3, "start_date": "2026-11-04", "end_date": "2026-11-04", "reason": "x"}); code != 200 || errCodeOf(body["problem"]) != "SHORT_NOTICE" {
+		t.Fatalf("notice period: %d %v", code, body)
+	}
+
+	// ---------- GPS rules per branch ----------
+	if code, body, _ := h.admin("PUT", fmt.Sprintf("/branches/%d", srID), ownerJWT, map[string]any{"gps": map[string]any{"enabled": true, "required": true}}); code != 200 || body["gps_required"] != true {
+		t.Fatalf("branch GPS rules: %d %v", code, body)
+	}
+	if code, body, _ := h.app("GET", "/attendance/today", bophaTG, nil); code != 200 || body["check_in"].(map[string]any)["gps_required"] != true {
+		t.Fatalf("Siem Reap staff must share their location: %d %v", code, body)
+	}
+	if code, body, _ := h.app("POST", "/attendance/check-in", bophaTG, map[string]string{"photo": photo("bopha-gps")}); code != 400 || errCode(body) != "LOCATION_REQUIRED" {
+		t.Fatalf("no location in a GPS-required branch: %d %v", code, body)
+	}
+	if _, body, _ := h.app("GET", "/attendance/today", daraTG, nil); body["check_in"].(map[string]any)["need_gps"] != false {
+		t.Fatalf("other branches keep the company setting (off): %v", body["check_in"])
+	}
+	if code, body, _ := h.admin("PUT", fmt.Sprintf("/branches/%d", srID), ownerJWT, map[string]any{"gps": map[string]any{"inherit": true}}); code != 200 || body["gps_enabled"] != nil {
+		t.Fatalf("back to the company setting: %d %v", code, body)
 	}
 
 	// ---------- deactivation keeps history and blocks the Mini App ----------

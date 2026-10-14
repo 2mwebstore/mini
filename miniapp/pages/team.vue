@@ -59,7 +59,7 @@ const sheetOpen = computed({
     if (!v) rejecting.value = null
   },
 })
-const attendancePresets = ['Please provide a valid attendance photo.', 'Not at the workplace.', 'Wrong time or duplicate submission.']
+const attendancePresets = ['Not at the workplace.', 'Location does not match the workplace.', 'Wrong time or duplicate submission.']
 
 async function reject(reason: string) {
   const r = rejecting.value

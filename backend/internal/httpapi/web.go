@@ -24,7 +24,7 @@ var webApps = []webApp{
 	{"admin", map[string]string{
 		"X-Frame-Options":    "DENY",
 		"Referrer-Policy":    "same-origin",
-		"Permissions-Policy": "camera=(), microphone=(), geolocation=()",
+		"Permissions-Policy": "camera=(), microphone=(), geolocation=(self)", // GPS page: "use my current location"
 		// 'unsafe-inline' scripts: Nuxt inlines its runtime config.
 		"Content-Security-Policy": "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self'; frame-ancestors 'none'; base-uri 'self'; form-action 'self'",
 	}},

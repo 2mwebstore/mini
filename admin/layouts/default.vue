@@ -1,7 +1,6 @@
 <script setup lang="ts">
 import { useAuthStore } from '~/stores/auth'
 import type { Permission } from '~/types/api'
-import { roleLabels } from '~/utils/format'
 
 const auth = useAuthStore()
 // The router's current route updates as soon as navigation starts (useRoute() in a
@@ -23,8 +22,15 @@ const items: NavItem[] = [
     label: 'Attendance', icon: 'M12 7v5l3 3M12 21a9 9 0 1 0 0-18 9 9 0 0 0 0 18z',
     children: [
       { to: '/attendance', label: 'Records' },
-      { to: '/leave', label: 'Leave requests' },
       { to: '/reports', label: 'Reports' },
+    ],
+  },
+  {
+    label: 'Leave', icon: 'M12 3a9 9 0 0 1 9 9H3a9 9 0 0 1 9-9zm0 9v9m-3 0h6',
+    children: [
+      { to: '/leave', label: 'Requests' },
+      { to: '/leave/balances', label: 'Balances' },
+      { to: '/leave/types', label: 'Types' },
     ],
   },
   {
@@ -36,12 +42,28 @@ const items: NavItem[] = [
       { to: '/schedules/holidays', label: 'Holidays' },
     ],
   },
-  { to: '/employees', label: 'Employees', icon: 'M17 20v-1a4 4 0 0 0-4-4H7a4 4 0 0 0-4 4v1M10 11a4 4 0 1 0 0-8 4 4 0 0 0 0 8zm11 9v-1a4 4 0 0 0-3-3.9M16 3.1a4 4 0 0 1 0 7.8' },
+  {
+    label: 'Employees', icon: 'M17 20v-1a4 4 0 0 0-4-4H7a4 4 0 0 0-4 4v1M10 11a4 4 0 1 0 0-8 4 4 0 0 0 0 8zm11 9v-1a4 4 0 0 0-3-3.9M16 3.1a4 4 0 0 1 0 7.8',
+    children: [
+      { to: '/employees', label: 'Employees' },
+      { to: '/employees/departments', label: 'Departments' },
+      { to: '/employees/positions', label: 'Positions' },
+    ],
+  },
   { to: '/branches', label: 'Branches', icon: branchIcon, perm: ['branches.manage'] },
+  {
+    label: 'Administration', icon: 'M12 3 4 6v6c0 5 3.4 8.6 8 9 4.6-.4 8-4 8-9V6zm-3 9 2 2 4-4', perm: ['users.manage'],
+    children: [
+      { to: '/access/users', label: 'System users' },
+      { to: '/access/branches', label: 'Branch assignment' },
+      { to: '/access/roles', label: 'Role management' },
+    ],
+  },
   {
     label: 'Settings', icon: 'M12 15a3 3 0 1 0 0-6 3 3 0 0 0 0 6zm7.4-3a7.4 7.4 0 0 0-.1-1.2l2-1.6-2-3.4-2.4 1a7.5 7.5 0 0 0-2-1.2L14.5 3h-5l-.4 2.6a7.5 7.5 0 0 0-2 1.2l-2.4-1-2 3.4 2 1.6a7.4 7.4 0 0 0 0 2.4l-2 1.6 2 3.4 2.4-1a7.5 7.5 0 0 0 2 1.2l.4 2.6h5l.4-2.6a7.5 7.5 0 0 0 2-1.2l2.4 1 2-3.4-2-1.6c.1-.4.1-.8.1-1.2z',
     children: [
       { to: '/settings', label: 'General', perm: ['settings.view'] },
+      { to: '/settings/location', label: 'Location (GPS)', perm: ['settings.view', 'branch.settings'] },
       { to: '/audit', label: 'Audit log', perm: ['audit.view'] },
     ],
   },
@@ -55,11 +77,18 @@ const nav = computed(() => {
   // A branch admin edits their own branch's settings from "My branch".
   const myBranch = auth.employee?.branch_id
   if (!auth.can('branches.manage') && auth.can('branch.settings') && myBranch) {
-    list.splice(list.findIndex(i => i.to === '/employees') + 1, 0, { to: `/branches/${myBranch}`, label: 'My branch', icon: branchIcon })
+    list.splice(list.findIndex(i => i.label === 'Employees') + 1, 0, { to: `/branches/${myBranch}`, label: 'My branch', icon: branchIcon })
   }
   return list
 })
-const active = (to: string) => (to === '/' ? current.value.path === '/' : current.value.path === to || current.value.path.startsWith(`${to}/`))
+// The most specific link containing the current page is the active one
+// (/leave/types highlights "Types", not also "Requests").
+const activeTo = computed(() => {
+  const path = current.value.path
+  const tos = nav.value.flatMap(i => (i.children ? i.children.map(c => c.to) : i.to ? [i.to] : []))
+  return tos.filter(to => (to === '/' ? path === '/' : path === to || path.startsWith(`${to}/`))).sort((a, b) => b.length - a.length)[0]
+})
+const active = (to: string) => activeTo.value === to
 
 // A group is open while one of its pages is shown, or after the user opens it.
 const toggled = ref<Record<string, boolean>>({})
@@ -137,7 +166,7 @@ async function signOut() {
       </nav>
       <div class="border-t border-border px-5 py-4">
         <p class="truncate text-sm font-medium">{{ auth.employee?.full_name }}</p>
-        <p class="text-xs text-muted">{{ auth.role ? roleLabels[auth.role] : '' }}</p>
+        <p class="text-xs text-muted">{{ auth.employee?.role?.name ?? '' }}</p>
         <AppButton class="mt-3 w-full" size="sm" variant="secondary" @click="signOut">Sign out</AppButton>
       </div>
     </aside>

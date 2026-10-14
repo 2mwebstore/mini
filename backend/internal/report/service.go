@@ -4,6 +4,7 @@ package report
 
 import (
 	"context"
+	"fmt"
 	"sort"
 	"time"
 
@@ -52,6 +53,7 @@ type DayRow struct {
 	Confirmation   string     `json:"confirmation_status"`
 	ConfirmedBy    string     `json:"confirmed_by"`
 	LeaveType      string     `json:"leave_type"`
+	LeaveHalf      string     `json:"leave_half,omitempty"` // FIRST_HALF | SECOND_HALF: half the day was leave
 	// The day's scheduled shift (empty on days off).
 	Shift      string `json:"shift,omitempty"`
 	ShiftStart string `json:"shift_start,omitempty"`
@@ -61,23 +63,23 @@ type DayRow struct {
 }
 
 type Summary struct {
-	EmployeeID      uint64 `json:"employee_id"`
-	EmployeeCode    string `json:"employee_code"`
-	FullName        string `json:"full_name"`
-	Department      string `json:"department"`
-	Branch          string `json:"branch"`
-	WorkingDays     int    `json:"working_days"` // expected (scheduled, non-holiday) days so far
-	PresentDays     int    `json:"present_days"`
-	LateDays        int    `json:"late_days"`
-	EarlyLeaveDays  int    `json:"early_leave_days"`
-	AbsentDays      int    `json:"absent_days"`
-	LeaveDays       int    `json:"leave_days"`
-	PendingDays     int    `json:"pending_days"`
-	RejectedDays    int    `json:"rejected_days"`
-	MissingCheckout int    `json:"missing_checkout"`
-	LateMinutes     int    `json:"late_minutes"`
-	WorkingMinutes  int    `json:"working_minutes"`
-	AvgMinutes      int    `json:"avg_minutes_per_day"`
+	EmployeeID      uint64  `json:"employee_id"`
+	EmployeeCode    string  `json:"employee_code"`
+	FullName        string  `json:"full_name"`
+	Department      string  `json:"department"`
+	Branch          string  `json:"branch"`
+	WorkingDays     int     `json:"working_days"` // expected (scheduled, non-holiday) days so far
+	PresentDays     int     `json:"present_days"`
+	LateDays        int     `json:"late_days"`
+	EarlyLeaveDays  int     `json:"early_leave_days"`
+	AbsentDays      int     `json:"absent_days"`
+	LeaveDays       float64 `json:"leave_days"` // half days count 0.5
+	PendingDays     int     `json:"pending_days"`
+	RejectedDays    int     `json:"rejected_days"`
+	MissingCheckout int     `json:"missing_checkout"`
+	LateMinutes     int     `json:"late_minutes"`
+	WorkingMinutes  int     `json:"working_minutes"`
+	AvgMinutes      int     `json:"avg_minutes_per_day"`
 }
 
 type Report struct {
@@ -171,16 +173,32 @@ func (s *Service) Build(ctx context.Context, actor *auth.Actor, f Filter) (*Repo
 		Find(&leaves).Error; err != nil {
 		return nil, err
 	}
+	leaveName := func(l *models.LeaveRequest) string {
+		if l.LeaveType != nil {
+			return l.LeaveType.Name
+		}
+		return "Leave"
+	}
+	// leaveOn: a full day's leave; halfOn: a half day's ("Annual Leave (first half)").
 	leaveOn := func(empID uint64, d time.Time) string {
-		for _, l := range leaves {
-			if l.EmployeeID == empID && !d.Before(l.StartDate) && !d.After(l.EndDate) {
-				if l.LeaveType != nil {
-					return l.LeaveType.Name
-				}
-				return "Leave"
+		for i := range leaves {
+			if l := &leaves[i]; l.EmployeeID == empID && !l.IsHalfDay() && !d.Before(l.StartDate) && !d.After(l.EndDate) {
+				return leaveName(l)
 			}
 		}
 		return ""
+	}
+	halfOn := func(empID uint64, d time.Time) (string, string) {
+		for i := range leaves {
+			if l := &leaves[i]; l.EmployeeID == empID && l.IsHalfDay() && d.Equal(l.StartDate) {
+				part := "first half"
+				if l.DayType == models.LeaveSecondHalf {
+					part = "second half"
+				}
+				return fmt.Sprintf("%s (%s)", leaveName(l), part), l.DayType
+			}
+		}
+		return "", ""
 	}
 	isHol, err := attendance.HolidaySet(ctx, s.db, f.From, f.To)
 	if err != nil {
@@ -239,6 +257,9 @@ func (s *Service) Build(ctx context.Context, actor *auth.Actor, f Filter) (*Repo
 					row.Status = models.StatusAbsent
 				}
 			}
+			if row.LeaveType == "" && expected {
+				row.LeaveType, row.LeaveHalf = halfOn(e.ID, d)
+			}
 			if expected && !d.After(today) && !d.Before(startDate) {
 				sum.WorkingDays++
 			}
@@ -287,6 +308,9 @@ func accumulate(s *Summary, r DayRow) {
 		s.AbsentDays++
 	case models.StatusLeave:
 		s.LeaveDays++
+	}
+	if r.LeaveHalf != "" {
+		s.LeaveDays += 0.5
 	}
 	switch r.Confirmation {
 	case models.ConfPending:

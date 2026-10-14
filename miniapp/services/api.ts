@@ -26,7 +26,7 @@ const fallbackMessages: Record<number, string> = {
   401: 'Please open this app from the Telegram bot.',
   403: 'You do not have permission to do this.',
   404: 'Not found.',
-  413: 'The photo is too large. Please take it again.',
+  413: 'The request is too large.',
   429: 'Too many requests. Please wait a moment.',
   502: 'The server is temporarily unavailable. Please try again.',
   503: 'The server is temporarily unavailable. Please try again.',

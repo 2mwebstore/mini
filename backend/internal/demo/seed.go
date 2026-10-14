@@ -1,7 +1,7 @@
 // Package demo fills a development database with realistic sample data so the
 // owner can explore the admin panel: three branches with branch admins,
-// managers and staff, four weeks of attendance (photos, GPS, reviews — some
-// late, absent, pending or rejected), leave requests and public holidays.
+// managers and staff, four weeks of attendance (GPS, reviews — some late,
+// absent, pending or rejected), leave requests (full and half days) and public holidays.
 //
 // People and branches are created through the normal services (validation and
 // audit log included); attendance and leave rows are written directly so no
@@ -9,27 +9,22 @@
 package demo
 
 import (
-	"bytes"
 	"context"
-	"crypto/sha256"
-	"encoding/hex"
 	"errors"
 	"fmt"
-	"image"
-	"image/color"
-	"image/jpeg"
 	"math/rand/v2"
 	"time"
 
+	"attendance/backend/internal/access"
 	"attendance/backend/internal/attendance"
 	"attendance/backend/internal/audit"
 	"attendance/backend/internal/auth"
 	"attendance/backend/internal/branch"
 	"attendance/backend/internal/employee"
+	"attendance/backend/internal/leave"
 	"attendance/backend/internal/models"
 	"attendance/backend/internal/schedule"
 	"attendance/backend/internal/settings"
-	"attendance/backend/internal/storage"
 	"attendance/backend/internal/timeutil"
 
 	"gorm.io/gorm"
@@ -43,7 +38,6 @@ const codePrefix = "D-"
 
 type Deps struct {
 	DB       *gorm.DB
-	Store    storage.Store
 	Settings *settings.Service
 }
 
@@ -109,6 +103,9 @@ var people = []person{
 	{"D-BB02", "Narin Seng", "staff", "Sales", "Sales Executive", "BB", "", false},
 	{"D-BB03", "Phalla Touch", "staff", "Finance", "Cashier", "BB", "", false},
 	{"D-BB04", "Ratha Chhim", "staff", "Operations", "Warehouse Officer", "BB", "", false},
+
+	// A custom role, limited to two branches on Branch assignment.
+	{"D-RG01", "Sokunthea Ly", "regional_supervisor", "Operations", "Regional Supervisor", "", "regional@demo.local", false},
 }
 
 // Fixed-date public holidays in Cambodia (lunar-calendar ones vary by year).
@@ -126,20 +123,19 @@ var holidayDefs = []struct {
 }
 
 type seeder struct {
-	ctx     context.Context
-	d       Deps
-	o       Options
-	cli     *auth.Actor
-	loc     *time.Location
-	today   time.Time
-	rng     *rand.Rand
-	emps    map[string]*models.Employee // by code
-	branch  map[string]*models.Branch   // by code
-	owner   *models.Employee
-	isHol   func(time.Time) bool
-	plan    *attendance.Planner // who works which shift, after roster and special schedules
-	photoNo uint64
-	sum     *Summary
+	ctx    context.Context
+	d      Deps
+	o      Options
+	cli    *auth.Actor
+	loc    *time.Location
+	today  time.Time
+	rng    *rand.Rand
+	emps   map[string]*models.Employee // by code
+	branch map[string]*models.Branch   // by code
+	owner  *models.Employee
+	isHol  func(time.Time) bool
+	plan   *attendance.Planner // who works which shift, after roster and special schedules
+	sum    *Summary
 }
 
 func Seed(ctx context.Context, d Deps, o Options) (*Summary, error) {
@@ -169,7 +165,7 @@ func Seed(ctx context.Context, d Deps, o Options) (*Summary, error) {
 		rng:  rand.New(rand.NewPCG(2026, 10)), // fixed: the same demo every time
 		emps: map[string]*models.Employee{}, branch: map[string]*models.Branch{}, sum: &Summary{},
 	}
-	steps := []func() error{s.ensureOwner, s.branches, s.staff, s.backdate, s.holidays, s.schedules, s.leave, s.attendance, s.audit}
+	steps := []func() error{s.ensureOwner, s.branches, s.roles, s.staff, s.access, s.backdate, s.holidays, s.schedules, s.leave, s.attendance, s.audit}
 	for _, step := range steps {
 		if err := step(); err != nil {
 			return nil, err
@@ -270,7 +266,8 @@ func (s *seeder) staff() error {
 			if _, err := empSvc.CreateUser(s.ctx, s.cli, e.ID, p.email, s.o.Password); err != nil {
 				return fmt.Errorf("login %s: %w", p.code, err)
 			}
-			role := map[string]string{"hr_admin": "HR admin (all branches)", "manager": "Manager"}[p.role]
+			role := map[string]string{"hr_admin": "HR admin (all branches)", "manager": "Manager",
+				"regional_supervisor": "Regional supervisor (Siem Reap + Battambang)"}[p.role]
 			if p.branchAdmin {
 				role = "Branch admin"
 			}
@@ -319,6 +316,39 @@ func (s *seeder) holidays() error {
 	var err error
 	s.isHol, err = attendance.HolidaySet(s.ctx, s.d.DB, s.today.AddDate(-1, 0, 0), s.today.AddDate(1, 0, 0))
 	return err
+}
+
+// ---------- roles, branch access, leave balances ----------
+
+// roles adds a custom role (view and review everyone, edit attendance, export) —
+// D-RG01 has it, limited to two branches by access().
+func (s *seeder) roles() error {
+	name, desc := "Regional Supervisor", "Oversees the branches assigned to them"
+	_, err := access.NewService(s.d.DB).CreateRole(s.ctx, s.cli, access.RoleInput{Name: &name, Description: &desc, Permissions: []auth.Permission{
+		auth.PermAttendanceSelf, auth.PermLeaveSelf, auth.PermTeamView, auth.PermTeamReview, auth.PermAllView, auth.PermAllReview,
+		auth.PermAttendanceEdit, auth.PermReportExport}})
+	if err != nil {
+		return fmt.Errorf("role: %w", err)
+	}
+	return nil
+}
+
+// access limits the regional supervisor to Siem Reap and Battambang, and gives
+// one person a longer annual leave entitlement with a carry-over.
+func (s *seeder) access() error {
+	var u models.User
+	if err := s.d.DB.WithContext(s.ctx).Where("employee_id = ?", s.emps["D-RG01"].ID).First(&u).Error; err != nil {
+		return err
+	}
+	if _, err := access.NewService(s.d.DB).SetBranches(s.ctx, s.cli, u.ID, []uint64{s.branch["SR"].ID, s.branch["BB"].ID}); err != nil {
+		return fmt.Errorf("branch access: %w", err)
+	}
+	var annual models.LeaveType
+	if err := s.d.DB.WithContext(s.ctx).Where("code = ?", "ANNUAL").First(&annual).Error; err != nil {
+		return err
+	}
+	return leave.NewService(s.d.DB, s.d.Settings, nil).SetBalance(s.ctx, s.cli, leave.BalanceInput{EmployeeID: s.emps["D-PP06"].ID,
+		LeaveTypeID: annual.ID, Year: s.today.Year(), Allocated: 20, Carried: 2, Note: "Long service (5 years) + 2 days from last year"})
 }
 
 // ---------- shifts, roster, special schedules ----------
@@ -457,8 +487,8 @@ func (s *seeder) leave() error {
 			if requested.After(s.o.Now) {
 				requested = s.o.Now.Add(-26 * time.Hour)
 			}
-			lr := models.LeaveRequest{EmployeeID: emp.ID, LeaveTypeID: typeID[p.typ], StartDate: start, EndDate: end,
-				Days: s.plan.WorkingDays(emp, start, end, s.isHol), Reason: p.reason, Status: p.status, ReviewNote: p.note,
+			lr := models.LeaveRequest{EmployeeID: emp.ID, LeaveTypeID: typeID[p.typ], StartDate: start, EndDate: end, DayType: models.LeaveFullDay,
+				Days: float64(s.plan.WorkingDays(emp, start, end, s.isHol)), Reason: p.reason, Status: p.status, ReviewNote: p.note,
 				CreatedAt: requested.UTC(), UpdatedAt: requested.UTC()}
 			if r := s.emps[p.reviewer]; r != nil {
 				at := requested.Add(20 * time.Hour).UTC()
@@ -472,6 +502,38 @@ func (s *seeder) leave() error {
 				if err := attendance.MarkLeaveDays(s.ctx, tx, emp, start, end, s.isHol, fmt.Sprintf("Leave #%d (%s)", lr.ID, name)); err != nil {
 					return err
 				}
+			}
+			s.sum.LeaveRequests++
+		}
+		// Half days take their hours from that day's shift: a night shift's first
+		// half is 22:00-02:00, a day shift's second half the afternoon.
+		halves := []struct {
+			code, typ, half, status, reviewer, reason string
+			start                                     int
+		}{
+			{"D-BB04", "PERSONAL", models.LeaveFirstHalf, models.LeavePending, "", "Clinic appointment in the evening", 5},
+			{"D-SR03", "ANNUAL", models.LeaveSecondHalf, models.LeaveApproved, "D-SR01", "Picking up documents at the ministry", 8},
+		}
+		for _, h := range halves {
+			emp, date := s.emps[h.code], s.workday(h.start)
+			day := s.plan.Day(emp, date)
+			first, second, _, err := day.Halves(date, s.loc)
+			if !day.Work || err != nil {
+				continue
+			}
+			hours := first
+			if h.half == models.LeaveSecondHalf {
+				hours = second
+			}
+			requested := s.o.Now.Add(-30 * time.Hour).UTC()
+			lr := models.LeaveRequest{EmployeeID: emp.ID, LeaveTypeID: typeID[h.typ], StartDate: date, EndDate: date, DayType: h.half,
+				HalfFrom: &hours[0], HalfTo: &hours[1], Days: 0.5, Reason: h.reason, Status: h.status, CreatedAt: requested, UpdatedAt: requested}
+			if r := s.emps[h.reviewer]; r != nil {
+				at := requested.Add(4 * time.Hour)
+				lr.ReviewedBy, lr.ReviewedAt = &r.ID, &at
+			}
+			if err := tx.Omit(clause.Associations).Create(&lr).Error; err != nil {
+				return err
 			}
 			s.sum.LeaveRequests++
 		}
@@ -587,7 +649,7 @@ func (s *seeder) attendance() error {
 	})
 }
 
-// record writes one check-in (and maybe check-out) with photos, GPS points and reviews.
+// record writes one check-in (and maybe check-out) with GPS points and reviews.
 func (s *seeder) record(tx *gorm.DB, e *models.Employee, d time.Time, sched attendance.Day, in time.Time, out *time.Time,
 	pendingIn, pendingOut, rejectOut bool) error {
 	inUTC := in.UTC()
@@ -615,27 +677,18 @@ func (s *seeder) record(tx *gorm.DB, e *models.Employee, d time.Time, sched atte
 		return err
 	}
 	for i := range confs {
-		confs[i].AttendanceID = a.ID
-	}
-	if err := tx.Create(&confs).Error; err != nil {
-		return err
-	}
-	shots := []struct {
-		typ string
-		at  time.Time
-	}{{models.TypeCheckIn, in}}
-	if out != nil {
-		shots = append(shots, struct {
-			typ string
-			at  time.Time
-		}{models.TypeCheckOut, *out})
-	}
-	for _, sh := range shots {
-		if err := s.photoAndLocation(tx, e, a.ID, d, sh.typ, sh.at); err != nil {
+		c := &confs[i]
+		at := in
+		if c.Type == models.TypeCheckOut {
+			at = *out
+		}
+		locID, err := s.location(tx, e, a.ID, c.Type, at)
+		if err != nil {
 			return err
 		}
+		c.AttendanceID, c.LocationID = a.ID, &locID
 	}
-	return nil
+	return tx.Create(&confs).Error
 }
 
 func (s *seeder) conf(typ string, at time.Time, pending, rejected bool, reviewer *models.Employee) models.AttendanceConfirmation {
@@ -655,27 +708,8 @@ func (s *seeder) conf(typ string, at time.Time, pending, rejected bool, reviewer
 	return c
 }
 
-func (s *seeder) photoAndLocation(tx *gorm.DB, e *models.Employee, attID uint64, d time.Time, typ string, at time.Time) error {
-	s.photoNo++
-	data, err := demoPhoto(s.photoNo, e.ID)
-	if err != nil {
-		return err
-	}
-	kind := map[string]string{models.TypeCheckIn: "in", models.TypeCheckOut: "out"}[typ]
-	key := fmt.Sprintf("attendance/%s/%s/%s-%s-demo%d.jpg", d.Format("2006/01/02"), e.EmployeeCode, kind, at.In(s.loc).Format("150405"), s.photoNo)
-	if err := s.d.Store.Put(s.ctx, key, data, "image/jpeg"); err != nil {
-		return fmt.Errorf("photo storage: %w (is the storage service running?)", err)
-	}
-	sum := sha256.Sum256(data)
-	var tg int64
-	if acc := e.TelegramAccount; acc != nil {
-		tg = acc.TelegramUserID
-	}
-	photo := models.AttendancePhoto{AttendanceID: attID, Type: typ, ContentSHA256: hex.EncodeToString(sum[:]), TelegramUserID: tg,
-		StorageKey: key, StorageURL: s.d.Store.URI(key), ContentType: "image/jpeg", SizeBytes: int64(len(data)), CreatedAt: at.UTC()}
-	if err := tx.Create(&photo).Error; err != nil {
-		return err
-	}
+// location records where a check-in/out was made: near the employee's office.
+func (s *seeder) location(tx *gorm.DB, e *models.Employee, attID uint64, typ string, at time.Time) (uint64, error) {
 	// GPS near the employee's office (the company office for staff without a branch).
 	lat, lng, radius := 11.5564, 104.9282, 150.0
 	if b := e.Branch; b.HasOffice() {
@@ -691,53 +725,15 @@ func (s *seeder) photoAndLocation(tx *gorm.DB, e *models.Employee, attID uint64,
 	acc := 6 + s.rng.Float64()*20
 	loc := models.AttendanceLocation{AttendanceID: attID, Type: typ, Latitude: pLat, Longitude: pLng, Accuracy: &acc,
 		DistanceMeters: &dist, InsideOffice: &inside, CreatedAt: at.UTC()}
-	return tx.Create(&loc).Error
+	if err := tx.Create(&loc).Error; err != nil {
+		return 0, err
+	}
+	return loc.ID, nil
 }
 
 func (s *seeder) audit() error {
 	return audit.Write(s.ctx, s.d.DB, s.cli, audit.Entry{Action: "demo.seed", EntityType: "demo",
 		Details: map[string]any{"employees": s.sum.Employees, "attendance_days": s.sum.AttendanceDays, "leave_requests": s.sum.LeaveRequests}})
-}
-
-// demoPhoto draws a simple "selfie" placeholder (unique per call).
-func demoPhoto(n, person uint64) ([]byte, error) {
-	palette := []color.RGBA{{52, 101, 164, 255}, {78, 154, 6, 255}, {196, 160, 0, 255}, {117, 80, 123, 255}, {204, 0, 0, 255}, {6, 152, 154, 255}}
-	bg := palette[person%uint64(len(palette))]
-	img := image.NewRGBA(image.Rect(0, 0, 240, 320))
-	skin := color.RGBA{238, 200, 160, 255}
-	shirt := color.RGBA{240, 240, 240, 255}
-	for y := 0; y < 320; y++ {
-		for x := 0; x < 240; x++ {
-			c := bg
-			shade := uint8((y * 40) / 320)
-			c.R, c.G, c.B = sat(c.R, shade), sat(c.G, shade), sat(c.B, shade)
-			dx, dy := x-120, y-130
-			switch {
-			case dx*dx+dy*dy < 55*55: // head
-				c = skin
-			case y > 200 && (x-120)*(x-120)*4+(y-320)*(y-320) < 120*120*4: // shoulders
-				c = shirt
-			}
-			img.Set(x, y, c)
-		}
-	}
-	// a few seeded specks so every photo is a distinct image
-	r := rand.New(rand.NewPCG(n, person))
-	for i := 0; i < 60; i++ {
-		img.Set(r.IntN(240), r.IntN(320), color.RGBA{uint8(r.IntN(256)), uint8(r.IntN(256)), uint8(r.IntN(256)), 255})
-	}
-	var buf bytes.Buffer
-	if err := jpeg.Encode(&buf, img, &jpeg.Options{Quality: 72}); err != nil {
-		return nil, err
-	}
-	return buf.Bytes(), nil
-}
-
-func sat(v, add uint8) uint8 {
-	if int(v)+int(add) > 255 {
-		return 255
-	}
-	return v + add
 }
 
 func ptr(s string) *string { return &s }

@@ -2,9 +2,10 @@ import { defineStore } from 'pinia'
 import { branchService } from '~/services/branch.service'
 import { employeeService } from '~/services/employee.service'
 import { leaveService } from '~/services/leave.service'
+import { accessService } from '~/services/access.service'
 import { scheduleService } from '~/services/schedule.service'
 import { shiftHours } from '~/utils/format'
-import type { Branch, Department, Employee, LeaveType, WorkSchedule } from '~/types/api'
+import type { Branch, Department, Employee, LeaveType, OrgItem, Role, WorkSchedule } from '~/types/api'
 import type { SelectOption } from '~/utils/options'
 
 // Reference data shared by filters and forms, fetched once per session.
@@ -15,12 +16,15 @@ export const useLookupsStore = defineStore('lookups', {
     branches: null as Branch[] | null,
     schedules: null as WorkSchedule[] | null,
     leaveTypes: null as LeaveType[] | null,
+    positions: null as OrgItem[] | null,
+    roles: null as Role[] | null,
   }),
   getters: {
     // Ready-made <SearchSelect> options.
     branchOptions: (s): SelectOption[] => (s.branches ?? []).map(b => ({ value: String(b.id), label: b.name, sub: b.status === 'ACTIVE' ? undefined : 'Closed' })),
     departmentOptions: (s): SelectOption[] => (s.departments ?? []).map(d => ({ value: String(d.id), label: d.name })),
     employeeOptions: (s): SelectOption[] => (s.employees ?? []).map(e => ({ value: String(e.id), label: e.full_name, sub: e.employee_code })),
+    positionOptions: (s): SelectOption[] => (s.positions ?? []).map(p => ({ value: String(p.id), label: p.name })),
     shiftOptions: (s): SelectOption[] =>
       (s.schedules ?? []).map(w => ({ value: String(w.id), label: w.name, sub: shiftHours(w.start_time, w.end_time, w.work_type === 'CROSS_DAY') })),
   },
@@ -40,6 +44,14 @@ export const useLookupsStore = defineStore('lookups', {
     async loadSchedules(force = false) {
       if (!this.schedules || force) this.schedules = await scheduleService.shifts()
       return this.schedules
+    },
+    async loadPositions(force = false) {
+      if (!this.positions || force) this.positions = await employeeService.orgList('positions')
+      return this.positions
+    },
+    async loadRoles(force = false) {
+      if (!this.roles || force) this.roles = await accessService.roles()
+      return this.roles
     },
     async loadLeaveTypes() {
       if (!this.leaveTypes) this.leaveTypes = await leaveService.types()

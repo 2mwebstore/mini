@@ -218,6 +218,43 @@ func MarkLeaveDays(ctx context.Context, tx *gorm.DB, emp *models.Employee, from,
 	return nil
 }
 
+// ApplyHalfDayLeave re-measures a day already worked when half of it turns out to
+// be leave: late and early-leave minutes count against the half still worked.
+// Called inside the leave approval transaction; a day without a check-in is left alone.
+func ApplyHalfDayLeave(ctx context.Context, tx *gorm.DB, emp *models.Employee, date time.Time, half string, loc *time.Location, note string) error {
+	var att models.Attendance
+	err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).Where("employee_id = ? AND work_date = ?", emp.ID, date).First(&att).Error
+	if errors.Is(err, gorm.ErrRecordNotFound) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	if att.CheckInAt == nil || att.Source == models.SourceManual || att.Status == models.StatusHoliday {
+		return nil // nothing worked yet, or an administrator set the day by hand
+	}
+	plan, err := LoadPlanner(ctx, tx, []uint64{emp.ID}, date, date)
+	if err != nil {
+		return err
+	}
+	day := plan.Day(emp, date)
+	if !day.Work {
+		return nil
+	}
+	day = day.WithHalfOff(half, date, loc)
+	att.LateMinutes = day.LateMinutes(date, *att.CheckInAt, loc)
+	att.EarlyLeaveMinutes = 0
+	if att.CheckOutAt != nil {
+		att.EarlyLeaveMinutes = day.EarlyLeaveMinutes(date, *att.CheckOutAt, loc)
+	}
+	updates := map[string]any{"late_minutes": att.LateMinutes, "early_leave_minutes": att.EarlyLeaveMinutes,
+		"status": DeriveStatus(att.LateMinutes, att.EarlyLeaveMinutes)}
+	if att.Note == "" {
+		updates["note"] = note
+	}
+	return tx.Model(&models.Attendance{}).Where("id = ?", att.ID).Updates(updates).Error
+}
+
 // WorkingDays counts emp's scheduled working days in [from, to], excluding holidays.
 func WorkingDays(ctx context.Context, db *gorm.DB, emp *models.Employee, from, to time.Time, isHoliday func(time.Time) bool) (int, error) {
 	plan, err := LoadPlanner(ctx, db, []uint64{emp.ID}, from, to)

@@ -1,8 +1,9 @@
 # Attendance & Leave Management (Telegram Mini App + HR admin panel)
 
-Employees check in and out with a photo (and optional GPS), request leave and see their
-own records in a **Telegram Mini App**. The owner, HR, branch admins and managers confirm
-attendance, approve leave, manage staff and run reports in a web **admin panel**. The
+Employees check in and out (with GPS where their branch asks for it — no photo), request
+leave (full or half days) and see their own records in a **Telegram Mini App**. The
+owner, HR, branch admins and managers confirm attendance, approve leave, manage staff
+and run reports in a web **admin panel**. The
 company can have **several branches**, each run by one branch admin the owner assigns.
 A Go API backs both apps and sends Telegram notifications. Telegram itself (bot token,
 Mini App URL, group chats) is configured in the admin panel — not in `.env`.
@@ -54,8 +55,8 @@ HR / managers ──browser──HTTPS /admin/ + /api/v1 (session cookie)──�
 - **There is no chat bot.** The bot account from @BotFather just hosts the Mini App
   (its menu button opens it) and sends notifications. Messages sent *to* the bot are
   not read.
-- **Notifications** about a check-in or leave request go, with the photo and a **Review
-  in app** button, to the branch's review chat if it has one; otherwise to the company
+- **Notifications** about a check-in or leave request go, with the time, lateness,
+  location and a **Review in app** button, to the branch's review chat if it has one; otherwise to the company
   review chat if set; otherwise by DM to the employee's manager and branch admin — or,
   when the branch has neither, to HR and the owner. Employees are told when their
   attendance or leave is reviewed. Daily reports go to the company group and to each
@@ -104,7 +105,9 @@ Telegram only opens Mini Apps over HTTPS. Pick one:
 
 ### Photo storage
 
-Photos go to any S3-compatible bucket. For Cloudflare R2:
+The Mini App no longer takes photos; the bucket keeps the photos of records made while it
+did, and still accepts one if a client sends it. Any S3-compatible bucket works. For
+Cloudflare R2:
 
 ```
 STORAGE_ENDPOINT=<account-id>.r2.cloudflarestorage.com
@@ -181,11 +184,14 @@ Notes:
 
 ## Telegram Mini App (employees)
 
-`miniapp/` opens inside Telegram from the bot's menu button. Employees can check in and
-out with a live camera photo and optional GPS, see today's status and their monthly
-history, request and cancel leave, and view their profile. Managers and admins also get
-a **Team** tab to confirm or reject attendance (with the photo), approve leave and see
-today's team report — handy on the go; the admin panel has the full tools.
+`miniapp/` opens inside Telegram from the bot's menu button. The home screen has a
+**Check in** and a **Check out** tile side by side, each with its own time, on-time /
+late (or left-early) status, review state and button; checking in or out takes one tap
+(plus the location when the branch asks for it — there is no photo). Employees also see
+their monthly history, request and cancel leave — full days or a **half day** — and view
+their profile. Managers and admins also get a **Team** tab to confirm or reject
+attendance (each card shows where the person was), approve leave and see today's team
+report — handy on the go; the admin panel has the full tools.
 
 **Setup.** Set the Mini App URL in *Settings → Telegram*; the API points the bot's chat
 menu button at it (on save and on every start). Optional: in @BotFather → *Bot Settings →
@@ -201,13 +207,18 @@ just reopens the app). `/api/v1/app` exposes only what the app needs; reviewer r
 reuse the admin panel's handlers and permission checks. Panel sessions are not accepted
 there, and `initData` is not accepted on the panel's routes.
 
-**Photos.** Taken with a live camera preview (falling back to the device camera picker
-where a client's web view has no camera access), downsized to a ~1280px JPEG in the
-browser — which also strips EXIF metadata — and uploaded (8 MB cap). The API sniffs the
-type and blocks re-use of the same image by SHA-256.
+**Leave form.** The leave type is a searchable picker (a bottom sheet listing each type
+with its colour and days left). *Full day* takes a date range; *Half day* takes one date
+and the half, named and timed from that person's shift on that date: a day shift
+(09:00–17:30) splits into **Morning** 09:00–13:15 and **Afternoon** 13:15–17:30; a
+cross-day night shift (22:00–06:00) into **First half** 22:00–02:00 and **Second half**
+02:00–06:00 (next day). The form shows the shift and the balance left after the request.
+
+**No photos.** Check-ins have no camera or upload. Photos from earlier records are kept
+and still shown in the admin panel.
 
 **Location** uses Telegram's LocationManager (Bot API 8.0+) and falls back to browser
-geolocation, following the `gps_*` settings.
+geolocation, following the GPS rules of the person's branch (*Settings → Location (GPS)*).
 
 ## Branches
 
@@ -221,32 +232,93 @@ branch admin leaves the branch without one.
 A branch admin has HR's tools limited to their branch: they see and review only their
 branch's people, add staff (always into their branch, as staff or manager), correct
 attendance, approve leave and export their branch's reports. On **My branch** they can
-set the branch's own office location (for check-in GPS; otherwise the company office
-applies) and its Telegram chats — a group for its daily report and an optional review
-chat. They cannot rename or close the branch, change its admin, or see company settings.
+set the branch's Telegram chats — a group for its daily report and an optional review
+chat — and on *Settings → Location (GPS)* its office location and GPS rules. They cannot
+rename or close the branch, change its admin, or see company settings.
+
+**GPS per branch.** *Settings → Location (GPS)* shows the company default (ask for a
+location, require it, refuse check-ins outside the radius, office point) and every
+branch. A branch follows the company default until it gets its own rules; its own office
+point and radius always win over the company's. Paste a Google Maps / OpenStreetMap link
+or "lat, lng", or use the browser's current location.
+
+**Branch access.** *Administration → Branch assignment* limits system users to specific
+branches. A user with a company-wide role (*View all branches*) and **no branches ticked
+manages all branches**; ticking some limits them to those. A branch admin always has
+their own branch, and extra ticks add more. Team-only roles (managers) are not affected.
+Branch access limits staff lists, attendance, leave, balances, reports and the roster;
+what the user may do there comes from their role. Nobody can limit their own access.
 
 ## HR admin panel
 
 `admin/` is served at `/admin/` (the site root redirects there). The menu is grouped:
-**Attendance** (Records, Leave requests, Reports), **Schedules** (Weekly roster, Special
-schedules, Shifts, Holidays) and **Settings** (General, Audit log). What each role sees:
+**Attendance** (Records, Reports), **Leave** (Requests, Balances, Types), **Schedules**
+(Weekly roster, Special schedules, Shifts, Holidays), **Employees** (Employees,
+Departments, Positions), **Branches**, **Administration** (System users, Branch
+assignment, Role management) and **Settings** (General, Location (GPS), Audit log).
+Pages a role cannot use are hidden. What the built-in roles may do (change it on
+*Role management*):
 
 | Page | Owner (super admin) | HR admin | Branch admin | Manager |
 |---|---|---|---|---|
 | Dashboard — today's counts, each person's shift, who needs attention | all (branch filter) | all (branch filter) | their branch | their team |
-| Attendance › Records — filter, **Edit** on each row, detail with photos/GPS/review history (confirm/reject there) | ✓ | ✓ | their branch | their team |
+| Attendance › Records — check-in and check-out in their own columns (time, on time / late / early, review, inside/outside pin); **View** opens the full record (schedule, each side's status, location and reviewer, totals, review history; confirm/reject there); **Edit** on each row | ✓ | ✓ | their branch | their team |
 | ↳ add a record / edit times (reason required, audited) | ✓ | ✓ | their branch | — |
-| Attendance › Leave requests — approve/reject | ✓ | ✓ | their branch | their team |
+| Leave › Requests — all statuses by default; full / half day filter (half days show which half and its hours); approve/reject | ✓ | ✓ | their branch | their team |
+| Leave › Balances — entitlement, carried over, used, pending, left per type and year | edit | edit | view their branch | view team |
+| Leave › Types — allowance per year, paid, manual/automatic approval, limits | edit | edit | view | view |
 | Schedules › Weekly roster — shift per person per day, copy last week, Excel/CSV export | edit | edit | edit their branch | view team |
-| Schedules › Special schedules — date-range overrides (another shift, custom hours, days off) | ✓ | ✓ | their branch | view team |
+| Schedules › Special schedules — date-range overrides (another shift, custom hours, days off) for one or **several people at once** | ✓ | ✓ | their branch | view team |
 | Schedules › Shifts — hours, grace, work days, normal or cross-day (night) | edit | edit | view | view |
 | Schedules › Holidays | edit | view | view | view |
-| Employees — add, edit, link Telegram, set branch/manager/role, deactivate | ✓ | ✓ (not admins) | their branch | view team |
-| ↳ create panel logins, grant admin roles | ✓ | — | — | — |
+| Employees — add, edit, link Telegram, set branch/department/position/manager/role, deactivate; filter by department and position | ✓ | ✓ (not admins) | their branch | view team |
+| Employees › Departments, Positions — add, rename, delete unused | ✓ | ✓ | view | view |
+| Administration › System users — panel logins, role, status, reset password | ✓ | — | — | — |
+| Administration › Branch assignment · Role management | ✓ | — | — | — |
 | Branches — add/edit/close branches, assign branch admins | ✓ | — | My branch: office + Telegram | — |
 | Reports — period summary per employee, Excel/CSV export | ✓ | ✓ | their branch | their team |
-| Settings › General — Telegram, company, GPS, scheduled jobs | edit | view | — | — |
+| Settings › General — Telegram, company, scheduled jobs | edit | view | — | — |
+| Settings › Location (GPS) — company default + per-branch rules and office | edit | view | their branch | — |
 | Audit log | ✓ | — | — | — |
+
+**Roles.** A role is a set of permissions (*Administration → Role management*). The five
+built-in roles can be edited but not deleted; the owner (Super Admin) always has every
+permission, so nobody can be locked out. New roles can start from an existing one's
+permissions. Anyone whose role has a permission beyond their own attendance and leave can
+sign in to the panel; *Grant admin roles* is needed to give someone a role with admin
+powers. You cannot remove *Manage system users* from your own role, change your own role,
+or demote the last owner. Role changes apply within 30 seconds on every replica.
+
+**System users** (*Administration → System users*) are employees with a panel login:
+create one for an existing employee (email + password, and a role), change the email,
+role or status, reset the password, or remove the login (the employee stays).
+
+**Leave policy.** Each leave type has a yearly allowance (0 = not counted), paid or
+unpaid, **manual** or **automatic** approval, an optional maximum per request and minimum
+notice, and whether people may go over the allowance. A person's balance for a year is
+their entitlement (the type's allowance unless HR set their own) + days carried over −
+approved days; pending requests' days are reserved. Days count in the year a request
+starts. A request over the balance, the per-request maximum or inside the notice period
+is refused with a clear message; automatic types are approved on submit.
+
+**Half days.** A request is a full day (or range) or one half of a single working day
+(0.5 days off the balance). The half is cut from that day's shift at its midpoint, so it
+follows the person's work type: 09:00–17:30 gives 09:00–13:15 / 13:15–17:30, a night
+shift 22:00–06:00 gives 22:00–02:00 / 02:00–06:00 the next morning. The hours are saved
+on the request. Both halves of a date may be taken, but not the same half twice or a
+half next to a full day. An approved half day does not mark the day as leave: the person
+checks in for the other half, and late / early-leave minutes are measured against it
+(a morning off with a 09:00–17:30 shift means starting at 13:15). Approving one after the
+day was worked re-measures that day. Reports count half days as 0.5 leave days.
+
+**Departments and positions** are managed lists. Renaming a position renames it on every
+employee; a department or position still in use can't be deleted.
+
+**Special schedules** can be given to several people at once: tick them in the
+*Employees* picker (search a department or branch name, then *Tick all matches*). Each
+person gets their own row, so it can be edited or deleted for one person later. If
+anyone already has a special schedule on those dates, nothing is saved and the message
+names them.
 
 **Schedules.** What someone works on a date is decided in one place
 (`attendance.Planner`): a **special schedule** covering the date wins, then the **weekly
@@ -318,11 +390,13 @@ go run ./cmd/api seed-demo
 ```
 
 It adds three branches (Main branch, Siem Reap, Battambang) with a branch admin each, an
-HR admin, two managers, 17 employees and four weeks of attendance up to today — on time,
-late, early leave, absent and missing check-out days, with photos, GPS points and
-reviews (some still pending, one rejected) — plus approved, pending, rejected and
-cancelled leave requests, Cambodia's fixed-date public holidays, a morning and a night
-(cross-day) shift, a few weekly roster days and three special schedules. The command prints
+HR admin, a *Regional Supervisor* (a custom role) assigned to Siem Reap and Battambang
+only, two managers, 17 employees and four weeks of attendance up to today — on time,
+late, early leave, absent and missing check-out days, with GPS points and reviews (some
+still pending, one rejected) — plus approved, pending, rejected and cancelled leave
+requests (two of them half days: a night shift's first half and a day shift's afternoon), Cambodia's fixed-date public holidays, a morning and a night
+(cross-day) shift, a few weekly roster days, three special schedules, leave allowances
+(one person with a custom entitlement and carried-over days). The command prints
 the admin panel logins: all of them use the password `Demo@12345` (set `DEMO_PASSWORD`
 to choose another). If the database already has a super admin, that owner is kept and
 no demo owner is created.
@@ -338,12 +412,14 @@ database and run `migrate` and `seed-demo` again.
 | # | Rule | Where |
 |---|---|---|
 | 1–3 | One check-in and one check-out per day; no check-out without check-in | `attendance/service.go` (row lock + unique `(employee_id, work_date)`) |
-| — | A **rejected** check-in/out can be re-submitted with a new photo; history is kept (old review marked `SUPERSEDED`) | same |
-| 4–5 | Photo required; the same image can't be reused | `attendance/service.go` (SHA-256, migration `0002`) |
-| 6 | GPS: `gps_enabled`, `gps_required`, `gps_reject_outside`, office lat/lng/radius | `company_settings` |
+| — | A **rejected** check-in/out can be re-submitted; history is kept (old review marked `SUPERSEDED`); each submission keeps its own location | same (migration `0006`) |
+| 4–5 | No photo needed (the Mini App doesn't take one). A photo a client still sends is checked and can't be a re-used image | `attendance/service.go` (SHA-256, migration `0002`) |
+| 6 | GPS: `gps_enabled`, `gps_required`, `gps_reject_outside`, office lat/lng/radius; a branch may override each rule and its office | `company_settings`, `branches`, `attendance.GPSRulesFor` |
 | 7 | `confirmation_required=false` auto-confirms | `company_settings` |
-| 8–10 | Staff: self · Manager: assigned team (`manager_id`) · HR/Super admin: all. No self-review except super admin | `auth/permissions.go` |
-| 11 | Approving leave marks those working days `LEAVE`; check-in on a leave day is refused | `leave/service.go` |
+| 8–10 | Staff: self · Manager: assigned team (`manager_id`) · Branch admin: their branch (+ assigned) · company-wide roles: all, or only their assigned branches. No self-review except super admin | `auth/permissions.go`, `auth/roles.go` |
+| 11 | Approving leave marks those working days `LEAVE`; check-in on a leave day is refused. A **half day** marks nothing: the other half is worked, late/early measured against it | `leave/service.go`, `attendance/plan.go` (`Halves`, `WithHalfOff`) |
+| — | A half day is one working date; its hours are the first or second half of that day's shift (normal or cross-day). Two different halves of a date may both be taken | `leave/service.go` |
+| — | Leave can't exceed the balance (unless the type allows it), the per-request maximum or the notice period | `leave/policy.go` |
 | 12 | Days off (per shift, roster or special schedule) and holidays are never absent; nobody is absent before they joined | `report/service.go`, `attendance/plan.go` |
 | 13 | Late only after start + grace; then counted **from scheduled start** (09:15 with 10-min grace = 15 min late). Set grace to 0 for strict | `attendance/plan.go` |
 | 14 | Working minutes = check-out − check-in; early-leave minutes vs scheduled end (the next day for a cross-day shift) | `attendance/plan.go` |
@@ -378,25 +454,34 @@ Errors look like `{"error":{"code":"ALREADY_CHECKED_IN","message":"…"}}`. Date
 | Method & path | Permission | Notes |
 |---|---|---|
 | `POST /auth/login` · `GET /auth/me` · `POST /auth/logout` | — | login: 10/min/IP; `me` includes company name + timezone |
-| `GET /employees?q=&branch_id=&department_id=&status=&include_inactive=` · `GET /employees/:id` | scoped | `has_login` = has a panel login |
+| `GET /employees?q=&branch_id=&department_id=&position_id=&status=&include_inactive=` · `GET /employees/:id` | scoped | `has_login` = has a panel login |
 | `POST /employees` · `PUT /employees/:id` · `DELETE /employees/:id` | staff.manage | delete = deactivate |
-| `POST /employees/:id/user` | super admin | panel login |
+| `POST /employees/:id/user` | roles.assign_admin | panel login |
 | `GET /branches` · `GET /branches/:id` | scoped | company-wide users see all; others their own |
 | `POST /branches` · `PUT /branches/:id/admin {employee_id\|null}` | owner | assign / remove the branch admin |
-| `PUT /branches/:id` | owner, or that branch's admin | branch admins: office location + Telegram chats only |
-| `GET /departments` · `GET /work-schedules` | any | shifts, with how many staff use each |
+| `PUT /branches/:id` | owner, or that branch's admin | branch admins: office location, `gps` and Telegram chats only; `gps: {inherit}` or `{enabled, required, reject_outside}` |
+| `GET /departments` · `GET /positions` | any | `{id, name, employees}` |
+| `POST\|PUT /departments[/:id]` · `POST\|PUT /positions[/:id] {name}` · `DELETE …/:id` | staff.manage + all branches | in use → 409 |
+| `GET /roles` | any | roles with permissions and head counts |
+| `GET /roles/permissions` · `POST /roles` · `PUT /roles/:id` · `DELETE /roles/:id` | users.manage | `{name, description, permissions[]}`; built-in roles can't be deleted |
+| `GET /system-users` · `POST /system-users {employee_id, email, password, role}` · `PUT /system-users/:id {email?, status?, role?}` · `DELETE /system-users/:id` | users.manage | delete removes the login only |
+| `POST /system-users/:id/password {password}` · `PUT /system-users/:id/branches {branch_ids}` | users.manage | `branch_ids: []` = all branches |
+| `GET /work-schedules` | any | shifts, with how many staff use each |
 | `POST /work-schedules` · `PUT /work-schedules/:id` · `DELETE /work-schedules/:id` | schedules.manage (owner, HR) | `work_type` `NORMAL`\|`CROSS_DAY`; a shift in use or the default can't be deleted |
 | `GET /roster?from=&to=&branch_id=&department_id=&q=` | scoped | matrix: each person × day with the effective shift and its `source` (`DEFAULT`/`ROSTER`/`SPECIAL`), holidays, leave; ≤ 31 days |
 | `PUT /roster {items:[{employee_id,date,work_schedule_id\|off\|reset}]}` · `POST /roster/copy {from,to}` | staff.manage, scoped | ≤ 500 changes; copy repeats one week's entries onto another |
 | `GET /roster/export?format=xlsx\|csv&from=&to=…` | report.export | colour-coded sheet + shift list; audited |
 | `GET /schedule-overrides?when=active\|upcoming\|past&branch_id=&q=` | scoped | special schedules |
-| `POST /schedule-overrides` · `PUT /schedule-overrides/:id` · `DELETE /schedule-overrides/:id` | staff.manage, scoped | `kind` `SHIFT`\|`CUSTOM`\|`OFF`, `work_days`, `reason`; overlaps → 409 |
+| `POST /schedule-overrides` · `PUT /schedule-overrides/:id` · `DELETE /schedule-overrides/:id` | staff.manage, scoped | `kind` `SHIFT`\|`CUSTOM`\|`OFF`, `work_days`, `reason`; create takes `employee_ids: []` (≤ 300; or one `employee_id`) and returns `{items}` — all or nothing; overlaps → 409 naming who |
 | `GET /attendance?employee_id=&branch_id=&department_id=&from=&to=&status=&confirmation=&page=` | scoped | |
-| `GET /attendance/:id` · `GET /attendance/photos/:id` | scoped | photo streamed by the API |
+| `GET /attendance/:id` · `GET /attendance/photos/:id` | scoped | `{attendance, photos, schedule, holiday, leave}`: the day's expected hours (less a half day), approved leave, each review with its reviewer, location and photo; photos (older records) streamed by the API |
 | `POST /attendance` · `PUT /attendance/:id` | attendance.edit | manual create/edit, `reason` required |
 | `GET /attendance/pending` | reviewer | |
 | `POST /attendance/confirmations/:id/confirm` · `/reject {reason}` | reviewer | |
-| `GET /leave?status=&employee_id=&branch_id=&from=&to=` · `GET /leave/:id` · `GET /leave/types` · `GET /leave/pending` | scoped | |
+| `GET /leave?status=&day_type=FULL\|HALF&employee_id=&branch_id=&from=&to=` · `GET /leave/:id` · `GET /leave/types[?all=1]` · `GET /leave/pending` | scoped | `all=1` includes inactive types |
+| `POST /leave/types` · `PUT /leave/types/:id` · `DELETE /leave/types/:id` | leave.manage | `annual_days`, `is_paid`, `approval` `MANUAL`\|`AUTO`, `allow_exceed`, `max_days_per_request`, `min_notice_days`; a used type can only be deactivated |
+| `GET /leave/balances?year=&branch_id=&department_id=&q=` | scoped | `{types, items:[{employee…, balances:[{allocated, carried, used, pending, remaining, available, custom}]}]}` |
+| `PUT /leave/balances {employee_id, leave_type_id, year, allocated, carried, note}` · `DELETE /leave/balances?employee_id=&leave_type_id=&year=` | leave.manage | set / reset to the type's allowance |
 | `POST /leave/:id/approve` · `/reject {note}` | reviewer | |
 | `GET /reports/daily?date=&branch_id=` | scoped | counts + rows |
 | `GET /reports/summary?from=&to=&employee_id=&branch_id=&department_id=&status=` | scoped | rows + per-staff summaries + totals |
@@ -412,8 +497,9 @@ Errors look like `{"error":{"code":"ALREADY_CHECKED_IN","message":"…"}}`. Date
 |---|---|---|
 | `GET /me` | any employee | identity, profile, company settings |
 | `GET /attendance/today` · `GET /attendance/history?month=YYYY-MM` | self | |
-| `POST /attendance/check-in` · `/check-out` | self | multipart: `photo`, optional `latitude` `longitude` `accuracy` |
-| `GET /leave/types` · `GET /leave/mine` · `POST /leave/preview` · `POST /leave` · `POST /leave/:id/cancel` | self | |
+| `POST /attendance/check-in` · `/check-out` | self | form: optional `latitude` `longitude` `accuracy` (and an optional `photo`, no longer sent by the app) |
+| `GET /attendance/today` | self | also `half_leave` on a half day off (the schedule shown is the half still worked) |
+| `GET /leave/types` · `GET /leave/balances` · `GET /leave/mine` · `POST /leave/preview` · `POST /leave` · `POST /leave/:id/cancel` | self | body adds `day_type` `FULL`\|`FIRST_HALF`\|`SECOND_HALF`; preview returns `{days, balance, plan, problem}` — `plan` is the shift on the first date with its halves and work type, `problem` why it would be refused |
 | `GET /attendance/pending` · confirm/reject · `GET /leave/pending` · approve/reject · `GET /reports/daily` | reviewer | same handlers as the panel |
 | `GET /attendance/:id` · `GET /attendance/photos/:id` · `GET /leave/:id` | scoped | |
 
@@ -451,11 +537,13 @@ cd admin && npm run typecheck && npm run build
 ```
 
 The integration test creates and drops its own database and drives the real Mini App and
-admin panel APIs: initData validation, unregistered users, check-in/out with photo
-uploads and reviewer notifications, manager scope, double check-in/out, photo reuse,
-reject → re-submit, leave overlap/approval/leave-day blocking, day close (absent vs
-weekend), the daily report, panel login + session cookie + CSRF header, manual edit +
-audit, audit immutability, photo streaming, Excel export and deactivation.
+admin panel APIs: initData validation, unregistered users, check-in/out (with and
+without a photo) and reviewer notifications, manager scope, double check-in/out, photo
+reuse, reject → re-submit, leave overlap/approval/leave-day blocking, half days (shift
+halves, overlap rules, a morning off moving the start), special schedules for several
+people, day close (absent vs weekend), the daily report, panel login + session cookie +
+CSRF header, manual edit + audit, audit immutability, photo streaming, Excel export and
+deactivation.
 
 **First build:** run `go mod tidy` once in `backend/` and commit the resulting `go.sum`
 (the Dockerfile also runs it, verifying checksums against sum.golang.org).
