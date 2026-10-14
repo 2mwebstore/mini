@@ -26,6 +26,7 @@ const (
 	PermBranchReview     Permission = "branch.review"      // confirm attendance / approve leave in own branch
 	PermBranchSettings   Permission = "branch.settings"    // own branch's office location and Telegram chats
 	PermBranchesManage   Permission = "branches.manage"    // create branches, assign branch admins (owner)
+	PermSchedulesManage  Permission = "schedules.manage"   // define shifts (company-wide)
 )
 
 var rolePermissions = map[uint8][]Permission{
@@ -33,10 +34,11 @@ var rolePermissions = map[uint8][]Permission{
 	models.RoleManager: {PermAttendanceSelf, PermLeaveSelf, PermTeamView, PermTeamReview,
 		PermReportExport},
 	models.RoleHRAdmin: {PermAttendanceSelf, PermLeaveSelf, PermTeamView, PermTeamReview,
-		PermAllView, PermAllReview, PermAttendanceEdit, PermStaffManage, PermReportExport, PermSettingsView},
+		PermAllView, PermAllReview, PermAttendanceEdit, PermStaffManage, PermReportExport, PermSettingsView, PermSchedulesManage},
 	models.RoleSuperAdmin: {PermAttendanceSelf, PermLeaveSelf, PermTeamView, PermTeamReview,
 		PermAllView, PermAllReview, PermAttendanceEdit, PermStaffManage, PermReportExport,
-		PermSettingsView, PermSettingsEdit, PermAuditView, PermAssignAdminRoles, PermBranchSettings, PermBranchesManage},
+		PermSettingsView, PermSettingsEdit, PermAuditView, PermAssignAdminRoles, PermBranchSettings, PermBranchesManage,
+		PermSchedulesManage},
 	// A branch admin has HR powers limited to the one branch they are assigned to.
 	models.RoleBranchAdmin: {PermAttendanceSelf, PermLeaveSelf, PermTeamView, PermTeamReview,
 		PermBranchView, PermBranchReview, PermAttendanceEdit, PermStaffManage, PermReportExport, PermBranchSettings},

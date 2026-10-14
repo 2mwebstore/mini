@@ -14,7 +14,7 @@ const rows = computed(() => {
     { label: 'Department', value: p.department || '—' },
     { label: 'Position', value: p.position || '—' },
     { label: 'Role', value: p.role_name || auth.me?.role },
-    { label: 'Schedule', value: `${p.schedule.start} – ${p.schedule.end}` },
+    { label: 'Usual shift', value: `${p.schedule.name ? `${p.schedule.name} · ` : ''}${p.schedule.start} – ${p.schedule.end}${p.schedule.cross_day ? ' (next day)' : ''}` },
     { label: 'Work days', value: p.schedule.work_days.map(d => dayNames[d - 1]).join(', ') },
     { label: 'Grace period', value: `${p.schedule.grace_minutes} min` },
     { label: 'Telegram ID', value: telegramId ? String(telegramId) : '—' },

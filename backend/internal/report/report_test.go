@@ -51,7 +51,7 @@ func TestCSVInjectionAndBOM(t *testing.T) {
 	if !strings.Contains(s, `'=HYPERLINK`) {
 		t.Error("formula cells must be neutralised")
 	}
-	if !strings.Contains(s, "Employee ID,Employee Name,Branch,Department,Date,Check-In,Check-Out") {
+	if !strings.Contains(s, "Employee ID,Employee Name,Branch,Department,Date,Shift,Check-In,Check-Out") {
 		t.Error("unexpected header")
 	}
 }

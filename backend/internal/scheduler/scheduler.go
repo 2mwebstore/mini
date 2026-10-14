@@ -131,8 +131,9 @@ func (s *Scheduler) MissingCheckinAlert(ctx context.Context, date time.Time, st 
 	}
 	var all []string
 	byBranch := map[uint64][]string{}
+	now, loc := s.Now(), s.settings.Location(ctx)
 	for _, r := range rep.Rows {
-		if r.Status != report.DayNotYet {
+		if r.Status != report.DayNotYet || !shiftDue(r, date, now, loc) {
 			continue
 		}
 		line := fmt.Sprintf("👤 %s (%s)", telegram.Esc(r.FullName), telegram.Esc(r.EmployeeCode))
@@ -234,16 +235,29 @@ func (s *Scheduler) BackupCheck(ctx context.Context, _ time.Time, st *settings.S
 
 // CloseDay writes ABSENT records for scheduled employees with no check-in and no
 // approved leave, so history is explicit even if schedules change later.
+// shiftDue: the row's shift has started and its grace period is over by now.
+func shiftDue(r report.DayRow, date, now time.Time, loc *time.Location) bool {
+	if r.ShiftStart == "" {
+		return true
+	}
+	start, err := timeutil.At(date, r.ShiftStart, loc)
+	return err != nil || !now.Before(start.Add(time.Duration(r.ShiftGrace)*time.Minute))
+}
+
 func (s *Scheduler) CloseDay(ctx context.Context, date time.Time, _ *settings.Settings) error {
 	rep, err := s.dayReport(ctx, date)
 	if err != nil {
 		return err
 	}
 	var created []uint64
+	now, loc := s.Now(), s.settings.Location(ctx)
 	err = s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 		for _, r := range rep.Rows {
 			if r.AttendanceID != 0 || (r.Status != report.DayNotYet && r.Status != models.StatusAbsent && r.Status != models.StatusLeave) {
 				continue
+			}
+			if r.Status == report.DayNotYet && !shiftDue(r, date, now, loc) {
+				continue // e.g. a night shift starting after the day-close time: not absent yet
 			}
 			status := models.StatusAbsent
 			note := "No check-in recorded"

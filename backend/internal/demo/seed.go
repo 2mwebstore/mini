@@ -27,6 +27,7 @@ import (
 	"attendance/backend/internal/branch"
 	"attendance/backend/internal/employee"
 	"attendance/backend/internal/models"
+	"attendance/backend/internal/schedule"
 	"attendance/backend/internal/settings"
 	"attendance/backend/internal/storage"
 	"attendance/backend/internal/timeutil"
@@ -58,12 +59,15 @@ type Login struct {
 }
 
 type Summary struct {
-	Branches       []string
-	Employees      int
-	AttendanceDays int
-	LeaveRequests  int
-	Holidays       int
-	Logins         []Login
+	Branches         []string
+	Shifts           int // created (besides the default office hours)
+	RosterEntries    int
+	SpecialSchedules int
+	Employees        int
+	AttendanceDays   int
+	LeaveRequests    int
+	Holidays         int
+	Logins           []Login
 }
 
 type branchDef struct {
@@ -133,6 +137,7 @@ type seeder struct {
 	branch  map[string]*models.Branch   // by code
 	owner   *models.Employee
 	isHol   func(time.Time) bool
+	plan    *attendance.Planner // who works which shift, after roster and special schedules
 	photoNo uint64
 	sum     *Summary
 }
@@ -164,7 +169,7 @@ func Seed(ctx context.Context, d Deps, o Options) (*Summary, error) {
 		rng:  rand.New(rand.NewPCG(2026, 10)), // fixed: the same demo every time
 		emps: map[string]*models.Employee{}, branch: map[string]*models.Branch{}, sum: &Summary{},
 	}
-	steps := []func() error{s.ensureOwner, s.branches, s.staff, s.backdate, s.holidays, s.leave, s.attendance, s.audit}
+	steps := []func() error{s.ensureOwner, s.branches, s.staff, s.backdate, s.holidays, s.schedules, s.leave, s.attendance, s.audit}
 	for _, step := range steps {
 		if err := step(); err != nil {
 			return nil, err
@@ -316,6 +321,89 @@ func (s *seeder) holidays() error {
 	return err
 }
 
+// ---------- shifts, roster, special schedules ----------
+
+// schedules adds a morning and a night (cross-day) shift, gives two people those
+// as usual shifts, puts a few weekend / rotation days on the weekly roster and
+// creates special schedules (custom evening hours, a temporary night shift, days off).
+func (s *seeder) schedules() error {
+	svc := schedule.NewService(s.d.DB, s.d.Settings)
+	shift := func(name, start, end, wt string, grace int, days []int, color string) (*models.WorkSchedule, error) {
+		ws, err := svc.CreateShift(s.ctx, s.cli, schedule.ShiftInput{Name: &name, StartTime: &start, EndTime: &end, WorkType: &wt,
+			GraceMinutes: &grace, WorkDays: days, Color: &color})
+		if err != nil {
+			return nil, fmt.Errorf("shift %s: %w", name, err)
+		}
+		s.sum.Shifts++
+		return ws, nil
+	}
+	morning, err := shift("Morning Shift", "07:00", "15:00", models.WorkNormal, 10, []int{1, 2, 3, 4, 5, 6}, "#0891b2")
+	if err != nil {
+		return err
+	}
+	night, err := shift("Night Shift", "22:00", "06:00", models.WorkCrossDay, 15, []int{1, 2, 3, 4, 5, 6}, "#4f46e5")
+	if err != nil {
+		return err
+	}
+	for code, ws := range map[string]*models.WorkSchedule{"D-BB04": night, "D-SR04": morning} {
+		e := s.emps[code]
+		if err := s.d.DB.WithContext(s.ctx).Model(&models.Employee{}).Where("id = ?", e.ID).Update("work_schedule_id", ws.ID).Error; err != nil {
+			return err
+		}
+		e.WorkScheduleID, e.WorkSchedule = &ws.ID, ws
+	}
+
+	// Weekly roster around this week (Monday-based), past days included so history matches.
+	monday := s.today.AddDate(0, 0, 1-timeutil.ISOWeekday(s.today))
+	day := func(week, weekday int) string { return monday.AddDate(0, 0, week*7+weekday-1).Format("2006-01-02") }
+	on := func(code string, d string, ws *models.WorkSchedule) schedule.RosterItem {
+		it := schedule.RosterItem{EmployeeID: s.emps[code].ID, Date: d}
+		if ws == nil {
+			it.Off = true
+		} else {
+			it.WorkScheduleID = &ws.ID
+		}
+		return it
+	}
+	items := []schedule.RosterItem{
+		on("D-SR03", day(-1, 6), morning), on("D-SR03", day(0, 1), morning), on("D-SR03", day(0, 2), morning), on("D-SR03", day(0, 6), morning),
+		on("D-SR05", day(0, 5), nil), on("D-SR05", day(0, 6), morning),
+		on("D-PP07", day(0, 6), morning), on("D-PP07", day(1, 6), morning),
+		on("D-BB03", day(1, 1), night), on("D-BB03", day(1, 2), night),
+		on("D-SR03", day(1, 1), morning), on("D-SR03", day(1, 2), morning),
+	}
+	n, err := svc.SetRoster(s.ctx, s.cli, items)
+	if err != nil {
+		return fmt.Errorf("roster: %w", err)
+	}
+	s.sum.RosterEntries = n
+
+	str := func(v string) *string { return &v }
+	grace := 10
+	special := []schedule.OverrideInput{
+		{EmployeeID: s.emps["D-PP06"].ID, StartDate: s.workday(-5).Format("2006-01-02"), EndDate: s.workday(5).Format("2006-01-02"),
+			Kind: models.OverrideCustom, StartTime: str("13:00"), EndTime: str("21:00"), WorkType: str(models.WorkNormal), GraceMinutes: &grace,
+			WorkDays: []int{1, 2, 3, 4, 5}, Reason: "Release support — evening cover"},
+		{EmployeeID: s.emps["D-PP07"].ID, StartDate: day(2, 1), EndDate: day(2, 7), Kind: models.OverrideShift, WorkScheduleID: &night.ID,
+			WorkDays: []int{1, 2, 3, 4, 5}, Reason: "Covering the night help desk"},
+		{EmployeeID: s.emps["D-PP04"].ID, StartDate: day(3, 1), EndDate: day(3, 3), Kind: models.OverrideOff,
+			Reason: "Company training course in Bangkok"},
+	}
+	for _, in := range special {
+		if _, err := svc.CreateOverride(s.ctx, s.cli, in); err != nil {
+			return fmt.Errorf("special schedule: %w", err)
+		}
+		s.sum.SpecialSchedules++
+	}
+
+	ids := make([]uint64, 0, len(s.emps))
+	for _, e := range s.emps {
+		ids = append(ids, e.ID)
+	}
+	s.plan, err = attendance.LoadPlanner(s.ctx, s.d.DB, ids, s.today.AddDate(0, 0, -s.o.Days-7), s.today.AddDate(0, 0, 60))
+	return err
+}
+
 // ---------- leave ----------
 
 // workday returns the n-th working day (Mon–Fri, not a holiday) from today; n<0 goes back.
@@ -370,7 +458,7 @@ func (s *seeder) leave() error {
 				requested = s.o.Now.Add(-26 * time.Hour)
 			}
 			lr := models.LeaveRequest{EmployeeID: emp.ID, LeaveTypeID: typeID[p.typ], StartDate: start, EndDate: end,
-				Days: attendance.WorkingDays(emp, start, end, s.isHol), Reason: p.reason, Status: p.status, ReviewNote: p.note,
+				Days: s.plan.WorkingDays(emp, start, end, s.isHol), Reason: p.reason, Status: p.status, ReviewNote: p.note,
 				CreatedAt: requested.UTC(), UpdatedAt: requested.UTC()}
 			if r := s.emps[p.reviewer]; r != nil {
 				at := requested.Add(20 * time.Hour).UTC()
@@ -444,10 +532,13 @@ func (s *seeder) attendance() error {
 		for d := from; !d.After(s.today); d = d.AddDate(0, 0, 1) {
 			for i, p := range people {
 				e := s.emps[p.code]
-				sched := attendance.ScheduleFrom(e.WorkSchedule)
-				if !sched.IsWorkDay(d) || s.isHol(d) || have[fmt.Sprintf("%d|%s", e.ID, d.Format("2006-01-02"))] {
+				day := s.plan.Day(e, d) // usual shift, roster or special schedule
+				if !day.Work || s.isHol(d) || have[fmt.Sprintf("%d|%s", e.ID, d.Format("2006-01-02"))] {
 					continue
 				}
+				start, _ := day.StartAt(d, s.loc)
+				end, _ := day.EndAt(d, s.loc) // the next morning for a night shift
+				mins := func(t time.Time, m int) time.Time { return t.Add(time.Duration(m) * time.Minute) }
 				isToday, isYesterday := d.Equal(s.today), d.Equal(s.workday(-1))
 				r := s.rng.Float64()
 				if !isToday && r < 0.04 { // absent (what the day-close job would record)
@@ -459,22 +550,22 @@ func (s *seeder) attendance() error {
 					s.sum.AttendanceDays++
 					continue
 				}
-				in := s.at(d, sched.Start, -25+s.rng.IntN(35)) // 08:35–09:09
+				in := mins(start, -25+s.rng.IntN(35)) // 25 min early .. 9 min after the start
 				if r < 0.16 {
-					in = s.at(d, sched.Start, 12+s.rng.IntN(45)) // late: 09:12–09:56
+					in = mins(start, 12+s.rng.IntN(45)) // late: 12–56 min
 				}
 				if isToday && (in.After(nowLocal) || s.rng.Float64() < 0.12) {
 					continue // not checked in (yet)
 				}
 				var out *time.Time
 				switch o := s.rng.Float64(); {
-				case isToday && nowLocal.Before(s.at(d, sched.End, 0)):
+				case isToday && nowLocal.Before(end):
 				case o < 0.03 && !isToday: // forgot to check out
 				case o < 0.08:
-					t := s.at(d, sched.End, -15-s.rng.IntN(55)) // early leave
+					t := mins(end, -15-s.rng.IntN(55)) // early leave
 					out = &t
 				default:
-					t := s.at(d, sched.End, s.rng.IntN(50))
+					t := mins(end, s.rng.IntN(50))
 					out = &t
 				}
 				if out != nil && out.After(nowLocal) {
@@ -486,7 +577,7 @@ func (s *seeder) attendance() error {
 				if rejectOut {
 					rejectedDone = true
 				}
-				if err := s.record(tx, e, d, sched, in, out, pendingIn, pendingOut, rejectOut); err != nil {
+				if err := s.record(tx, e, d, day, in, out, pendingIn, pendingOut, rejectOut); err != nil {
 					return err
 				}
 				s.sum.AttendanceDays++
@@ -496,13 +587,8 @@ func (s *seeder) attendance() error {
 	})
 }
 
-func (s *seeder) at(d time.Time, hhmm string, minutes int) time.Time {
-	t, _ := timeutil.At(d, hhmm, s.loc)
-	return t.Add(time.Duration(minutes) * time.Minute)
-}
-
 // record writes one check-in (and maybe check-out) with photos, GPS points and reviews.
-func (s *seeder) record(tx *gorm.DB, e *models.Employee, d time.Time, sched attendance.Schedule, in time.Time, out *time.Time,
+func (s *seeder) record(tx *gorm.DB, e *models.Employee, d time.Time, sched attendance.Day, in time.Time, out *time.Time,
 	pendingIn, pendingOut, rejectOut bool) error {
 	inUTC := in.UTC()
 	a := models.Attendance{EmployeeID: e.ID, WorkDate: d, CheckInAt: &inUTC, LateMinutes: sched.LateMinutes(d, in, s.loc), Source: models.SourceTelegram}

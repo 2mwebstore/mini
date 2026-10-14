@@ -31,6 +31,7 @@ import (
 	"attendance/backend/internal/models"
 	"attendance/backend/internal/notification"
 	"attendance/backend/internal/report"
+	"attendance/backend/internal/schedule"
 	"attendance/backend/internal/scheduler"
 	"attendance/backend/internal/secret"
 	"attendance/backend/internal/settings"
@@ -143,7 +144,7 @@ func serve() error {
 	repSvc := report.NewService(db, st)
 
 	srv := httpapi.New(cfg, httpapi.Deps{DB: db, Redis: rdb, Store: store, Auth: authSvc, Settings: st, Employees: empSvc,
-		Branches: branch.NewService(db), Attendance: attSvc, Leave: leaveSvc, Reports: repSvc, Telegram: tg}).HTTPServer(cfg.HTTPAddr)
+		Branches: branch.NewService(db), Attendance: attSvc, Leave: leaveSvc, Reports: repSvc, Schedules: schedule.NewService(db, st), Telegram: tg}).HTTPServer(cfg.HTTPAddr)
 	sched := scheduler.New(db, rdb, st, repSvc, notifier)
 	sched.BackupStatusFile = cfg.BackupStatusFile
 	go sched.Run(ctx)
@@ -258,8 +259,10 @@ func seedDemo(args []string) error {
 	if err != nil {
 		return err
 	}
-	fmt.Printf("Demo data added: %d branches (%s), %d employees, %d attendance days, %d leave requests, %d new holidays.\n\n",
-		len(sum.Branches), strings.Join(sum.Branches, ", "), sum.Employees, sum.AttendanceDays, sum.LeaveRequests, sum.Holidays)
+	fmt.Printf("Demo data added: %d branches (%s), %d employees, %d attendance days, %d leave requests, %d new holidays,\n"+
+		"%d extra shifts (incl. a night shift), %d roster entries, %d special schedules.\n\n",
+		len(sum.Branches), strings.Join(sum.Branches, ", "), sum.Employees, sum.AttendanceDays, sum.LeaveRequests, sum.Holidays,
+		sum.Shifts, sum.RosterEntries, sum.SpecialSchedules)
 	fmt.Println("Admin panel logins:")
 	for _, l := range sum.Logins {
 		p := pw

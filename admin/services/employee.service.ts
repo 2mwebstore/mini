@@ -1,4 +1,4 @@
-import type { Department, Employee, EmployeeInput, Items, WorkSchedule } from '~/types/api'
+import type { Department, Employee, EmployeeInput, Items } from '~/types/api'
 import { api } from './api'
 
 export const employeeService = {
@@ -10,5 +10,4 @@ export const employeeService = {
   deactivate: (id: number) => api.del(`/employees/${id}`),
   createLogin: (id: number, email: string, password: string) => api.post(`/employees/${id}/user`, { email, password }),
   departments: () => api.get<Items<Department>>('/departments').then(r => r.items ?? []),
-  schedules: () => api.get<Items<WorkSchedule>>('/work-schedules').then(r => r.items ?? []),
 }

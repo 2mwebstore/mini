@@ -85,3 +85,59 @@ export const roleLabels: Record<RoleCode, string> = {
 }
 
 export const typeLabel = (t: string) => (t === 'CHECK_IN' ? 'Check-in' : 'Check-out')
+
+// ---------- shifts ----------
+
+export const weekdayShort = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'] as const
+
+/** "22:00–06:00 (+1)" — the (+1) marks a cross-day (night) shift ending the next day. */
+export function shiftHours(start?: string | null, end?: string | null, crossDay?: boolean): string {
+  if (!start || !end) return ''
+  return `${start}–${end}${crossDay ? ' (+1)' : ''}`
+}
+
+/** "1,2,3,4,5" -> [1,2,3,4,5] (ISO weekdays, 1 = Monday). */
+export function parseWorkDays(csv: string | null | undefined): number[] {
+  return (csv ?? '').split(',').map(Number).filter(d => d >= 1 && d <= 7)
+}
+
+/** [1,2,3,4,5] -> "Mon–Fri"; other sets as a list ("Mon, Wed, Sat"). */
+export function workDaysLabel(days: number[]): string {
+  const s = [...new Set(days)].sort((a, b) => a - b)
+  if (s.length === 7) return 'Every day'
+  if (s.length > 2 && s.every((d, i) => i === 0 || d === s[i - 1]! + 1)) return `${weekdayShort[s[0]! - 1]}–${weekdayShort[s[s.length - 1]! - 1]}`
+  return s.map(d => weekdayShort[d - 1]).join(', ')
+}
+
+/** ISO weekday of a YYYY-MM-DD (1 = Monday). */
+export function isoWeekday(day: string): number {
+  return ((new Date(`${day.slice(0, 10)}T00:00:00Z`).getUTCDay() + 6) % 7) + 1
+}
+
+/** YYYY-MM-DD plus n days. */
+export function addDays(day: string, n: number): string {
+  const d = new Date(`${day.slice(0, 10)}T00:00:00Z`)
+  d.setUTCDate(d.getUTCDate() + n)
+  return d.toISOString().slice(0, 10)
+}
+
+/** Monday of the week containing day. */
+export function mondayOf(day: string): string {
+  return addDays(day, 1 - isoWeekday(day))
+}
+
+/** True when a check-out happened on a later calendar day than the work date (night shift). */
+export function nextDay(workDate: string, at: string | null | undefined, timeZone: string): boolean {
+  if (!at) return false
+  return todayISOAt(at, timeZone) > workDate.slice(0, 10)
+}
+
+function todayISOAt(iso: string, timeZone: string): string {
+  return new Intl.DateTimeFormat('en-CA', { year: 'numeric', month: '2-digit', day: '2-digit', timeZone }).format(new Date(iso))
+}
+
+/** "20 Oct" (calendar dates, no year). */
+export function formatDayMonth(iso: string | null | undefined): string {
+  if (!iso) return '—'
+  return new Intl.DateTimeFormat('en-GB', { day: '2-digit', month: 'short', timeZone: 'UTC' }).format(new Date(iso))
+}

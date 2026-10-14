@@ -15,6 +15,7 @@ import (
 	"attendance/backend/internal/employee"
 	"attendance/backend/internal/leave"
 	"attendance/backend/internal/report"
+	"attendance/backend/internal/schedule"
 	"attendance/backend/internal/settings"
 	"attendance/backend/internal/storage"
 	"attendance/backend/internal/telegram"
@@ -36,6 +37,7 @@ type Deps struct {
 	Attendance *attendance.Service
 	Leave      *leave.Service
 	Reports    *report.Service
+	Schedules  *schedule.Service
 	Telegram   *telegram.Client // verifies bot tokens and updates the bot's menu button
 }
 
@@ -51,12 +53,13 @@ type Server struct {
 	attendance *attendance.Service
 	leave      *leave.Service
 	reports    *report.Service
+	schedules  *schedule.Service
 	tg         *telegram.Client
 }
 
 func New(cfg *config.Config, d Deps) *Server {
 	return &Server{cfg: cfg, db: d.DB, rdb: d.Redis, store: d.Store, auth: d.Auth, settings: d.Settings, employees: d.Employees,
-		branches: d.Branches, attendance: d.Attendance, leave: d.Leave, reports: d.Reports, tg: d.Telegram}
+		branches: d.Branches, attendance: d.Attendance, leave: d.Leave, reports: d.Reports, schedules: d.Schedules, tg: d.Telegram}
 }
 
 func (s *Server) Router() *gin.Engine {
@@ -105,7 +108,18 @@ func (s *Server) Router() *gin.Engine {
 	api.PUT("/branches/:id", s.updateBranch) // owner, or the branch's own admin (ops fields only)
 	api.PUT("/branches/:id/admin", require(auth.PermBranchesManage), s.assignBranchAdmin)
 	api.GET("/departments", s.listDepartments)
-	api.GET("/work-schedules", s.listSchedules)
+	api.GET("/work-schedules", s.listShifts)
+	api.POST("/work-schedules", require(auth.PermSchedulesManage), s.createShift)
+	api.PUT("/work-schedules/:id", require(auth.PermSchedulesManage), s.updateShift)
+	api.DELETE("/work-schedules/:id", require(auth.PermSchedulesManage), s.deleteShift)
+	api.GET("/roster", s.getRoster)
+	api.PUT("/roster", require(auth.PermStaffManage), s.setRoster)
+	api.POST("/roster/copy", require(auth.PermStaffManage), s.copyRoster)
+	api.GET("/roster/export", require(auth.PermReportExport), rateLimit(s.rdb, "export", 20, time.Minute, byActor), s.exportRoster)
+	api.GET("/schedule-overrides", s.listOverrides)
+	api.POST("/schedule-overrides", require(auth.PermStaffManage), s.createOverride)
+	api.PUT("/schedule-overrides/:id", require(auth.PermStaffManage), s.updateOverride)
+	api.DELETE("/schedule-overrides/:id", require(auth.PermStaffManage), s.deleteOverride)
 
 	api.GET("/attendance", s.listAttendance)
 	api.POST("/attendance", require(auth.PermAttendanceEdit), s.manualAttendance)

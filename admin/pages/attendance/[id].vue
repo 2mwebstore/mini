@@ -3,9 +3,6 @@ import { attendanceService } from '~/services/attendance.service'
 import { useAuthStore } from '~/stores/auth'
 import type { Confirmation } from '~/types/api'
 import { confirmationStatus, dayStatus, formatClock, formatDate, formatDateTime, formatMinutes, typeLabel } from '~/utils/format'
-import { optionsFrom } from '~/utils/options'
-
-const statusOptions = optionsFrom(dayStatus, ['PRESENT', 'LATE', 'EARLY_LEAVE', 'ABSENT', 'LEAVE', 'HOLIDAY'])
 
 const auth = useAuthStore()
 const route = useRoute()
@@ -31,22 +28,7 @@ async function reject(reason: string) {
   }
 }
 
-// ---------- manual correction ----------
-const clock24 = (iso: string | null | undefined) => (iso ? formatClock(iso, tz) : '')
-const edit = reactive({ open: false, check_in: '', check_out: '', status: '', reason: '' })
-function openEdit() {
-  Object.assign(edit, { open: true, check_in: clock24(att.value?.check_in_at), check_out: clock24(att.value?.check_out_at), status: '', reason: '' })
-}
-async function saveEdit() {
-  const ok = await run('edit', () =>
-    attendanceService.edit(id, { check_in: edit.check_in || undefined, check_out: edit.check_out || undefined, status: edit.status || undefined, reason: edit.reason.trim() }),
-  'Attendance updated')
-  if (ok) {
-    edit.open = false
-    detail.load()
-  }
-}
-const editOpen = computed({ get: () => edit.open, set: v => (edit.open = v) })
+const editOpen = ref(false)
 const mapUrl = (lat: number, lng: number) => `https://www.openstreetmap.org/?mlat=${lat}&mlon=${lng}#map=18/${lat}/${lng}`
 </script>
 
@@ -56,7 +38,7 @@ const mapUrl = (lat: number, lng: number) => `https://www.openstreetmap.org/?mla
     <StateView :loading="detail.loading.value && !att" :error="detail.error.value" @retry="detail.load">
       <template v-if="att">
         <PageHeader class="mt-3" :title="att.employee?.full_name ?? 'Attendance'" :subtitle="`${att.employee?.employee_code} · ${formatDate(att.work_date, true)}`">
-          <AppButton v-if="auth.can('attendance.edit')" variant="secondary" @click="openEdit">Correct times</AppButton>
+          <AppButton v-if="auth.can('attendance.edit')" variant="secondary" @click="editOpen = true">Edit</AppButton>
         </PageHeader>
 
         <div class="grid gap-4 lg:grid-cols-3">
@@ -141,22 +123,6 @@ const mapUrl = (lat: number, lng: number) => `https://www.openstreetmap.org/?mla
       @submit="reject"
     />
 
-    <AppModal v-model="editOpen" title="Correct attendance">
-      <form id="edit-form" class="grid gap-3 sm:grid-cols-2" @submit.prevent="saveEdit">
-        <FormField label="Check in" for="e-in" :hint="`Company time (${tz})`"><input id="e-in" v-model="edit.check_in" type="time" class="input" /></FormField>
-        <FormField label="Check out" for="e-out"><input id="e-out" v-model="edit.check_out" type="time" class="input" /></FormField>
-        <FormField label="Status" for="e-status" class="sm:col-span-2" hint="Automatic derives late / early leave from the times.">
-          <SearchSelect id="e-status" v-model="edit.status" :options="statusOptions" empty-label="Automatic" />
-        </FormField>
-        <FormField label="Reason (audited)" for="e-reason" class="sm:col-span-2">
-          <textarea id="e-reason" v-model="edit.reason" class="input" rows="2" maxlength="500" required />
-        </FormField>
-      </form>
-      <p class="mt-3 text-xs text-muted">Saving marks the record as confirmed by you.</p>
-      <template #footer>
-        <AppButton variant="secondary" @click="edit.open = false">Cancel</AppButton>
-        <AppButton type="submit" form="edit-form" :loading="busy === 'edit'">Save</AppButton>
-      </template>
-    </AppModal>
+    <AttendanceEditModal v-model="editOpen" :record="att ?? null" @saved="detail.load()" />
   </div>
 </template>

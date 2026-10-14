@@ -2,7 +2,7 @@
 import { useAuthStore } from '~/stores/auth'
 import { useLookupsStore } from '~/stores/lookups'
 import type { Employee, EmployeeInput, EmployeeStatus, RoleCode } from '~/types/api'
-import { employeeStatus, isoDay, roleLabels } from '~/utils/format'
+import { employeeStatus, isoDay, roleLabels, shiftHours } from '~/utils/format'
 import { optionsFrom, type SelectOption } from '~/utils/options'
 
 // Create/edit form for an employee. Emits only the fields the API should apply.
@@ -50,7 +50,7 @@ const activeBranches = computed(() => (lookups.branches ?? []).filter(b => b.sta
 const managers = computed(() => (lookups.employees ?? []).filter(m => !m.deleted_at && m.id !== e?.id))
 const branchOptions = computed((): SelectOption[] => activeBranches.value.map(b => ({ value: String(b.id), label: b.name })))
 const scheduleOptions = computed((): SelectOption[] =>
-  (lookups.schedules ?? []).map(s => ({ value: String(s.id), label: s.name, sub: `${s.start_time}–${s.end_time}` })),
+  (lookups.schedules ?? []).map(s => ({ value: String(s.id), label: s.name, sub: shiftHours(s.start_time, s.end_time, s.work_type === 'CROSS_DAY') })),
 )
 const managerOptions = computed((): SelectOption[] => managers.value.map(m => ({ value: String(m.id), label: m.full_name, sub: m.employee_code })))
 const roleOptions = computed(() => optionsFrom(roleLabels, roles.value))
@@ -111,8 +111,8 @@ function submit() {
     <FormField label="Phone" for="emp-phone"><input id="emp-phone" v-model="form.phone" class="input" type="tel" maxlength="30" /></FormField>
     <FormField label="Email" for="emp-email"><input id="emp-email" v-model="form.email" class="input" type="email" maxlength="150" /></FormField>
     <FormField label="Join date" for="emp-join"><input id="emp-join" v-model="form.join_date" class="input" type="date" /></FormField>
-    <FormField label="Work schedule" for="emp-sched">
-      <SearchSelect id="emp-sched" v-model="form.work_schedule_id" :options="scheduleOptions" :empty-label="e ? 'Unchanged' : 'Default schedule'" />
+    <FormField label="Usual shift" for="emp-sched" hint="Change single days on the weekly roster, or a date range with a special schedule.">
+      <SearchSelect id="emp-sched" v-model="form.work_schedule_id" :options="scheduleOptions" :empty-label="e ? 'Unchanged' : 'Default shift'" />
     </FormField>
     <FormField label="Manager" for="emp-mgr" hint="The manager reviews this person's attendance and leave.">
       <SearchSelect id="emp-mgr" v-model="form.manager_id" :options="managerOptions" empty-label="No manager" />

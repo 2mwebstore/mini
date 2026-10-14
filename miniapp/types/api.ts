@@ -30,7 +30,7 @@ export interface Profile {
   department: string
   branch: string
   role_name: string
-  schedule: { start: string; end: string; grace_minutes: number; work_days: number[] }
+  schedule: { name: string; start: string; end: string; cross_day: boolean; grace_minutes: number; work_days: number[] }
 }
 
 export interface CompanySettings {
@@ -84,6 +84,9 @@ export interface TodayStatus {
   holiday?: string
   schedule_start: string
   schedule_end: string
+  cross_day: boolean // the shift ends the next day (night shift); date is the day it started
+  shift_name: string
+  special?: string // reason of a special schedule in force
   grace_minutes: number
   attendance: Attendance | null
   check_in: Precheck

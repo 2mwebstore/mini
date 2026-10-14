@@ -104,6 +104,61 @@ func latestConfirmation(confs []models.AttendanceConfirmation, typ string) *mode
 	return latest
 }
 
+// ---------- which work date an event belongs to ----------
+
+const (
+	// A night shift's check-out still counts for it until this long after it ends.
+	nightCheckoutWindow = 8 * time.Hour
+	// A check-in this close to today's own shift is for today, even while
+	// yesterday's night shift has not ended yet.
+	earlyCheckinWindow = 2 * time.Hour
+)
+
+// shiftFor decides the work date of a check-in/out made at now, and that date's
+// schedule. Normally today; but a night shift (cross-day) that started yesterday
+// still owns a late check-in made before it ends, and its check-out until a few
+// hours after it ends.
+func (s *Service) shiftFor(ctx context.Context, db *gorm.DB, emp *models.Employee, now time.Time, loc *time.Location, typ string) (time.Time, Day, error) {
+	today := timeutil.DateOf(now, loc)
+	yday := today.AddDate(0, 0, -1)
+	plan, err := LoadPlanner(ctx, db, []uint64{emp.ID}, yday, today)
+	if err != nil {
+		return today, Day{}, err
+	}
+	td := plan.Day(emp, today)
+	y := plan.Day(emp, yday)
+	if !y.Work || !y.CrossDay || (typ != models.TypeCheckIn && typ != models.TypeCheckOut) {
+		return today, td, nil
+	}
+	end, err := y.EndAt(yday, loc)
+	if err != nil {
+		return today, td, nil
+	}
+	var att models.Attendance
+	err = db.WithContext(ctx).Preload("Confirmations").Where("employee_id = ? AND work_date = ?", emp.ID, yday).First(&att).Error
+	found := err == nil
+	if err != nil && !errors.Is(err, gorm.ErrRecordNotFound) {
+		return today, td, err
+	}
+	switch typ {
+	case models.TypeCheckOut:
+		if found && checkOutBlocker(true, &att) == nil && now.Before(end.Add(nightCheckoutWindow)) {
+			return yday, y, nil
+		}
+	case models.TypeCheckIn:
+		if !now.Before(end) || checkInBlocker(found, &att) != nil || s.onApprovedLeave(ctx, db, emp.ID, yday) {
+			break
+		}
+		if td.Work {
+			if start, err := td.StartAt(today, loc); err == nil && !now.Before(start.Add(-earlyCheckinWindow)) {
+				break // early for today's shift rather than very late for last night's
+			}
+		}
+		return yday, y, nil
+	}
+	return today, td, nil
+}
+
 // ---------- precheck ----------
 
 func (s *Service) Precheck(ctx context.Context, actor *auth.Actor, typ string) (*PrecheckResult, error) {
@@ -115,7 +170,10 @@ func (s *Service) Precheck(ctx context.Context, actor *auth.Actor, typ string) (
 		return nil, err
 	}
 	res := &PrecheckResult{Allowed: true, NeedGPS: st.GPSEnabled, GPSRequired: st.GPSRequired}
-	date := timeutil.DateOf(s.Now(), st.Location)
+	date, _, err := s.shiftFor(ctx, s.db, &actor.Employee, s.Now(), st.Location, typ)
+	if err != nil {
+		return nil, err
+	}
 	var att models.Attendance
 	err = s.db.WithContext(ctx).Preload("Confirmations").Where("employee_id = ? AND work_date = ?", actor.ID(), date).First(&att).Error
 	found := err == nil
@@ -144,13 +202,18 @@ func (s *Service) Precheck(ctx context.Context, actor *auth.Actor, typ string) (
 	return res, nil
 }
 
-// TodayStatus is the employee's own day at a glance (Mini App home screen).
+// TodayStatus is the employee's own day at a glance (Mini App home screen). Date
+// is the work date of the shift in progress: yesterday's while a night shift that
+// started yesterday is still running or waiting for its check-out.
 type TodayStatus struct {
 	Date         time.Time          `json:"date"`
 	WorkDay      bool               `json:"work_day"`
 	Holiday      string             `json:"holiday,omitempty"`
 	ScheduleFrom string             `json:"schedule_start"`
 	ScheduleTo   string             `json:"schedule_end"`
+	CrossDay     bool               `json:"cross_day"` // the shift ends the next day
+	ShiftName    string             `json:"shift_name"`
+	Special      string             `json:"special,omitempty"` // reason of a special schedule in force
 	GraceMinutes int                `json:"grace_minutes"`
 	Attendance   *models.Attendance `json:"attendance"` // nil until something is recorded
 	CheckIn      *PrecheckResult    `json:"check_in"`
@@ -165,9 +228,24 @@ func (s *Service) Today(ctx context.Context, actor *auth.Actor) (*TodayStatus, e
 	if err != nil {
 		return nil, err
 	}
-	date := timeutil.DateOf(s.Now(), st.Location)
-	sched := ScheduleFrom(actor.Employee.WorkSchedule)
-	out := &TodayStatus{Date: date, WorkDay: sched.IsWorkDay(date), ScheduleFrom: sched.Start, ScheduleTo: sched.End, GraceMinutes: sched.GraceMinutes}
+	now := s.Now()
+	date, day, err := s.shiftFor(ctx, s.db, &actor.Employee, now, st.Location, models.TypeCheckOut)
+	if err != nil {
+		return nil, err
+	}
+	if today := timeutil.DateOf(now, st.Location); date.Equal(today) {
+		if date, day, err = s.shiftFor(ctx, s.db, &actor.Employee, now, st.Location, models.TypeCheckIn); err != nil {
+			return nil, err
+		}
+	}
+	out := &TodayStatus{Date: date, WorkDay: day.Work, ScheduleFrom: day.Start, ScheduleTo: day.End, CrossDay: day.CrossDay,
+		ShiftName: day.ShiftName, GraceMinutes: day.Grace}
+	if day.Source == PlanSpecial {
+		out.Special = day.Note
+		if out.Special == "" {
+			out.Special = "Special schedule"
+		}
+	}
 	if hol, name := s.isHoliday(ctx, date); hol {
 		out.WorkDay, out.Holiday = false, name
 	}
@@ -257,9 +335,11 @@ func (s *Service) submit(ctx context.Context, actor *auth.Actor, typ string, in 
 	}
 	loc := st.Location
 	now := s.Now()
-	date := timeutil.DateOf(now, loc)
 	emp := actor.Employee
-	sched := ScheduleFrom(emp.WorkSchedule)
+	date, day, err := s.shiftFor(ctx, s.db, &emp, now, loc, typ)
+	if err != nil {
+		return nil, err
+	}
 
 	// --- location policy (a branch may have its own office location) ---
 	officeLat, officeLng, radius := st.OfficeLatitude, st.OfficeLongitude, st.AllowedRadiusMeters
@@ -321,7 +401,7 @@ func (s *Service) submit(ctx context.Context, actor *auth.Actor, typ string, in 
 		if err != nil && !errors.Is(err, gorm.ErrRecordNotFound) {
 			return err
 		}
-		scheduled := sched.IsWorkDay(date)
+		scheduled := day.Work
 		if hol, _ := s.isHoliday(ctx, date); hol {
 			scheduled = false
 		}
@@ -337,7 +417,7 @@ func (s *Service) submit(ctx context.Context, actor *auth.Actor, typ string, in 
 			res.Resubmission = found && att.CheckInAt != nil
 			late := 0
 			if scheduled {
-				late = sched.LateMinutes(date, now, loc)
+				late = day.LateMinutes(date, now, loc)
 			}
 			t := now
 			att.EmployeeID, att.WorkDate, att.CheckInAt, att.LateMinutes = emp.ID, date, &t, late
@@ -371,7 +451,7 @@ func (s *Service) submit(ctx context.Context, actor *auth.Actor, typ string, in 
 			att.WorkingMinutes = WorkingMinutes(*att.CheckInAt, now)
 			att.EarlyLeaveMinutes = 0
 			if scheduled {
-				att.EarlyLeaveMinutes = sched.EarlyLeaveMinutes(date, now, loc)
+				att.EarlyLeaveMinutes = day.EarlyLeaveMinutes(date, now, loc)
 			}
 			att.Status = DeriveStatus(att.LateMinutes, att.EarlyLeaveMinutes)
 			if err := tx.Model(&models.AttendanceConfirmation{}).

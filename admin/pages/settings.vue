@@ -2,7 +2,7 @@
 import { settingsService } from '~/services/settings.service'
 import { useAuthStore } from '~/stores/auth'
 import type { CompanySettings, SettingsUpdate } from '~/types/api'
-import { formatDate, formatDateTime } from '~/utils/format'
+import { formatDateTime } from '~/utils/format'
 
 definePageMeta({ permission: 'settings.view' })
 
@@ -42,20 +42,6 @@ const removeToken = () => apply({ telegram_bot_token: '' }, 'Bot token removed')
 const zones: string[] = typeof Intl.supportedValuesOf === 'function' ? Intl.supportedValuesOf('timeZone') : []
 const zoneOptions = zones.map(z => ({ value: z, label: z.replaceAll('_', ' ') }))
 
-// ---------- holidays ----------
-const year = ref(new Date().getFullYear())
-const holidays = useResource(() => settingsService.holidays(year.value))
-watch(year, () => holidays.load())
-const newHoliday = reactive({ date: '', name: '' })
-async function addHoliday() {
-  if (await run('holiday', () => settingsService.addHoliday(newHoliday.date, newHoliday.name.trim()), 'Holiday added')) {
-    Object.assign(newHoliday, { date: '', name: '' })
-    holidays.load()
-  }
-}
-async function removeHoliday(id: number) {
-  if (await run(`h${id}`, () => settingsService.deleteHoliday(id), 'Holiday removed')) holidays.load()
-}
 </script>
 
 <template>
@@ -152,29 +138,9 @@ async function removeHoliday(id: number) {
       </p>
     </StateView>
 
-    <section class="card mt-6 p-5">
-      <div class="mb-4 flex flex-wrap items-center justify-between gap-3">
-        <h2 class="text-sm font-semibold">Public holidays</h2>
-        <div class="flex items-center gap-2">
-          <AppButton size="sm" variant="secondary" aria-label="Previous year" @click="year--">‹</AppButton>
-          <span class="tabular-nums text-sm font-medium">{{ year }}</span>
-          <AppButton size="sm" variant="secondary" aria-label="Next year" @click="year++">›</AppButton>
-        </div>
-      </div>
-      <p class="mb-3 text-sm text-muted">Nobody is marked absent on a holiday, and leave does not count it.</p>
-      <form v-if="canEdit" class="mb-4 flex flex-wrap items-end gap-2" @submit.prevent="addHoliday">
-        <FormField label="Date" for="h-date"><input id="h-date" v-model="newHoliday.date" class="input" type="date" required /></FormField>
-        <FormField label="Name" for="h-name" class="min-w-48 flex-1"><input id="h-name" v-model="newHoliday.name" class="input" required maxlength="150" /></FormField>
-        <AppButton type="submit" :loading="busy === 'holiday'">Add holiday</AppButton>
-      </form>
-      <StateView :loading="holidays.loading.value" :error="holidays.error.value" :empty="holidays.data.value?.length === 0" :empty-text="`No holidays in ${year}.`" @retry="holidays.load">
-        <ul class="divide-y divide-border">
-          <li v-for="h in holidays.data.value ?? []" :key="h.id" class="flex items-center justify-between gap-3 py-2 text-sm">
-            <span><span class="inline-block w-32 tabular-nums text-muted">{{ formatDate(h.date, true) }}</span> {{ h.name }}</span>
-            <AppButton v-if="canEdit" size="sm" variant="ghost" :loading="busy === `h${h.id}`" :aria-label="`Remove ${h.name}`" @click="removeHoliday(h.id)">Remove</AppButton>
-          </li>
-        </ul>
-      </StateView>
-    </section>
+    <p class="mt-6 text-sm text-muted">
+      Shifts, the weekly roster, special schedules and public holidays are under
+      <NuxtLink to="/schedules/shifts" class="link">Schedules</NuxtLink>.
+    </p>
   </div>
 </template>

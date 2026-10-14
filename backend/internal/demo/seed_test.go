@@ -147,11 +147,30 @@ func TestSeed(t *testing.T) {
 	}
 	var rows []models.Attendance
 	db.Preload("Confirmations").Preload("Photos").Preload("Locations").Find(&rows)
-	var pending, rejected, absent, late, leave, todayRows int
+	var staff []models.Employee
+	db.Find(&staff)
+	byID := map[uint64]*models.Employee{}
+	ids := []uint64{}
+	for i := range staff {
+		byID[staff[i].ID] = &staff[i]
+		ids = append(ids, staff[i].ID)
+	}
+	plan, err := attendance.LoadPlanner(ctx, db, ids, today.AddDate(0, -2, 0), today.AddDate(0, 2, 0))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var pending, rejected, absent, late, leave, todayRows, overnight int
 	for _, a := range rows {
 		day := a.WorkDate.Format("2006-01-02")
-		if wd := a.WorkDate.Weekday(); wd == time.Saturday || wd == time.Sunday || isHol(a.WorkDate) {
-			t.Errorf("attendance %d on non-working day %s", a.ID, day)
+		planned := plan.Day(byID[a.EmployeeID], a.WorkDate)
+		if !planned.Work || isHol(a.WorkDate) {
+			t.Errorf("attendance %d on non-working day %s (%+v)", a.ID, day, planned)
+		}
+		if planned.CrossDay && a.CheckOutAt != nil {
+			if a.CheckOutAt.In(loc).Day() == a.WorkDate.Day() {
+				t.Errorf("night shift %d %s: check-out %s should be the next morning", a.ID, day, a.CheckOutAt.In(loc))
+			}
+			overnight++
 		}
 		if got := attendance.DeriveConfirmation(a.Confirmations); a.Status != models.StatusAbsent && a.Status != models.StatusLeave && got != a.ConfirmationStatus {
 			t.Errorf("attendance %d %s: confirmation %s, derived %s", a.ID, day, a.ConfirmationStatus, got)
@@ -199,8 +218,11 @@ func TestSeed(t *testing.T) {
 			}
 		}
 	}
-	if pending == 0 || rejected != 1 || absent == 0 || late == 0 || leave < 4 || todayRows < 8 {
-		t.Errorf("variety: pending %d rejected %d absent %d late %d leave %d today %d", pending, rejected, absent, late, leave, todayRows)
+	if pending == 0 || rejected != 1 || absent == 0 || late == 0 || leave < 4 || todayRows < 8 || overnight < 10 {
+		t.Errorf("variety: pending %d rejected %d absent %d late %d leave %d today %d overnight %d", pending, rejected, absent, late, leave, todayRows, overnight)
+	}
+	if sum.Shifts != 2 || sum.RosterEntries < 10 || sum.SpecialSchedules != 3 {
+		t.Errorf("schedules: %+v", sum)
 	}
 	var leaveByStatus []struct {
 		Status string

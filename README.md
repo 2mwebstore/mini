@@ -227,21 +227,40 @@ chat. They cannot rename or close the branch, change its admin, or see company s
 
 ## HR admin panel
 
-`admin/` is served at `/admin/` (the site root redirects there). What each role sees:
+`admin/` is served at `/admin/` (the site root redirects there). The menu is grouped:
+**Attendance** (Records, Leave requests, Reports), **Schedules** (Weekly roster, Special
+schedules, Shifts, Holidays) and **Settings** (General, Audit log). What each role sees:
 
 | Page | Owner (super admin) | HR admin | Branch admin | Manager |
 |---|---|---|---|---|
-| Dashboard — today's counts, who needs attention | all (branch filter) | all (branch filter) | their branch | their team |
-| Reviews — confirm/reject check-ins (with photo), approve/reject leave | ✓ | ✓ | their branch | their team |
-| Attendance — filter, detail with photos/GPS/review history | ✓ | ✓ | their branch | their team |
-| ↳ add a record / correct times (reason required, audited) | ✓ | ✓ | their branch | — |
-| Leave — requests, approve/reject | ✓ | ✓ | their branch | their team |
+| Dashboard — today's counts, each person's shift, who needs attention | all (branch filter) | all (branch filter) | their branch | their team |
+| Attendance › Records — filter, **Edit** on each row, detail with photos/GPS/review history (confirm/reject there) | ✓ | ✓ | their branch | their team |
+| ↳ add a record / edit times (reason required, audited) | ✓ | ✓ | their branch | — |
+| Attendance › Leave requests — approve/reject | ✓ | ✓ | their branch | their team |
+| Schedules › Weekly roster — shift per person per day, copy last week, Excel/CSV export | edit | edit | edit their branch | view team |
+| Schedules › Special schedules — date-range overrides (another shift, custom hours, days off) | ✓ | ✓ | their branch | view team |
+| Schedules › Shifts — hours, grace, work days, normal or cross-day (night) | edit | edit | view | view |
+| Schedules › Holidays | edit | view | view | view |
 | Employees — add, edit, link Telegram, set branch/manager/role, deactivate | ✓ | ✓ (not admins) | their branch | view team |
 | ↳ create panel logins, grant admin roles | ✓ | — | — | — |
 | Branches — add/edit/close branches, assign branch admins | ✓ | — | My branch: office + Telegram | — |
 | Reports — period summary per employee, Excel/CSV export | ✓ | ✓ | their branch | their team |
-| Settings — Telegram, company, GPS, scheduled jobs, holidays | edit | view | — | — |
+| Settings › General — Telegram, company, GPS, scheduled jobs | edit | view | — | — |
 | Audit log | ✓ | — | — | — |
+
+**Schedules.** What someone works on a date is decided in one place
+(`attendance.Planner`): a **special schedule** covering the date wins, then the **weekly
+roster** entry for that date, then their **usual shift** on its work days. Holidays and
+approved leave still apply on top. Shifts are *normal* (end the same day, 08:00–17:00)
+or *cross-day* (a night shift ending the next morning, 22:00–06:00 "+1").
+
+**Night shifts** count for the day they start: a 22:00 check-in and the 06:05 check-out
+the next morning are one record on the first day. The Mini App keeps showing that shift
+(with **Check out**) after midnight; a check-in after midnight (e.g. 00:30) is late for
+last night's shift, unless today's own shift starts within two hours. A check-out still
+counts for the night shift up to 8 hours after it ends. The 10:00 missing check-in alert
+and the day close skip anyone whose shift has not started yet. In a manual edit, a
+check-out at or before the check-in on a cross-day shift is read as the next morning.
 
 **Sessions.** Signing in sets an `HttpOnly`, `SameSite=Strict` cookie (`Secure` in
 production) — the page's JavaScript never sees the token, and nothing is kept in
@@ -302,7 +321,8 @@ It adds three branches (Main branch, Siem Reap, Battambang) with a branch admin 
 HR admin, two managers, 17 employees and four weeks of attendance up to today — on time,
 late, early leave, absent and missing check-out days, with photos, GPS points and
 reviews (some still pending, one rejected) — plus approved, pending, rejected and
-cancelled leave requests and Cambodia's fixed-date public holidays. The command prints
+cancelled leave requests, Cambodia's fixed-date public holidays, a morning and a night
+(cross-day) shift, a few weekly roster days and three special schedules. The command prints
 the admin panel logins: all of them use the password `Demo@12345` (set `DEMO_PASSWORD`
 to choose another). If the database already has a super admin, that owner is kept and
 no demo owner is created.
@@ -324,9 +344,11 @@ database and run `migrate` and `seed-demo` again.
 | 7 | `confirmation_required=false` auto-confirms | `company_settings` |
 | 8–10 | Staff: self · Manager: assigned team (`manager_id`) · HR/Super admin: all. No self-review except super admin | `auth/permissions.go` |
 | 11 | Approving leave marks those working days `LEAVE`; check-in on a leave day is refused | `leave/service.go` |
-| 12 | Weekends (per schedule) and holidays are never absent; nobody is absent before they joined | `report/service.go` |
-| 13 | Late only after start + grace; then counted **from scheduled start** (09:15 with 10-min grace = 15 min late). Set grace to 0 for strict | `attendance/calc.go` |
-| 14 | Working minutes = check-out − check-in; early-leave minutes vs scheduled end | `attendance/calc.go` |
+| 12 | Days off (per shift, roster or special schedule) and holidays are never absent; nobody is absent before they joined | `report/service.go`, `attendance/plan.go` |
+| 13 | Late only after start + grace; then counted **from scheduled start** (09:15 with 10-min grace = 15 min late). Set grace to 0 for strict | `attendance/plan.go` |
+| 14 | Working minutes = check-out − check-in; early-leave minutes vs scheduled end (the next day for a cross-day shift) | `attendance/plan.go` |
+| — | Special schedule > weekly roster > usual shift; one person's special schedules never overlap | `attendance/plan.go`, `schedule/service.go` |
+| — | A night shift's events belong to the day it starts | `attendance/service.go` (`shiftFor`) |
 | 15 | Every admin change is audited; `audit_logs` has DB triggers that block UPDATE/DELETE | migration `0001` |
 | 19 | Exports use the same scope as reports and are audited | `httpapi/handlers.go` |
 | 20 | Employees are deactivated, never deleted; FKs keep history | `employee/service.go` |
@@ -362,7 +384,13 @@ Errors look like `{"error":{"code":"ALREADY_CHECKED_IN","message":"…"}}`. Date
 | `GET /branches` · `GET /branches/:id` | scoped | company-wide users see all; others their own |
 | `POST /branches` · `PUT /branches/:id/admin {employee_id\|null}` | owner | assign / remove the branch admin |
 | `PUT /branches/:id` | owner, or that branch's admin | branch admins: office location + Telegram chats only |
-| `GET /departments` · `GET /work-schedules` | any | |
+| `GET /departments` · `GET /work-schedules` | any | shifts, with how many staff use each |
+| `POST /work-schedules` · `PUT /work-schedules/:id` · `DELETE /work-schedules/:id` | schedules.manage (owner, HR) | `work_type` `NORMAL`\|`CROSS_DAY`; a shift in use or the default can't be deleted |
+| `GET /roster?from=&to=&branch_id=&department_id=&q=` | scoped | matrix: each person × day with the effective shift and its `source` (`DEFAULT`/`ROSTER`/`SPECIAL`), holidays, leave; ≤ 31 days |
+| `PUT /roster {items:[{employee_id,date,work_schedule_id\|off\|reset}]}` · `POST /roster/copy {from,to}` | staff.manage, scoped | ≤ 500 changes; copy repeats one week's entries onto another |
+| `GET /roster/export?format=xlsx\|csv&from=&to=…` | report.export | colour-coded sheet + shift list; audited |
+| `GET /schedule-overrides?when=active\|upcoming\|past&branch_id=&q=` | scoped | special schedules |
+| `POST /schedule-overrides` · `PUT /schedule-overrides/:id` · `DELETE /schedule-overrides/:id` | staff.manage, scoped | `kind` `SHIFT`\|`CUSTOM`\|`OFF`, `work_days`, `reason`; overlaps → 409 |
 | `GET /attendance?employee_id=&branch_id=&department_id=&from=&to=&status=&confirmation=&page=` | scoped | |
 | `GET /attendance/:id` · `GET /attendance/photos/:id` | scoped | photo streamed by the API |
 | `POST /attendance` · `PUT /attendance/:id` | attendance.edit | manual create/edit, `reason` required |
@@ -372,7 +400,7 @@ Errors look like `{"error":{"code":"ALREADY_CHECKED_IN","message":"…"}}`. Date
 | `POST /leave/:id/approve` · `/reject {note}` | reviewer | |
 | `GET /reports/daily?date=&branch_id=` | scoped | counts + rows |
 | `GET /reports/summary?from=&to=&employee_id=&branch_id=&department_id=&status=` | scoped | rows + per-staff summaries + totals |
-| `GET /reports/export?format=xlsx\|csv&from=&to=&employee_id=&branch_id=&department_id=` | report.export | includes a Branch column |
+| `GET /reports/export?format=xlsx\|csv&from=&to=&employee_id=&branch_id=&department_id=` | report.export | includes Branch and Shift columns |
 | `GET /settings` · `PUT /settings {key: value}` | settings.view / owner | `{settings, backup}`; `telegram_bot_token` is write-only and verified with Telegram |
 | `GET /holidays?year=` · `POST /holidays` · `DELETE /holidays/:id` | super admin to change | |
 | `GET /audit-logs?action=&employee_id=&before_id=` | super admin | |

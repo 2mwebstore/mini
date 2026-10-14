@@ -73,17 +73,67 @@ type Department struct {
 	UpdatedAt time.Time `json:"updated_at"`
 }
 
+// WorkSchedule is a shift: hours, grace period and usual work days.
 type WorkSchedule struct {
 	ID           uint64    `gorm:"primaryKey" json:"id"`
 	Name         string    `json:"name"`
 	StartTime    string    `json:"start_time"`
 	EndTime      string    `json:"end_time"`
+	WorkType     string    `json:"work_type"` // WorkNormal | WorkCrossDay
 	GraceMinutes int       `json:"grace_minutes"`
 	WorkDays     string    `json:"work_days"`
+	Color        string    `json:"color"`
 	IsDefault    bool      `json:"is_default"`
 	CreatedAt    time.Time `json:"created_at"`
 	UpdatedAt    time.Time `json:"updated_at"`
 }
+
+// Shift work types.
+const (
+	WorkNormal   = "NORMAL"    // ends the same day (08:00-17:00)
+	WorkCrossDay = "CROSS_DAY" // night shift ending the next day (22:00-06:00)
+)
+
+// RosterShift is the weekly roster's entry for one employee and date
+// (WorkScheduleID nil = day off).
+type RosterShift struct {
+	ID             uint64        `gorm:"primaryKey" json:"id"`
+	EmployeeID     uint64        `json:"employee_id"`
+	WorkDate       time.Time     `gorm:"type:date" json:"work_date"`
+	WorkScheduleID *uint64       `json:"work_schedule_id"`
+	UpdatedBy      *uint64       `json:"updated_by"`
+	CreatedAt      time.Time     `json:"created_at"`
+	UpdatedAt      time.Time     `json:"updated_at"`
+	WorkSchedule   *WorkSchedule `gorm:"foreignKey:WorkScheduleID" json:"work_schedule,omitempty"`
+}
+
+// ScheduleOverride is a special (temporary) schedule for a date range.
+type ScheduleOverride struct {
+	ID             uint64        `gorm:"primaryKey" json:"id"`
+	EmployeeID     uint64        `json:"employee_id"`
+	StartDate      time.Time     `gorm:"type:date" json:"start_date"`
+	EndDate        time.Time     `gorm:"type:date" json:"end_date"`
+	Kind           string        `json:"kind"` // OverrideShift | OverrideCustom | OverrideOff
+	WorkScheduleID *uint64       `json:"work_schedule_id"`
+	StartTime      *string       `json:"start_time"`
+	EndTime        *string       `json:"end_time"`
+	WorkType       *string       `json:"work_type"`
+	GraceMinutes   *int          `json:"grace_minutes"`
+	WorkDays       string        `json:"work_days"`
+	Reason         string        `json:"reason"`
+	CreatedBy      *uint64       `json:"created_by"`
+	CreatedAt      time.Time     `json:"created_at"`
+	UpdatedAt      time.Time     `json:"updated_at"`
+	Employee       *Employee     `gorm:"foreignKey:EmployeeID" json:"employee,omitempty"`
+	WorkSchedule   *WorkSchedule `gorm:"foreignKey:WorkScheduleID" json:"work_schedule,omitempty"`
+}
+
+// Special schedule kinds.
+const (
+	OverrideShift  = "SHIFT"  // work another shift
+	OverrideCustom = "CUSTOM" // work custom hours
+	OverrideOff    = "OFF"    // do not work
+)
 
 // Branch is a company location. Each has at most one branch admin.
 type Branch struct {

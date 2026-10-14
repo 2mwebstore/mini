@@ -165,15 +165,6 @@ func (s *Server) listDepartments(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"items": out})
 }
 
-func (s *Server) listSchedules(c *gin.Context) {
-	out, err := s.employees.Schedules(c.Request.Context())
-	if err != nil {
-		fail(c, err)
-		return
-	}
-	c.JSON(http.StatusOK, gin.H{"items": out})
-}
-
 // ---------- attendance ----------
 
 func (s *Server) listAttendance(c *gin.Context) {

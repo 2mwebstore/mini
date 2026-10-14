@@ -89,15 +89,22 @@ func (s *Server) appMe(c *gin.Context) {
 		return
 	}
 	e := a.Employee
-	sched := attendance.ScheduleFrom(e.WorkSchedule)
+	plan, err := attendance.LoadPlanner(c.Request.Context(), s.db, nil, time.Time{}, time.Time{})
+	if err != nil {
+		fail(c, err)
+		return
+	}
+	ws := plan.Usual(&e) // the usual shift; the day-to-day plan is on the home screen
+	set := attendance.ParseWorkDays(ws.WorkDays)
 	workDays := []int{}
 	for d := 1; d <= 7; d++ {
-		if sched.WorkDays[d] {
+		if set[d] {
 			workDays = append(workDays, d)
 		}
 	}
 	profile := gin.H{"employee_code": e.EmployeeCode, "full_name": e.FullName, "position": e.Position, "status": e.Status,
-		"department": "", "branch": "", "role_name": "", "schedule": gin.H{"start": sched.Start, "end": sched.End, "grace_minutes": sched.GraceMinutes, "work_days": workDays}}
+		"department": "", "branch": "", "role_name": "", "schedule": gin.H{"name": ws.Name, "start": ws.StartTime, "end": ws.EndTime,
+			"cross_day": ws.WorkType == models.WorkCrossDay, "grace_minutes": ws.GraceMinutes, "work_days": workDays}}
 	if e.Department != nil {
 		profile["department"] = e.Department.Name
 	}

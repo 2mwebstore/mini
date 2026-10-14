@@ -56,14 +56,18 @@ func (s *Service) Manual(ctx context.Context, actor *auth.Actor, in ManualInput)
 	}
 
 	var emp models.Employee
-	if err := s.db.WithContext(ctx).Preload("WorkSchedule").First(&emp, in.EmployeeID).Error; err != nil {
+	if err := s.db.WithContext(ctx).First(&emp, in.EmployeeID).Error; err != nil {
 		return nil, apperr.NotFound("EMPLOYEE_NOT_FOUND", "Employee not found.")
 	}
 	if !actor.CanView(&emp) {
 		return nil, apperr.ErrForbidden
 	}
-	sched := ScheduleFrom(emp.WorkSchedule)
-	scheduled := sched.IsWorkDay(date)
+	plan, err := LoadPlanner(ctx, s.db, []uint64{emp.ID}, date, date)
+	if err != nil {
+		return nil, err
+	}
+	day := plan.Day(&emp, date)
+	scheduled := day.Work
 	if hol, _ := s.isHoliday(ctx, date); hol {
 		scheduled = false
 	}
@@ -110,7 +114,12 @@ func (s *Service) Manual(ctx context.Context, actor *auth.Actor, in ManualInput)
 				att.CheckInAt = inAt
 			}
 			if outAt != nil {
-				att.CheckOutAt = outAt
+				out := *outAt
+				// A night shift's check-out time is on the next morning (22:00 -> 06:00).
+				if day.CrossDay && att.CheckInAt != nil && !out.After(*att.CheckInAt) {
+					out = out.AddDate(0, 0, 1)
+				}
+				att.CheckOutAt = &out
 			}
 			if att.CheckInAt == nil {
 				return apperr.BadRequest("CHECK_IN_REQUIRED", "Check-in time is required (or set a status such as ABSENT).")
@@ -120,12 +129,12 @@ func (s *Service) Manual(ctx context.Context, actor *auth.Actor, in ManualInput)
 			}
 			att.LateMinutes, att.EarlyLeaveMinutes, att.WorkingMinutes = 0, 0, 0
 			if scheduled {
-				att.LateMinutes = sched.LateMinutes(date, *att.CheckInAt, loc)
+				att.LateMinutes = day.LateMinutes(date, *att.CheckInAt, loc)
 			}
 			if att.CheckOutAt != nil {
 				att.WorkingMinutes = WorkingMinutes(*att.CheckInAt, *att.CheckOutAt)
 				if scheduled {
-					att.EarlyLeaveMinutes = sched.EarlyLeaveMinutes(date, *att.CheckOutAt, loc)
+					att.EarlyLeaveMinutes = day.EarlyLeaveMinutes(date, *att.CheckOutAt, loc)
 				}
 			}
 			att.Status = DeriveStatus(att.LateMinutes, att.EarlyLeaveMinutes)
@@ -181,9 +190,12 @@ func snapshot(a *models.Attendance, found bool, loc *time.Location) map[string]a
 // MarkLeaveDays sets status LEAVE on working days of an approved leave that have
 // no check-in. Called inside the leave approval transaction.
 func MarkLeaveDays(ctx context.Context, tx *gorm.DB, emp *models.Employee, from, to time.Time, isHoliday func(time.Time) bool, note string) error {
-	sched := ScheduleFrom(emp.WorkSchedule)
+	plan, err := LoadPlanner(ctx, tx, []uint64{emp.ID}, from, to)
+	if err != nil {
+		return err
+	}
 	for d := from; !d.After(to); d = d.AddDate(0, 0, 1) {
-		if !sched.IsWorkDay(d) || isHoliday(d) {
+		if !plan.Day(emp, d).Work || isHoliday(d) {
 			continue
 		}
 		var att models.Attendance
@@ -206,16 +218,13 @@ func MarkLeaveDays(ctx context.Context, tx *gorm.DB, emp *models.Employee, from,
 	return nil
 }
 
-// WorkingDays counts scheduled working days in [from, to], excluding holidays.
-func WorkingDays(emp *models.Employee, from, to time.Time, isHoliday func(time.Time) bool) int {
-	sched := ScheduleFrom(emp.WorkSchedule)
-	n := 0
-	for d := from; !d.After(to); d = d.AddDate(0, 0, 1) {
-		if sched.IsWorkDay(d) && !isHoliday(d) {
-			n++
-		}
+// WorkingDays counts emp's scheduled working days in [from, to], excluding holidays.
+func WorkingDays(ctx context.Context, db *gorm.DB, emp *models.Employee, from, to time.Time, isHoliday func(time.Time) bool) (int, error) {
+	plan, err := LoadPlanner(ctx, db, []uint64{emp.ID}, from, to)
+	if err != nil {
+		return 0, err
 	}
-	return n
+	return plan.WorkingDays(emp, from, to, isHoliday), nil
 }
 
 // HolidaySet loads holidays in a range into a lookup function.

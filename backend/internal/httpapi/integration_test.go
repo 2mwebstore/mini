@@ -40,6 +40,7 @@ import (
 	"attendance/backend/internal/models"
 	"attendance/backend/internal/notification"
 	"attendance/backend/internal/report"
+	"attendance/backend/internal/schedule"
 	"attendance/backend/internal/scheduler"
 	"attendance/backend/internal/secret"
 	"attendance/backend/internal/settings"
@@ -346,8 +347,10 @@ func TestIntegration(t *testing.T) {
 	leaveSvc.Now = now
 	repSvc := report.NewService(gdb, st)
 	repSvc.Now = now
+	schedSvc := schedule.NewService(gdb, st)
+	schedSvc.Now = now
 	srv := New(conf, Deps{DB: gdb, Redis: rdb, Store: store, Auth: authSvc, Settings: st, Employees: empSvc,
-		Branches: branch.NewService(gdb), Attendance: attSvc, Leave: leaveSvc, Reports: repSvc, Telegram: tgc})
+		Branches: branch.NewService(gdb), Attendance: attSvc, Leave: leaveSvc, Reports: repSvc, Schedules: schedSvc, Telegram: tgc})
 	h := &harness{t: t, srv: srv.Router(), db: rawDB, clock: &clock}
 
 	// ---------- people ----------
@@ -960,6 +963,231 @@ func TestIntegration(t *testing.T) {
 	h.db.QueryRow("SELECT admin_employee_id FROM branches WHERE id = ?", srID).Scan(&adminLeft)
 	if adminLeft.Valid {
 		t.Fatal("deactivating a branch admin must leave the branch without an admin")
+	}
+
+	// ---------- shifts: normal and cross-day (night) ----------
+	gps := map[string]string{"latitude": "11.5564", "longitude": "104.9282"}
+	withPhoto := func(tag string) map[string]string {
+		m := map[string]string{"photo": photo(tag)}
+		for k, v := range gps {
+			m[k] = v
+		}
+		return m
+	}
+	shiftIn := func(name, start, end, wt string) map[string]any {
+		return map[string]any{"name": name, "start_time": start, "end_time": end, "work_type": wt, "grace_minutes": 15,
+			"work_days": []int{1, 2, 3, 4, 5, 6}, "color": "#4f46e5"}
+	}
+	if code, body, _ := h.admin("POST", "/work-schedules", ownerJWT, shiftIn("Bad night", "22:00", "06:00", "NORMAL")); code != 400 || errCode(body) != "INVALID_HOURS" {
+		t.Fatalf("a normal shift cannot end before it starts: %d %v", code, body)
+	}
+	if code, body, _ := h.admin("POST", "/work-schedules", ownerJWT, shiftIn("Bad day", "08:00", "17:00", "CROSS_DAY")); code != 400 || errCode(body) != "INVALID_HOURS" {
+		t.Fatalf("a cross-day shift must end the next day: %d %v", code, body)
+	}
+	code, body, _ = h.admin("POST", "/work-schedules", ownerJWT, shiftIn("Night", "22:00", "06:00", "CROSS_DAY"))
+	if code != 201 || body["work_type"] != "CROSS_DAY" {
+		t.Fatalf("create night shift: %d %v", code, body)
+	}
+	nightID := uint64(num(body, "id"))
+	if code, body, _ := h.admin("POST", "/work-schedules", jwt, shiftIn("Night", "21:00", "05:00", "CROSS_DAY")); code != 409 || errCode(body) != "SHIFT_NAME_TAKEN" {
+		t.Fatalf("shift names are unique: %d %v", code, body)
+	}
+	code, body, _ = h.admin("POST", "/work-schedules", jwt, shiftIn("Morning", "07:00", "15:00", "NORMAL")) // HR may define shifts too
+	if code != 201 {
+		t.Fatalf("HR creates a shift: %d %v", code, body)
+	}
+	morningID := uint64(num(body, "id"))
+	mgrJWT, _ := h.login("mona@example.com", "manager-pass-123") // the manager's panel login from above
+	if code, _, _ := h.admin("POST", "/work-schedules", mgrJWT, shiftIn("Late", "12:00", "20:00", "NORMAL")); code != 403 {
+		t.Fatalf("managers cannot define shifts, got %d", code)
+	}
+	if code, body, _ := h.admin("PUT", fmt.Sprintf("/employees/%d", sokha.ID), jwt, map[string]any{"work_schedule_id": nightID}); code != 200 {
+		t.Fatalf("give Sokha the night shift: %d %v", code, body)
+	}
+	code, body, _ = h.admin("GET", "/work-schedules", mgrJWT, nil)
+	if code != 200 || len(body["items"].([]any)) != 3 {
+		t.Fatalf("list shifts: %d %v", code, body)
+	}
+
+	// ---------- a night shift belongs to the day it starts ----------
+	h.set("2026-10-19 21:55") // Monday evening
+	code, body, _ = h.app("POST", "/attendance/check-in", sokhaTG, withPhoto("night-in-1"))
+	if code != 200 || num(body, "attendance", "late_minutes") != 0 || !strings.HasPrefix(fmt.Sprint(body["attendance"].(map[string]any)["work_date"]), "2026-10-19") {
+		t.Fatalf("night check-in: %d %v", code, body)
+	}
+	h.set("2026-10-20 02:00") // after midnight: the Mini App still shows Monday's shift, ready to check out
+	code, body, _ = h.app("GET", "/attendance/today", sokhaTG, nil)
+	if co, _ := body["check_out"].(map[string]any); code != 200 || !strings.HasPrefix(fmt.Sprint(body["date"]), "2026-10-19") || body["cross_day"] != true ||
+		body["shift_name"] != "Night" || co["allowed"] != true {
+		t.Fatalf("today during the night shift: %d %v", code, body)
+	}
+	h.set("2026-10-20 06:05")
+	code, body, _ = h.app("POST", "/attendance/check-out", sokhaTG, withPhoto("night-out-1"))
+	att := body["attendance"].(map[string]any)
+	if code != 200 || !strings.HasPrefix(fmt.Sprint(att["work_date"]), "2026-10-19") || num(body, "attendance", "working_minutes") != 490 ||
+		num(body, "attendance", "early_leave_minutes") != 0 {
+		t.Fatalf("next-morning check-out must close Monday's shift: %d %v", code, body)
+	}
+	var tueRows int
+	h.db.QueryRow("SELECT COUNT(*) FROM attendance WHERE employee_id = ? AND work_date = '2026-10-20'", sokha.ID).Scan(&tueRows)
+	if tueRows != 0 {
+		t.Fatal("the check-out must not open a Tuesday record")
+	}
+	h.set("2026-10-21 00:30") // very late for Tuesday's 22:00 shift
+	code, body, _ = h.app("POST", "/attendance/check-in", sokhaTG, withPhoto("night-in-2"))
+	if code != 200 || !strings.HasPrefix(fmt.Sprint(body["attendance"].(map[string]any)["work_date"]), "2026-10-20") || num(body, "attendance", "late_minutes") != 150 {
+		t.Fatalf("a check-in after midnight is late for last night's shift: %d %v", code, body)
+	}
+	h.set("2026-10-21 05:40")
+	code, body, _ = h.app("POST", "/attendance/check-out", sokhaTG, withPhoto("night-out-2"))
+	if code != 200 || num(body, "attendance", "early_leave_minutes") != 20 {
+		t.Fatalf("leaving 20 min before 06:00 is early: %d %v", code, body)
+	}
+	code, body, _ = h.admin("GET", "/reports/daily?date=2026-10-19", ownerJWT, nil)
+	found := false
+	for _, r := range body["rows"].([]any) {
+		row := r.(map[string]any)
+		if row["employee_code"] == "GT002" {
+			found = row["shift"] == "Night" && row["shift_start"] == "22:00" && row["cross_day"] == true && row["status"] == models.StatusPresent
+		}
+	}
+	if code != 200 || !found {
+		t.Fatalf("the daily report shows the night shift: %d %v", code, body)
+	}
+	// The 10:00 missing check-in alert must not list someone whose shift starts at 22:00.
+	h.set("2026-10-22 10:00")
+	stNow, _ := st.Get(ctx)
+	sentBefore := len(ftg.calls("sendMessage", 0))
+	if err := sch.MissingCheckinAlert(ctx, time.Date(2026, 10, 22, 0, 0, 0, 0, time.UTC), stNow); err != nil {
+		t.Fatal(err)
+	}
+	for _, m := range ftg.calls("sendMessage", 0)[sentBefore:] {
+		if strings.Contains(fmt.Sprint(m["text"]), "Sokha") {
+			t.Fatalf("night-shift staff are not missing at 10:00: %v", m["text"])
+		}
+	}
+	// A manual entry for a night shift: 22:00 -> 06:00 is the next morning.
+	code, body, _ = h.admin("POST", "/attendance", jwt, map[string]any{"employee_id": sokha.ID, "date": "2026-10-21", "check_in": "22:00", "check_out": "06:00", "reason": "Phone battery died"})
+	if code != 201 && code != 200 || num(body, "working_minutes") != 480 {
+		t.Fatalf("manual night shift: %d %v", code, body)
+	}
+
+	// ---------- weekly roster ----------
+	rosterSet := func(tok string, items ...map[string]any) (int, map[string]any) {
+		code, body, _ := h.admin("PUT", "/roster", tok, map[string]any{"items": items})
+		return code, body
+	}
+	if code, _ := rosterSet(mgrJWT, map[string]any{"employee_id": dara.ID, "date": "2026-10-24", "work_schedule_id": morningID}); code != 403 {
+		t.Fatalf("managers cannot edit the roster, got %d", code)
+	}
+	if code, body := rosterSet(jwt, map[string]any{"employee_id": dara.ID, "date": "2026-10-24", "work_schedule_id": morningID, "off": true}); code != 400 || errCode(body) != "INVALID_ITEM" {
+		t.Fatalf("a change sets one thing: %d %v", code, body)
+	}
+	if code, body := rosterSet(jwt,
+		map[string]any{"employee_id": dara.ID, "date": "2026-10-24", "work_schedule_id": morningID}, // Saturday: morning shift
+		map[string]any{"employee_id": dara.ID, "date": "2026-10-23", "off": true},                   // Friday: day off
+	); code != 200 || num(body, "updated") != 2 {
+		t.Fatalf("set roster: %d %v", code, body)
+	}
+	code, body, _ = h.admin("GET", "/roster?from=2026-10-19", jwt, nil)
+	cellOf := func(body map[string]any, code string, day int) map[string]any {
+		for _, r := range body["rows"].([]any) {
+			if row := r.(map[string]any); row["employee_code"] == code {
+				return row["cells"].([]any)[day].(map[string]any)
+			}
+		}
+		return nil
+	}
+	if code != 200 || len(body["days"].([]any)) != 7 {
+		t.Fatalf("roster week: %d %v", code, body)
+	}
+	if sat := cellOf(body, "GT001", 5); sat["work"] != true || sat["source"] != "ROSTER" || sat["shift_name"] != "Morning" {
+		t.Fatalf("roster Saturday: %v", sat)
+	}
+	if fri := cellOf(body, "GT001", 4); fri["work"] != false || fri["source"] != "ROSTER" {
+		t.Fatalf("roster day off: %v", fri)
+	}
+	if mon := cellOf(body, "GT002", 0); mon["cross_day"] != true || mon["source"] != "DEFAULT" {
+		t.Fatalf("usual night shift on the roster: %v", mon)
+	}
+	h.set("2026-10-24 07:20") // Saturday: Dara is rostered on the morning shift
+	if code, body, _ := h.app("GET", "/attendance/today", daraTG, nil); code != 200 || body["work_day"] != true || body["shift_name"] != "Morning" || body["schedule_start"] != "07:00" {
+		t.Fatalf("Mini App follows the roster: %d %v", code, body)
+	}
+	code, body, _ = h.admin("POST", "/roster/copy", jwt, map[string]any{"from": "2026-10-19", "to": "2026-10-26"})
+	if code != 200 || num(body, "copied") < 2 {
+		t.Fatalf("copy week: %d %v", code, body)
+	}
+	if _, body, _ := h.admin("GET", "/roster?from=2026-10-26", jwt, nil); cellOf(body, "GT001", 5)["shift_name"] != "Morning" {
+		t.Fatalf("copied Saturday: %v", cellOf(body, "GT001", 5))
+	}
+	w, _ = h.do("GET", "/api/v1/roster/export?from=2026-10-19&format=csv", nil, withHeader("Authorization", "Bearer "+jwt))
+	if w.Code != 200 || !strings.Contains(w.Body.String(), "Night 22:00–06:00 (+1)") || !strings.Contains(w.Body.String(), "Sokha Chan") {
+		t.Fatalf("roster csv: %d %s", w.Code, w.Body.String())
+	}
+	w, _ = h.do("GET", "/api/v1/roster/export?from=2026-10-19", nil, withHeader("Authorization", "Bearer "+jwt))
+	if w.Code != 200 || !strings.Contains(w.Header().Get("Content-Type"), "spreadsheetml") || w.Body.Len() < 2000 {
+		t.Fatalf("roster xlsx: %d %s", w.Code, w.Header().Get("Content-Type"))
+	}
+
+	// ---------- special / temporary schedules ----------
+	special := map[string]any{"employee_id": dara.ID, "start_date": "2026-10-27", "end_date": "2026-10-29", "kind": "CUSTOM",
+		"start_time": "13:00", "end_time": "21:00", "work_type": "NORMAL", "work_days": []int{1, 2, 3, 4, 5}, "reason": "Evening cover"}
+	if code, _, _ := h.admin("POST", "/schedule-overrides", mgrJWT, special); code != 403 {
+		t.Fatalf("managers cannot set special schedules, got %d", code)
+	}
+	code, body, _ = h.admin("POST", "/schedule-overrides", jwt, special)
+	if code != 201 || body["kind"] != "CUSTOM" {
+		t.Fatalf("create special schedule: %d %v", code, body)
+	}
+	specialID := uint64(num(body, "id"))
+	overlap := map[string]any{"employee_id": dara.ID, "start_date": "2026-10-29", "end_date": "2026-10-30", "kind": "OFF", "reason": "x"}
+	if code, body, _ := h.admin("POST", "/schedule-overrides", jwt, overlap); code != 409 || errCode(body) != "OVERLAP" {
+		t.Fatalf("special schedules of one person cannot overlap: %d %v", code, body)
+	}
+	overlap["start_date"] = "2026-10-30"
+	if code, body, _ := h.admin("POST", "/schedule-overrides", jwt, overlap); code != 201 {
+		t.Fatalf("day off special schedule: %d %v", code, body)
+	}
+	h.set("2026-10-27 12:00")
+	code, body, _ = h.app("GET", "/attendance/today", daraTG, nil)
+	if code != 200 || body["schedule_start"] != "13:00" || body["special"] != "Evening cover" {
+		t.Fatalf("Mini App shows the special schedule: %d %v", code, body)
+	}
+	h.set("2026-10-27 13:20")
+	if code, body, _ := h.app("POST", "/attendance/check-in", daraTG, withPhoto("dara-special")); code != 200 || num(body, "attendance", "late_minutes") != 20 {
+		t.Fatalf("lateness follows the special hours: %d %v", code, body)
+	}
+	if code, body, _ := h.app("POST", "/leave/preview", daraTG, map[string]any{"leave_type_id": 1, "start_date": "2026-10-30", "end_date": "2026-10-30"}); code != 400 || errCode(body) != "NO_WORKING_DAYS" {
+		t.Fatalf("a special day off is not a working day for leave: %d %v", code, body)
+	}
+	if code, body, _ := h.admin("GET", "/schedule-overrides?when=upcoming", jwt, nil); code != 200 || len(body["items"].([]any)) != 1 {
+		t.Fatalf("upcoming special schedules: %d %v", code, body)
+	}
+	if code, _, _ := h.admin("DELETE", fmt.Sprintf("/schedule-overrides/%d", specialID), jwt, nil); code != 204 {
+		t.Fatalf("delete special schedule: %d", code)
+	}
+
+	// ---------- shifts in use cannot be deleted ----------
+	if code, body, _ := h.admin("DELETE", fmt.Sprintf("/work-schedules/%d", nightID), ownerJWT, nil); code != 409 || errCode(body) != "SHIFT_IN_USE" {
+		t.Fatalf("delete a shift in use: %d %v", code, body)
+	}
+	var defaultID uint64
+	h.db.QueryRow("SELECT id FROM work_schedules WHERE is_default = 1").Scan(&defaultID)
+	if code, body, _ := h.admin("DELETE", fmt.Sprintf("/work-schedules/%d", defaultID), ownerJWT, nil); code != 409 || errCode(body) != "SHIFT_IS_DEFAULT" {
+		t.Fatalf("delete the default shift: %d %v", code, body)
+	}
+	code, body, _ = h.admin("POST", "/work-schedules", ownerJWT, shiftIn("Temp", "10:00", "14:00", "NORMAL"))
+	if code != 201 {
+		t.Fatal(body)
+	}
+	if code, _, _ := h.admin("DELETE", fmt.Sprintf("/work-schedules/%d", uint64(num(body, "id"))), ownerJWT, nil); code != 204 {
+		t.Fatalf("delete an unused shift: %d", code)
+	}
+	var schedAudit int
+	h.db.QueryRow("SELECT COUNT(*) FROM audit_logs WHERE action IN ('shift.create','roster.update','roster.copy','schedule_override.create','schedule_override.delete','shift.delete')").Scan(&schedAudit)
+	if schedAudit < 9 {
+		t.Fatalf("schedule changes are audited, got %d entries", schedAudit)
 	}
 
 	// ---------- deactivation keeps history and blocks the Mini App ----------

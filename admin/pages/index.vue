@@ -4,7 +4,10 @@ import { leaveService } from '~/services/leave.service'
 import { reportService } from '~/services/report.service'
 import { useAuthStore } from '~/stores/auth'
 import type { DayRow } from '~/types/api'
-import { confirmationStatus, dayStatus, formatClock, formatDate, formatMinutes } from '~/utils/format'
+import { addDays, confirmationStatus, dayStatus, formatClock, formatDate, formatMinutes, nextDay, shiftHours, todayISO } from '~/utils/format'
+
+// Pending check-ins can be a few weeks old: look back 90 days.
+const pendingAttendanceLink = computed(() => `/attendance?confirmation=PENDING&from=${addDays(todayISO(useAuthStore().company.timezone), -90)}`)
 
 const auth = useAuthStore()
 const branchId = ref('')
@@ -47,17 +50,16 @@ const rows = computed(() => [...(daily.data.value?.rows ?? [])].sort((a, b) => w
       <AppButton variant="secondary" @click="daily.load(); pending.load()">Refresh</AppButton>
     </PageHeader>
 
-    <NuxtLink
+    <div
       v-if="pending.data.value && pending.data.value.attendance + pending.data.value.leave > 0"
-      to="/reviews"
-      class="card mb-6 flex items-center justify-between gap-4 border-warning/40 bg-warning/5 px-4 py-3 hover:bg-warning/10"
+      class="card mb-6 flex flex-wrap items-center justify-between gap-x-4 gap-y-2 border-warning/40 bg-warning/5 px-4 py-3"
     >
-      <span class="text-sm">
-        <b>{{ pending.data.value.attendance + pending.data.value.leave }}</b> waiting for review ·
-        {{ pending.data.value.attendance }} attendance · {{ pending.data.value.leave }} leave
+      <span class="text-sm"><b>{{ pending.data.value.attendance + pending.data.value.leave }}</b> waiting for review</span>
+      <span class="flex gap-4 text-sm font-medium text-warning">
+        <NuxtLink v-if="pending.data.value.attendance" :to="pendingAttendanceLink" class="hover:underline">{{ pending.data.value.attendance }} attendance →</NuxtLink>
+        <NuxtLink v-if="pending.data.value.leave" to="/leave" class="hover:underline">{{ pending.data.value.leave }} leave →</NuxtLink>
       </span>
-      <span class="text-sm font-medium text-warning">Review →</span>
-    </NuxtLink>
+    </div>
 
     <StateView :loading="daily.loading.value && !daily.data.value" :error="daily.error.value" @retry="daily.load">
       <div class="grid grid-cols-2 gap-3 sm:grid-cols-4">
@@ -70,7 +72,7 @@ const rows = computed(() => [...(daily.data.value?.rows ?? [])].sort((a, b) => w
         <div v-else class="overflow-x-auto">
           <table class="table">
             <thead>
-              <tr><th>Employee</th><th>{{ auth.can('all.view') ? 'Branch' : 'Department' }}</th><th>In</th><th>Out</th><th>Worked</th><th>Status</th><th>Review</th></tr>
+              <tr><th>Employee</th><th>{{ auth.can('all.view') ? 'Branch' : 'Department' }}</th><th>Shift</th><th>In</th><th>Out</th><th>Worked</th><th>Status</th><th>Review</th></tr>
             </thead>
             <tbody>
               <tr v-for="r in rows" :key="r.employee_id">
@@ -80,8 +82,17 @@ const rows = computed(() => [...(daily.data.value?.rows ?? [])].sort((a, b) => w
                   <span class="block text-xs text-muted">{{ r.employee_code }}</span>
                 </td>
                 <td class="text-muted">{{ (auth.can('all.view') ? r.branch : r.department) || '—' }}</td>
+                <td class="whitespace-nowrap text-xs">
+                  <template v-if="r.shift_start">
+                    <span class="block">{{ r.shift }}</span>
+                    <span class="tabular-nums text-muted">{{ shiftHours(r.shift_start, r.shift_end, r.cross_day) }}</span>
+                  </template>
+                  <span v-else class="text-muted">—</span>
+                </td>
                 <td class="tabular-nums">{{ formatClock(r.check_in_at, auth.company.timezone) }}</td>
-                <td class="tabular-nums">{{ formatClock(r.check_out_at, auth.company.timezone) }}</td>
+                <td class="tabular-nums">
+                  {{ formatClock(r.check_out_at, auth.company.timezone) }}<sup v-if="nextDay(r.date, r.check_out_at, auth.company.timezone)" class="ml-0.5 text-[10px] text-muted">+1</sup>
+                </td>
                 <td class="tabular-nums">{{ formatMinutes(r.working_minutes) }}</td>
                 <td>
                   <StatusBadge v-bind="dayStatus[r.status]" />

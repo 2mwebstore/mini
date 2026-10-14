@@ -15,8 +15,13 @@ func at(date time.Time, hhmm string) time.Time {
 	return t
 }
 
+func office() Day {
+	ws := DefaultShift() // 09:00-17:30, grace 10
+	return ShiftDay(&ws)
+}
+
 func TestLateMinutes(t *testing.T) {
-	s := DefaultSchedule() // 09:00, grace 10
+	s := office()
 	d := time.Date(2026, 10, 8, 0, 0, 0, 0, time.UTC)
 	cases := []struct {
 		in   string
@@ -30,14 +35,15 @@ func TestLateMinutes(t *testing.T) {
 			t.Errorf("check-in %s: late=%d want %d", c.in, got, c.want)
 		}
 	}
-	strict := Schedule{Start: "09:00", End: "17:30", GraceMinutes: 0, WorkDays: s.WorkDays}
+	strict := s
+	strict.Grace = 0
 	if got := strict.LateMinutes(d, at(d, "09:01"), pp); got != 1 {
 		t.Errorf("no grace: 09:01 late=%d want 1", got)
 	}
 }
 
 func TestEarlyLeaveAndWorking(t *testing.T) {
-	s := DefaultSchedule() // ends 17:30
+	s := office() // ends 17:30
 	d := time.Date(2026, 10, 8, 0, 0, 0, 0, time.UTC)
 	if got := s.EarlyLeaveMinutes(d, at(d, "17:32"), pp); got != 0 {
 		t.Errorf("after end: early=%d", got)
@@ -57,6 +63,34 @@ func TestEarlyLeaveAndWorking(t *testing.T) {
 	}
 }
 
+func TestNightShift(t *testing.T) {
+	night := Day{Work: true, Start: "22:00", End: "06:00", Grace: 15, CrossDay: true}
+	d := time.Date(2026, 10, 8, 0, 0, 0, 0, time.UTC)
+	next := d.AddDate(0, 0, 1)
+	end, _ := night.EndAt(d, pp)
+	if want := at(next, "06:00"); !end.Equal(want) {
+		t.Fatalf("end=%s want %s (next morning)", end, want)
+	}
+	cases := []struct {
+		name string
+		got  int
+		want int
+	}{
+		{"in 22:10 (grace)", night.LateMinutes(d, at(d, "22:10"), pp), 0},
+		{"in 22:40", night.LateMinutes(d, at(d, "22:40"), pp), 40},
+		{"in 00:30 next day", night.LateMinutes(d, at(next, "00:30"), pp), 150},
+		{"out 05:30 next day", night.EarlyLeaveMinutes(d, at(next, "05:30"), pp), 30},
+		{"out 06:10 next day", night.EarlyLeaveMinutes(d, at(next, "06:10"), pp), 0},
+		{"out 23:30 same day", night.EarlyLeaveMinutes(d, at(d, "23:30"), pp), 390},
+		{"worked 21:55 -> 06:05", WorkingMinutes(at(d, "21:55"), at(next, "06:05")), 490},
+	}
+	for _, c := range cases {
+		if c.got != c.want {
+			t.Errorf("%s: %d, want %d", c.name, c.got, c.want)
+		}
+	}
+}
+
 func TestTimezoneDateBoundary(t *testing.T) {
 	// 2026-10-08 23:30 UTC is already 2026-10-09 06:30 in Phnom Penh.
 	utc := time.Date(2026, 10, 8, 23, 30, 0, 0, time.UTC)
@@ -65,20 +99,71 @@ func TestTimezoneDateBoundary(t *testing.T) {
 	}
 }
 
-func TestWorkDays(t *testing.T) {
-	s := DefaultSchedule()
+// Monday 12 Oct 2026 .. Sunday 18 Oct 2026
+func week(i int) time.Time { return time.Date(2026, 10, 12+i, 0, 0, 0, 0, time.UTC) }
+
+func TestPlannerPrecedence(t *testing.T) {
+	officeWS := DefaultShift()
+	officeWS.ID, officeWS.IsDefault = 1, true
+	nightWS := models.WorkSchedule{ID: 2, Name: "Night", StartTime: "22:00", EndTime: "06:00", WorkType: models.WorkCrossDay,
+		GraceMinutes: 15, WorkDays: "1,2,3,4,5,6"}
+	two := uint64(2)
+	start, end, wt, grace := "13:00", "21:00", models.WorkNormal, 5
+	p := &Planner{
+		shifts:   map[uint64]*models.WorkSchedule{1: &officeWS, 2: &nightWS},
+		fallback: &officeWS,
+		roster: map[string]*uint64{
+			planKey(7, week(1)): &two, // Tue: night shift
+			planKey(7, week(2)): nil,  // Wed: day off
+			planKey(7, week(3)): &two, // Thu: night shift, but a special schedule wins
+		},
+		overrides: map[uint64][]models.ScheduleOverride{7: {{ID: 9, EmployeeID: 7, StartDate: week(3), EndDate: week(5),
+			Kind: models.OverrideCustom, StartTime: &start, EndTime: &end, WorkType: &wt, GraceMinutes: &grace, WorkDays: "4,6", Reason: "Stock count"}}},
+	}
+	emp := &models.Employee{ID: 7} // no usual shift: the company default
+	check := func(i int, work bool, source, startAt string, cross bool) {
+		t.Helper()
+		d := p.Day(emp, week(i))
+		if d.Work != work || d.Source != source || (work && d.Start != startAt) || d.CrossDay != cross {
+			t.Errorf("%s: %+v", week(i).Format("Mon 02"), d)
+		}
+	}
+	check(0, true, PlanDefault, "09:00", false) // Mon: usual office hours
+	check(1, true, PlanRoster, "22:00", true)   // Tue: roster night shift
+	check(2, false, PlanRoster, "", false)      // Wed: roster day off
+	check(3, true, PlanSpecial, "13:00", false) // Thu: special custom hours beat the roster
+	check(4, false, PlanSpecial, "", false)     // Fri: special schedule, not one of its days
+	check(5, true, PlanSpecial, "13:00", false) // Sat: special custom hours
+	check(6, false, PlanDefault, "", false)     // Sun: office hours are Mon-Fri
+	if d := p.Day(emp, week(3)); d.Note != "Stock count" || d.Grace != 5 || d.OverrideID == nil || *d.OverrideID != 9 {
+		t.Errorf("special details: %+v", d)
+	}
+
+	nightWorker := &models.Employee{ID: 8, WorkScheduleID: &two}
+	if d := p.Day(nightWorker, week(5)); !d.Work || !d.CrossDay || d.ShiftName != "Night" || d.Source != PlanDefault {
+		t.Errorf("night worker Saturday: %+v", d)
+	}
+	if d := p.Day(nightWorker, week(6)); d.Work {
+		t.Errorf("night worker Sunday should be off: %+v", d)
+	}
+
+	hol := func(d time.Time) bool { return d.Equal(week(0)) }
+	// Mon holiday, Tue night, Wed off, Thu special, Fri off, Sat special, Sun off = 3
+	if n := p.WorkingDays(emp, week(0), week(6), hol); n != 3 {
+		t.Errorf("working days=%d want 3", n)
+	}
+}
+
+func TestParseWorkDays(t *testing.T) {
+	set := ParseWorkDays("1, 2,6,9,x")
+	if len(set) != 3 || !set[1] || !set[2] || !set[6] {
+		t.Fatalf("%v", set)
+	}
 	sat := time.Date(2026, 10, 10, 0, 0, 0, 0, time.UTC)
-	mon := time.Date(2026, 10, 12, 0, 0, 0, 0, time.UTC)
-	if s.IsWorkDay(sat) || !s.IsWorkDay(mon) {
-		t.Fatal("Mon-Fri schedule misclassified")
-	}
-	six := ScheduleFrom(&models.WorkSchedule{StartTime: "08:00", EndTime: "17:00", WorkDays: "1,2,3,4,5,6"})
-	if !six.IsWorkDay(sat) {
-		t.Fatal("Mon-Sat schedule should include Saturday")
-	}
-	hol := func(d time.Time) bool { return d.Day() == 13 }
-	if n := WorkingDays(&models.Employee{}, mon, mon.AddDate(0, 0, 6), hol); n != 4 {
-		t.Fatalf("working days=%d want 4 (Mon-Fri minus one holiday)", n)
+	ws := models.WorkSchedule{StartTime: "08:00", EndTime: "17:00", WorkType: models.WorkNormal, WorkDays: "1,2,3,4,5,6"}
+	p := &Planner{shifts: map[uint64]*models.WorkSchedule{}, fallback: &ws}
+	if !p.Day(&models.Employee{}, sat).Work {
+		t.Fatal("Mon-Sat shift should include Saturday")
 	}
 }
 

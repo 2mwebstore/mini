@@ -6,6 +6,7 @@ export type Permission =
   | 'attendance.self' | 'leave.self' | 'team.view' | 'team.review' | 'all.view' | 'all.review'
   | 'attendance.edit' | 'staff.manage' | 'report.export' | 'settings.view' | 'settings.edit'
   | 'audit.view' | 'roles.assign_admin' | 'branch.view' | 'branch.review' | 'branch.settings' | 'branches.manage'
+  | 'schedules.manage'
 
 export type RoleCode = 'super_admin' | 'hr_admin' | 'branch_admin' | 'manager' | 'staff'
 export type EmployeeStatus = 'ACTIVE' | 'INACTIVE' | 'SUSPENDED'
@@ -50,14 +51,123 @@ export interface Department {
   name: string
 }
 
+/** NORMAL ends the same day; CROSS_DAY is a night shift ending the next day (22:00–06:00). */
+export type WorkType = 'NORMAL' | 'CROSS_DAY'
+
+/** A shift (work schedule): hours, grace period and usual work days. */
 export interface WorkSchedule {
   id: number
   name: string
   start_time: string
   end_time: string
+  work_type: WorkType
   grace_minutes: number
-  work_days: string
+  work_days: string // "1,2,3,4,5" (ISO weekdays, 1 = Monday)
+  color: string
   is_default: boolean
+  employees?: number // people whose usual shift it is
+}
+
+export interface ShiftInput {
+  name?: string
+  start_time?: string
+  end_time?: string
+  work_type?: WorkType
+  grace_minutes?: number
+  work_days?: number[]
+  color?: string
+  is_default?: boolean
+}
+
+/** What someone works on one date: special schedule > roster > usual shift. */
+export interface PlanDay {
+  work: boolean
+  start?: string
+  end?: string
+  grace_minutes: number
+  cross_day: boolean
+  shift_id?: number
+  shift_name?: string
+  color?: string
+  source: 'DEFAULT' | 'ROSTER' | 'SPECIAL'
+  override_id?: number
+  note?: string
+}
+
+export interface RosterCell extends PlanDay {
+  date: string
+  holiday?: string
+  leave?: string
+}
+
+export interface RosterRow {
+  employee_id: number
+  employee_code: string
+  full_name: string
+  branch: string
+  department: string
+  usual_shift: string
+  can_edit: boolean
+  cells: RosterCell[]
+}
+
+export interface Roster {
+  from: string
+  to: string
+  days: string[]
+  rows: RosterRow[]
+  shifts: WorkSchedule[]
+}
+
+export interface RosterItem {
+  employee_id: number
+  date: string
+  work_schedule_id?: number
+  off?: boolean
+  reset?: boolean
+}
+
+export interface RosterQuery {
+  from?: string
+  to?: string
+  branch_id?: string
+  department_id?: string
+  q?: string
+}
+
+export type OverrideKind = 'SHIFT' | 'CUSTOM' | 'OFF'
+
+/** A special / temporary schedule for a date range. */
+export interface ScheduleOverride {
+  id: number
+  employee_id: number
+  start_date: string
+  end_date: string
+  kind: OverrideKind
+  work_schedule_id: number | null
+  start_time: string | null
+  end_time: string | null
+  work_type: WorkType | null
+  grace_minutes: number | null
+  work_days: string
+  reason: string
+  created_at: string
+  employee?: Employee
+  work_schedule?: WorkSchedule
+}
+
+export interface OverrideInput {
+  employee_id: number
+  start_date: string
+  end_date: string
+  kind: OverrideKind
+  work_schedule_id?: number
+  start_time?: string
+  end_time?: string
+  work_type?: WorkType
+  grace_minutes?: number
+  work_days?: number[]
+  reason: string
 }
 
 export interface Employee {
@@ -242,6 +352,10 @@ export interface DayRow {
   confirmation_status: ConfirmationStatus | ''
   confirmed_by: string
   leave_type: string
+  shift?: string // the day's scheduled shift (absent on days off)
+  shift_start?: string
+  shift_end?: string
+  cross_day?: boolean
 }
 
 export interface Summary {

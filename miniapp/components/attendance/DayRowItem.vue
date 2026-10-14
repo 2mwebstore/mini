@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import type { DayRow } from '~/types/api'
-import { confirmationStatus, dayStatus, formatClock, formatDate, formatMinutes } from '~/utils/format'
+import { confirmationStatus, dayStatus, formatClock, formatDate, formatMinutes, todayISOAt } from '~/utils/format'
 
 defineProps<{ row: DayRow; timezone: string; showName?: boolean }>()
 </script>
@@ -12,7 +12,7 @@ defineProps<{ row: DayRow; timezone: string; showName?: boolean }>()
       <p class="mt-0.5 text-[13px] tabular-nums text-hint">
         <template v-if="row.check_in_at">
           <template v-if="row.check_out_at">
-            {{ formatClock(row.check_in_at, timezone) }} – {{ formatClock(row.check_out_at, timezone) }} · {{ formatMinutes(row.working_minutes) }}
+            {{ formatClock(row.check_in_at, timezone) }} – {{ formatClock(row.check_out_at, timezone) }}<template v-if="todayISOAt(row.check_out_at, timezone) > row.date.slice(0, 10)"> (+1)</template> · {{ formatMinutes(row.working_minutes) }}
           </template>
           <template v-else>In {{ formatClock(row.check_in_at, timezone) }}</template>
           <template v-if="row.late_minutes"> · late {{ formatMinutes(row.late_minutes) }}</template>

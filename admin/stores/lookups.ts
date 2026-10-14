@@ -2,6 +2,8 @@ import { defineStore } from 'pinia'
 import { branchService } from '~/services/branch.service'
 import { employeeService } from '~/services/employee.service'
 import { leaveService } from '~/services/leave.service'
+import { scheduleService } from '~/services/schedule.service'
+import { shiftHours } from '~/utils/format'
 import type { Branch, Department, Employee, LeaveType, WorkSchedule } from '~/types/api'
 import type { SelectOption } from '~/utils/options'
 
@@ -19,6 +21,8 @@ export const useLookupsStore = defineStore('lookups', {
     branchOptions: (s): SelectOption[] => (s.branches ?? []).map(b => ({ value: String(b.id), label: b.name, sub: b.status === 'ACTIVE' ? undefined : 'Closed' })),
     departmentOptions: (s): SelectOption[] => (s.departments ?? []).map(d => ({ value: String(d.id), label: d.name })),
     employeeOptions: (s): SelectOption[] => (s.employees ?? []).map(e => ({ value: String(e.id), label: e.full_name, sub: e.employee_code })),
+    shiftOptions: (s): SelectOption[] =>
+      (s.schedules ?? []).map(w => ({ value: String(w.id), label: w.name, sub: shiftHours(w.start_time, w.end_time, w.work_type === 'CROSS_DAY') })),
   },
   actions: {
     async loadEmployees(force = false) {
@@ -33,8 +37,8 @@ export const useLookupsStore = defineStore('lookups', {
       if (!this.branches || force) this.branches = await branchService.list()
       return this.branches
     },
-    async loadSchedules() {
-      if (!this.schedules) this.schedules = await employeeService.schedules()
+    async loadSchedules(force = false) {
+      if (!this.schedules || force) this.schedules = await scheduleService.shifts()
       return this.schedules
     },
     async loadLeaveTypes() {

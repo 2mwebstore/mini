@@ -1,12 +1,14 @@
 <script setup lang="ts">
 import type { TodayStatus } from '~/types/api'
-import { confirmationStatus, dayStatus, formatClock, formatDate, formatMinutes } from '~/utils/format'
+import { confirmationStatus, dayStatus, formatClock, formatDate, formatMinutes, todayISO } from '~/utils/format'
 import type { IconName } from '~/utils/icons'
 
 // Today at a glance; the page puts the check-in/out action in the default slot.
 const props = defineProps<{ today: TodayStatus; timezone: string }>()
 
 const att = computed(() => props.today.attendance)
+// While a night shift that started yesterday runs, "today" is that shift's date.
+const isCalendarToday = computed(() => props.today.date.slice(0, 10) === todayISO(props.timezone))
 const recorded = computed(() => !!att.value?.check_in_at)
 
 // Live clock in the company timezone (the one late/early is measured in).
@@ -41,13 +43,21 @@ const rejection = computed(() => {
     </div>
 
     <p class="mt-3 inline-flex max-w-full items-center gap-1.5 rounded-full bg-page px-3 py-1.5 text-[13px] text-hint">
-      <AppIcon :name="today.holiday ? 'party' : today.work_day ? 'clock' : 'coffee'" class="size-4 shrink-0" />
+      <AppIcon :name="today.holiday ? 'party' : !today.work_day ? 'coffee' : today.cross_day ? 'moon' : 'clock'" class="size-4 shrink-0" />
       <span class="truncate">
         <template v-if="today.holiday">Holiday · {{ today.holiday }}</template>
         <template v-else-if="!today.work_day">Day off</template>
-        <template v-else>Schedule {{ today.schedule_start }} – {{ today.schedule_end }}</template>
+        <template v-else>
+          {{ today.shift_name || 'Schedule' }} {{ today.schedule_start }} – {{ today.schedule_end }}<template v-if="today.cross_day"> (+1 day)</template>
+        </template>
       </span>
     </p>
+
+    <p v-if="today.special" class="mt-2 flex items-start gap-1.5 rounded-xl bg-warning/10 px-3 py-2 text-[13px] text-warning" role="note">
+      <AppIcon name="star" class="mt-px size-4 shrink-0" />
+      <span>Special schedule: {{ today.special }}</span>
+    </p>
+    <p v-if="!isCalendarToday" class="mt-2 text-[13px] text-hint">Night shift that started {{ formatDate(today.date, 'long') }}.</p>
 
     <dl class="mt-4 grid grid-cols-3 divide-x divide-separator rounded-2xl bg-page py-3">
       <div v-for="f in figures" :key="f.label" class="flex min-w-0 flex-col items-center gap-1 px-1">

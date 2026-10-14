@@ -12,29 +12,61 @@ watch(() => current.value.fullPath, () => (menuOpen.value = false))
 
 const branchIcon = 'M3 21h18M5 21V8l7-5 7 5v13M9 21v-6h6v6'
 
+type NavLink = { to: string; label: string; perm?: Permission[] }
+type NavItem = { label: string; icon: string; to?: string; perm?: Permission[]; children?: NavLink[] }
+
 // One place for navigation; items are shown only with the permission the API
-// will also require.
-const items: { to: string; label: string; icon: string; perm?: Permission[] }[] = [
+// will also require. Groups open as sub-menus.
+const items: NavItem[] = [
   { to: '/', label: 'Dashboard', icon: 'M3 12 12 3l9 9M5 10v10h5v-6h4v6h5V10' },
-  { to: '/reviews', label: 'Reviews', icon: 'M9 12l2 2 4-4M7 4h10a2 2 0 0 1 2 2v14l-7-3-7 3V6a2 2 0 0 1 2-2z', perm: ['team.review', 'all.review'] },
-  { to: '/attendance', label: 'Attendance', icon: 'M12 7v5l3 3M12 21a9 9 0 1 0 0-18 9 9 0 0 0 0 18z' },
-  { to: '/leave', label: 'Leave', icon: 'M8 3v3m8-3v3M4 9h16M5 5h14a1 1 0 0 1 1 1v13a1 1 0 0 1-1 1H5a1 1 0 0 1-1-1V6a1 1 0 0 1 1-1z' },
+  {
+    label: 'Attendance', icon: 'M12 7v5l3 3M12 21a9 9 0 1 0 0-18 9 9 0 0 0 0 18z',
+    children: [
+      { to: '/attendance', label: 'Records' },
+      { to: '/leave', label: 'Leave requests' },
+      { to: '/reports', label: 'Reports' },
+    ],
+  },
+  {
+    label: 'Schedules', icon: 'M8 3v3m8-3v3M4 9h16M5 5h14a1 1 0 0 1 1 1v13a1 1 0 0 1-1 1H5a1 1 0 0 1-1-1V6a1 1 0 0 1 1-1zm3 8h2m4 0h2m-8 4h2',
+    children: [
+      { to: '/schedules/roster', label: 'Weekly roster' },
+      { to: '/schedules/special', label: 'Special schedules' },
+      { to: '/schedules/shifts', label: 'Shifts' },
+      { to: '/schedules/holidays', label: 'Holidays' },
+    ],
+  },
   { to: '/employees', label: 'Employees', icon: 'M17 20v-1a4 4 0 0 0-4-4H7a4 4 0 0 0-4 4v1M10 11a4 4 0 1 0 0-8 4 4 0 0 0 0 8zm11 9v-1a4 4 0 0 0-3-3.9M16 3.1a4 4 0 0 1 0 7.8' },
   { to: '/branches', label: 'Branches', icon: branchIcon, perm: ['branches.manage'] },
-  { to: '/reports', label: 'Reports', icon: 'M4 20V10m6 10V4m6 16v-7m4 7H2' },
-  { to: '/settings', label: 'Settings', icon: 'M12 15a3 3 0 1 0 0-6 3 3 0 0 0 0 6zm7.4-3a7.4 7.4 0 0 0-.1-1.2l2-1.6-2-3.4-2.4 1a7.5 7.5 0 0 0-2-1.2L14.5 3h-5l-.4 2.6a7.5 7.5 0 0 0-2 1.2l-2.4-1-2 3.4 2 1.6a7.4 7.4 0 0 0 0 2.4l-2 1.6 2 3.4 2.4-1a7.5 7.5 0 0 0 2 1.2l.4 2.6h5l.4-2.6a7.5 7.5 0 0 0 2-1.2l2.4 1 2-3.4-2-1.6c.1-.4.1-.8.1-1.2z', perm: ['settings.view'] },
-  { to: '/audit', label: 'Audit log', icon: 'M9 5h10M9 12h10M9 19h10M5 5h.01M5 12h.01M5 19h.01', perm: ['audit.view'] },
+  {
+    label: 'Settings', icon: 'M12 15a3 3 0 1 0 0-6 3 3 0 0 0 0 6zm7.4-3a7.4 7.4 0 0 0-.1-1.2l2-1.6-2-3.4-2.4 1a7.5 7.5 0 0 0-2-1.2L14.5 3h-5l-.4 2.6a7.5 7.5 0 0 0-2 1.2l-2.4-1-2 3.4 2 1.6a7.4 7.4 0 0 0 0 2.4l-2 1.6 2 3.4 2.4-1a7.5 7.5 0 0 0 2 1.2l.4 2.6h5l.4-2.6a7.5 7.5 0 0 0 2-1.2l2.4 1 2-3.4-2-1.6c.1-.4.1-.8.1-1.2z',
+    children: [
+      { to: '/settings', label: 'General', perm: ['settings.view'] },
+      { to: '/audit', label: 'Audit log', perm: ['audit.view'] },
+    ],
+  },
 ]
+const allowed = (perm?: Permission[]) => !perm || perm.some(p => auth.can(p))
 const nav = computed(() => {
-  const list = items.filter(i => !i.perm || i.perm.some(p => auth.can(p)))
+  const list = items
+    .filter(i => allowed(i.perm))
+    .map(i => (i.children ? { ...i, children: i.children.filter(c => allowed(c.perm)) } : i))
+    .filter(i => !i.children || i.children.length > 0)
   // A branch admin edits their own branch's settings from "My branch".
   const myBranch = auth.employee?.branch_id
   if (!auth.can('branches.manage') && auth.can('branch.settings') && myBranch) {
-    list.splice(list.findIndex(i => i.to === '/reports') + 1, 0, { to: `/branches/${myBranch}`, label: 'My branch', icon: branchIcon })
+    list.splice(list.findIndex(i => i.to === '/employees') + 1, 0, { to: `/branches/${myBranch}`, label: 'My branch', icon: branchIcon })
   }
   return list
 })
-const active = (to: string) => (to === '/' ? current.value.path === '/' : current.value.path.startsWith(to))
+const active = (to: string) => (to === '/' ? current.value.path === '/' : current.value.path === to || current.value.path.startsWith(`${to}/`))
+
+// A group is open while one of its pages is shown, or after the user opens it.
+const toggled = ref<Record<string, boolean>>({})
+const groupActive = (i: NavItem) => !!i.children?.some(c => active(c.to))
+const groupOpen = (i: NavItem) => toggled.value[i.label] ?? groupActive(i)
+const toggle = (i: NavItem) => (toggled.value = { ...toggled.value, [i.label]: !groupOpen(i) })
+watch(() => current.value.path, () => (toggled.value = {}))
 
 async function signOut() {
   await auth.logout()
@@ -65,8 +97,9 @@ async function signOut() {
       </div>
       <nav class="flex-1 overflow-y-auto px-3" aria-label="Main">
         <ul class="flex flex-col gap-0.5">
-          <li v-for="i in nav" :key="i.to">
+          <li v-for="i in nav" :key="i.label">
             <NuxtLink
+              v-if="i.to"
               :to="i.to"
               class="flex items-center gap-3 rounded-lg px-3 py-2 text-sm font-medium transition"
               :class="active(i.to) ? 'bg-primary/10 text-primary' : 'text-muted hover:bg-surface-2 hover:text-fg'"
@@ -75,6 +108,30 @@ async function signOut() {
               <svg viewBox="0 0 24 24" class="size-[18px] shrink-0" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path :d="i.icon" /></svg>
               {{ i.label }}
             </NuxtLink>
+            <template v-else>
+              <button
+                type="button"
+                class="flex w-full items-center gap-3 rounded-lg px-3 py-2 text-left text-sm font-medium transition hover:bg-surface-2 hover:text-fg"
+                :class="groupActive(i) ? 'text-fg' : 'text-muted'"
+                :aria-expanded="groupOpen(i)"
+                :aria-controls="`nav-${i.label}`"
+                @click="toggle(i)"
+              >
+                <svg viewBox="0 0 24 24" class="size-[18px] shrink-0" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path :d="i.icon" /></svg>
+                <span class="flex-1">{{ i.label }}</span>
+                <svg viewBox="0 0 24 24" class="size-4 shrink-0 transition-transform" :class="groupOpen(i) && 'rotate-90'" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m9 18 6-6-6-6" /></svg>
+              </button>
+              <ul v-show="groupOpen(i)" :id="`nav-${i.label}`" class="mb-1 ml-[1.35rem] mt-0.5 flex flex-col gap-0.5 border-l border-border pl-3">
+                <li v-for="c in i.children" :key="c.to">
+                  <NuxtLink
+                    :to="c.to"
+                    class="block rounded-lg px-3 py-1.5 text-sm transition"
+                    :class="active(c.to) ? 'bg-primary/10 font-medium text-primary' : 'text-muted hover:bg-surface-2 hover:text-fg'"
+                    :aria-current="active(c.to) ? 'page' : undefined"
+                  >{{ c.label }}</NuxtLink>
+                </li>
+              </ul>
+            </template>
           </li>
         </ul>
       </nav>

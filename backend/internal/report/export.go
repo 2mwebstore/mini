@@ -11,7 +11,7 @@ import (
 	"github.com/xuri/excelize/v2"
 )
 
-var exportHeader = []string{"Employee ID", "Employee Name", "Branch", "Department", "Date", "Check-In", "Check-Out",
+var exportHeader = []string{"Employee ID", "Employee Name", "Branch", "Department", "Date", "Shift", "Check-In", "Check-Out",
 	"Working Hours", "Working Minutes", "Late Minutes", "Early Leave Minutes", "Status", "Leave Type",
 	"Confirmation Status", "Confirmed By"}
 
@@ -27,11 +27,23 @@ func exportCol(name string) int {
 
 func exportRow(rep *Report, r DayRow) []string {
 	return []string{
-		r.EmployeeCode, r.FullName, r.Branch, r.Department, r.Date.Format("2006-01-02"),
+		r.EmployeeCode, r.FullName, r.Branch, r.Department, r.Date.Format("2006-01-02"), shiftText(r),
 		dash(timeutil.FormatClock24(r.CheckInAt, rep.Loc)), dash(timeutil.FormatClock24(r.CheckOutAt, rep.Loc)),
 		timeutil.FormatMinutes(r.WorkingMinutes), fmt.Sprint(r.WorkingMinutes), fmt.Sprint(r.LateMinutes),
 		fmt.Sprint(r.EarlyMinutes), r.Status, r.LeaveType, r.Confirmation, r.ConfirmedBy,
 	}
+}
+
+// shiftText: "Night Shift 22:00–06:00 (+1)", or "" on a day off.
+func shiftText(r DayRow) string {
+	if r.ShiftStart == "" {
+		return ""
+	}
+	t := fmt.Sprintf("%s %s–%s", r.Shift, r.ShiftStart, r.ShiftEnd)
+	if r.CrossDay {
+		t += " (+1)"
+	}
+	return strings.TrimSpace(t)
 }
 
 func dash(s string) string {

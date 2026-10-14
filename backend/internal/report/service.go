@@ -52,6 +52,12 @@ type DayRow struct {
 	Confirmation   string     `json:"confirmation_status"`
 	ConfirmedBy    string     `json:"confirmed_by"`
 	LeaveType      string     `json:"leave_type"`
+	// The day's scheduled shift (empty on days off).
+	Shift      string `json:"shift,omitempty"`
+	ShiftStart string `json:"shift_start,omitempty"`
+	ShiftEnd   string `json:"shift_end,omitempty"`
+	CrossDay   bool   `json:"cross_day,omitempty"`
+	ShiftGrace int    `json:"-"`
 }
 
 type Summary struct {
@@ -181,9 +187,13 @@ func (s *Service) Build(ctx context.Context, actor *auth.Actor, f Filter) (*Repo
 		return nil, err
 	}
 
+	plan, err := attendance.LoadPlanner(ctx, s.db, ids, f.From, f.To)
+	if err != nil {
+		return nil, err
+	}
+
 	for i := range emps {
 		e := &emps[i]
-		sched := attendance.ScheduleFrom(e.WorkSchedule)
 		dept, branch := "", ""
 		var branchID uint64
 		if e.Department != nil {
@@ -204,7 +214,11 @@ func (s *Service) Build(ctx context.Context, actor *auth.Actor, f Filter) (*Repo
 				continue
 			}
 			row := DayRow{EmployeeID: e.ID, EmployeeCode: e.EmployeeCode, FullName: e.FullName, Department: dept, BranchID: branchID, Branch: branch, Date: d}
-			expected := sched.IsWorkDay(d) && !isHol(d)
+			day := plan.Day(e, d)
+			expected := day.Work && !isHol(d)
+			if day.Work {
+				row.Shift, row.ShiftStart, row.ShiftEnd, row.CrossDay, row.ShiftGrace = day.ShiftName, day.Start, day.End, day.CrossDay, day.Grace
+			}
 			if a, ok := byKey[key(e.ID, d)]; ok {
 				row.AttendanceID = a.ID
 				row.CheckInAt, row.CheckOutAt = a.CheckInAt, a.CheckOutAt

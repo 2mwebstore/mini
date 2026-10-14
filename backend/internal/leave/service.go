@@ -93,7 +93,10 @@ func (s *Service) validate(ctx context.Context, tx *gorm.DB, actor *auth.Actor, 
 	if err != nil {
 		return nil, nil, err
 	}
-	days := attendance.WorkingDays(&actor.Employee, start, end, isHol)
+	days, err := attendance.WorkingDays(ctx, tx, &actor.Employee, start, end, isHol)
+	if err != nil {
+		return nil, nil, err
+	}
 	if days == 0 {
 		return nil, nil, apperr.BadRequest("NO_WORKING_DAYS", "The selected dates contain no working days.")
 	}

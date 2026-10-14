@@ -491,11 +491,6 @@ func (s *Service) Departments(ctx context.Context) ([]models.Department, error) 
 	return ds, s.db.WithContext(ctx).Order("name").Find(&ds).Error
 }
 
-func (s *Service) Schedules(ctx context.Context) ([]models.WorkSchedule, error) {
-	var ws []models.WorkSchedule
-	return ws, s.db.WithContext(ctx).Order("id").Find(&ws).Error
-}
-
 func escapeLike(s string) string {
 	return strings.NewReplacer(`\`, `\\`, `%`, `\%`, `_`, `\_`).Replace(s)
 }

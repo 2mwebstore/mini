@@ -76,3 +76,8 @@ export const leaveStatus: Record<LeaveStatus, { label: string; tone: Tone }> = {
   REJECTED: { label: 'Rejected', tone: 'danger' },
   CANCELLED: { label: 'Cancelled', tone: 'neutral' },
 }
+
+/** YYYY-MM-DD of an instant in the company timezone. */
+export function todayISOAt(iso: string, timeZone: string): string {
+  return new Intl.DateTimeFormat('en-CA', { year: 'numeric', month: '2-digit', day: '2-digit', timeZone }).format(new Date(iso))
+}
