@@ -67,6 +67,7 @@ function openCell(row: RosterRow, i: number) {
   choice.value = c.source === 'ROSTER' ? (c.work && c.shift_id ? String(c.shift_id) : 'off') : 'reset'
 }
 const { busy, run } = useAction()
+const { confirm } = useConfirm()
 async function saveCell() {
   const e = editing.value
   if (!e) return
@@ -91,7 +92,8 @@ async function saveCell() {
 }
 
 async function copyLastWeek() {
-  if (!window.confirm(`Copy last week's roster into the week of ${formatDate(filter.week)}? Days already set this week are overwritten.`)) return
+  if (!(await confirm({ title: 'Copy last week’s roster?', message: `Into the week of ${formatDate(filter.week)}. Days already set this week are overwritten.`,
+    confirmLabel: 'Copy roster', tone: 'primary' }))) return
   if (await run('copy', () => scheduleService.copyRoster(addDays(filter.week, -7), filter.week, filter.branch_id), 'Last week copied')) roster.load()
 }
 const exportUrl = (format: 'xlsx' | 'csv') => scheduleService.exportUrl(query.value, format)

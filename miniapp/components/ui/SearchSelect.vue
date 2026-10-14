@@ -2,7 +2,7 @@
 // Picker with a search box, opened as a bottom sheet (the Mini App's equivalent of
 // the admin panel's SearchSelect). Values are strings; "" means nothing chosen.
 // Each option may carry a colour dot, a second line and a hint on the right
-// (e.g. "5 days left"). The search box appears for longer lists.
+// (e.g. "5 days left"). Every list has a search box (searchable=false hides it).
 export interface PickOption {
   value: string
   label: string
@@ -28,7 +28,7 @@ const model = defineModel<string>({ required: true })
 const open = ref(false)
 const query = ref('')
 const search = ref<HTMLInputElement>()
-const showSearch = computed(() => props.searchable ?? props.options.length > 6)
+const showSearch = computed(() => props.searchable ?? true)
 const selected = computed(() => props.options.find(o => o.value === model.value))
 const items = computed(() => {
   const q = query.value.trim().toLowerCase()

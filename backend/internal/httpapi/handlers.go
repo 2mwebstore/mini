@@ -142,26 +142,6 @@ func (s *Server) deactivateEmployee(c *gin.Context) {
 	c.Status(http.StatusNoContent)
 }
 
-func (s *Server) createUser(c *gin.Context) {
-	id, ok := idParam(c, "id")
-	if !ok {
-		return
-	}
-	var in struct {
-		Email    string `json:"email" binding:"required"`
-		Password string `json:"password" binding:"required,max=200"`
-	}
-	if !bind(c, &in) {
-		return
-	}
-	u, err := s.employees.CreateUser(c.Request.Context(), actorFrom(c), id, in.Email, in.Password)
-	if err != nil {
-		fail(c, err)
-		return
-	}
-	c.JSON(http.StatusCreated, u)
-}
-
 func (s *Server) listDepartments(c *gin.Context) {
 	out, err := s.employees.DepartmentList(c.Request.Context())
 	if err != nil {
@@ -237,6 +217,25 @@ func (s *Server) manualAttendance(c *gin.Context) {
 		return
 	}
 	c.JSON(http.StatusOK, out)
+}
+
+// deleteAttendance removes one record; body {reason} (required, audited).
+func (s *Server) deleteAttendance(c *gin.Context) {
+	id, ok := idParam(c, "id")
+	if !ok {
+		return
+	}
+	var body struct {
+		Reason string `json:"reason" binding:"required,max=500"`
+	}
+	if !bind(c, &body) {
+		return
+	}
+	if err := s.attendance.Delete(c.Request.Context(), actorFrom(c), id, body.Reason); err != nil {
+		fail(c, err)
+		return
+	}
+	c.Status(http.StatusNoContent)
 }
 
 func (s *Server) editAttendance(c *gin.Context) {

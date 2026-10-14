@@ -72,8 +72,8 @@ func (s *Service) Login(ctx context.Context, email, password string) (*LoginResu
 	if err != nil {
 		return nil, err
 	}
-	if !emp.IsActive() || !PanelAccess(emp.RoleID) {
-		// The admin panel is for roles with more than their own records; staff use the Mini App.
+	if !emp.IsActive() || !emp.IsSystemUser() || !PanelAccess(emp.RoleID) {
+		// The admin panel is for system users; staff use the Mini App.
 		return nil, apperr.Forbidden("Your account does not have admin panel access.")
 	}
 	now := time.Now()
@@ -110,7 +110,7 @@ func (s *Service) ActorFromJWT(ctx context.Context, raw string) (*Actor, error) 
 		return nil, apperr.ErrUnauthorized
 	}
 	emp, err := s.loadEmployee(ctx, claims.EmployeeID)
-	if err != nil || !emp.IsActive() {
+	if err != nil || !emp.IsActive() || !emp.IsSystemUser() {
 		return nil, apperr.ErrUnauthorized
 	}
 	a := &Actor{Employee: *emp, Channel: ChannelDashboard}
@@ -188,7 +188,7 @@ func (s *Service) loadEmployee(ctx context.Context, id uint64) (*models.Employee
 func TeamIDs(ctx context.Context, db *gorm.DB, managerID uint64) ([]uint64, error) {
 	var ids []uint64
 	err := db.WithContext(ctx).Model(&models.Employee{}).
-		Where("manager_id = ? AND deleted_at IS NULL", managerID).Pluck("id", &ids).Error
+		Where("manager_id = ? AND deleted_at IS NULL AND kind = ?", managerID, models.KindStaff).Pluck("id", &ids).Error
 	return ids, err
 }
 
@@ -207,7 +207,7 @@ func Scope(ctx context.Context, db *gorm.DB, a *Actor) ([]uint64, error) {
 	if _, ids := a.BranchScope(); len(ids) > 0 {
 		// Deactivated people stay in scope so their history remains in reports.
 		if err := db.WithContext(ctx).Model(&models.Employee{}).
-			Where("branch_id IN ? AND role_id NOT IN ?", ids, models.CompanyWideRoleIDs()).
+			Where("branch_id IN ? AND role_id NOT IN ? AND kind = ?", ids, models.CompanyWideRoleIDs(), models.KindStaff).
 			Pluck("id", &branch).Error; err != nil {
 			return nil, err
 		}

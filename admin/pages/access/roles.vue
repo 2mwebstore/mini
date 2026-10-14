@@ -10,6 +10,7 @@ const lookups = useLookupsStore()
 const roles = useResource(() => accessService.roles())
 const catalog = useResource(() => accessService.permissions())
 const { busy, run } = useAction()
+const { confirm } = useConfirm()
 
 const groups = computed(() => {
   const out: { name: string; items: PermissionInfo[] }[] = []
@@ -55,7 +56,7 @@ async function save() {
   }
 }
 async function remove(r: Role) {
-  if (!window.confirm(`Delete the role "${r.name}"?`)) return
+  if (!(await confirm({ title: `Delete the role “${r.name}”?`, message: 'Nobody has this role; it is removed from Role management.' }))) return
   if (await run(`d${r.id}`, () => accessService.deleteRole(r.id), 'Role deleted')) {
     roles.load()
     lookups.loadRoles(true).catch(() => {})

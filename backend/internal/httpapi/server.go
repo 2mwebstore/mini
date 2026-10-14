@@ -104,7 +104,6 @@ func (s *Server) Router() *gin.Engine {
 	api.GET("/employees/:id", s.getEmployee)
 	api.PUT("/employees/:id", require(auth.PermStaffManage), s.updateEmployee)
 	api.DELETE("/employees/:id", require(auth.PermStaffManage), s.deactivateEmployee)
-	api.POST("/employees/:id/user", require(auth.PermAssignAdminRoles), s.createUser)
 	api.GET("/branches", s.listBranches)
 	api.POST("/branches", require(auth.PermBranchesManage), s.createBranch)
 	api.GET("/branches/:id", s.getBranch)
@@ -149,6 +148,7 @@ func (s *Server) Router() *gin.Engine {
 	api.GET("/attendance/photos/:id", s.attendancePhoto)
 	api.GET("/attendance/:id", s.getAttendance)
 	api.PUT("/attendance/:id", require(auth.PermAttendanceEdit), s.editAttendance)
+	api.DELETE("/attendance/:id", require(auth.PermAttendanceEdit), s.deleteAttendance)
 	api.POST("/attendance/confirmations/:id/confirm", requireReviewer(), s.reviewAttendance(true))
 	api.POST("/attendance/confirmations/:id/reject", requireReviewer(), s.reviewAttendance(false))
 

@@ -1,7 +1,7 @@
 <script setup lang="ts">
 // Dropdown with a search box (after BubbleWhite's SearchableSelect) for the panel's
 // filters and forms. Values are strings; "" means nothing chosen. `emptyLabel` adds a
-// top option for "" (e.g. "All branches"). The search box appears for longer lists.
+// top option for "" (e.g. "All branches"). Every list has a search box (searchable=false hides it).
 import type { SelectOption } from '~/utils/options'
 
 const props = withDefaults(
@@ -36,7 +36,7 @@ const panelStyle = ref<Record<string, string>>({})
 // overflow or stacking context clips it. Decided once, before the menu ever opens.
 const inDialog = ref(false)
 
-const showSearch = computed(() => props.searchable ?? props.options.length > 7)
+const showSearch = computed(() => props.searchable ?? true)
 const canClear = computed(() => (props.clearable ?? props.emptyLabel !== undefined) && model.value !== '' && !props.disabled)
 const selected = computed(() => props.options.find(o => o.value === model.value))
 const display = computed(() => selected.value?.label ?? (model.value === '' ? props.emptyLabel : undefined))

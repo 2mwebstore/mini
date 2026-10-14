@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { accessService } from '~/services/access.service'
 import { branchService } from '~/services/branch.service'
 import { useAuthStore } from '~/stores/auth'
 import { useLookupsStore } from '~/stores/lookups'
@@ -45,19 +46,18 @@ async function save() {
   }, 'Branch saved')
 }
 
-// ---------- branch admin (owner only) ----------
-onMounted(() => owner.value && lookups.loadEmployees().catch(() => {}))
-const candidates = computed(() =>
-  (lookups.employees ?? []).filter(e => !e.deleted_at && e.status === 'ACTIVE' && e.role?.code !== 'super_admin'),
-)
+// ---------- branch admin (owner only): a system user, never an employee ----------
+const sysUsers = useResource(() => accessService.users(), { immediate: false })
+onMounted(() => owner.value && sysUsers.load())
+const candidates = computed(() => (sysUsers.data.value ?? []).filter(u => u.status === 'ACTIVE' && u.role !== 'super_admin'))
 const chosen = ref('')
-const chosenEmp = computed(() => candidates.value.find(e => String(e.id) === chosen.value))
+const chosenUser = computed(() => candidates.value.find(u => String(u.person_id) === chosen.value))
 const candidateOptions = computed((): SelectOption[] =>
-  candidates.value.map(e => ({
-    value: String(e.id),
-    label: e.full_name,
-    sub: [e.employee_code, e.branch?.name, e.role?.name ?? ''].filter(Boolean).join(' · '),
-    disabled: e.id === branch.data.value?.admin_employee_id,
+  candidates.value.map(u => ({
+    value: String(u.person_id),
+    label: u.full_name,
+    sub: [u.role_name, u.branch_name].filter(Boolean).join(' · '),
+    disabled: u.person_id === branch.data.value?.admin_employee_id,
   })),
 )
 const statusOptions: SelectOption[] = [
@@ -70,14 +70,10 @@ async function assign(employeeId: number | null) {
   }, employeeId ? 'Branch admin assigned' : 'Branch admin removed')
   if (ok) {
     chosen.value = ''
-    lookups.invalidateStaff() // roles and branches changed
-    lookups.loadEmployees().catch(() => {})
+    lookups.branches = null // the branch's admin changed
+    sysUsers.load()
   }
 }
-const adminHasLogin = computed(() => {
-  const adminId = branch.data.value?.admin_employee_id
-  return adminId ? (lookups.employees ?? []).find(e => e.id === adminId)?.has_login ?? branch.data.value?.admin?.has_login : true
-})
 </script>
 
 <template>
@@ -105,26 +101,24 @@ const adminHasLogin = computed(() => {
             <h2 class="text-sm font-semibold">Branch admin</h2>
             <div v-if="branch.data.value.admin" class="flex items-center justify-between gap-3 rounded-lg bg-surface-2 px-3 py-2">
               <div>
-                <NuxtLink :to="`/employees/${branch.data.value.admin.id}`" class="font-medium hover:underline">{{ branch.data.value.admin.full_name }}</NuxtLink>
-                <span class="block text-xs text-muted">{{ branch.data.value.admin.employee_code }}</span>
+                <NuxtLink v-if="owner" to="/access/users" class="font-medium hover:underline">{{ branch.data.value.admin.full_name }}</NuxtLink>
+                <span v-else class="font-medium">{{ branch.data.value.admin.full_name }}</span>
+                <span class="block text-xs text-muted">System user · {{ branch.data.value.admin.email || 'Branch Admin' }}</span>
               </div>
               <AppButton v-if="owner" size="sm" variant="danger" :loading="busy === 'admin'" @click="assign(null)">Remove</AppButton>
             </div>
             <p v-else class="text-sm text-warning">This branch has no admin. Review requests go to managers, or to HR and the owner.</p>
-            <p v-if="branch.data.value.admin && owner && !adminHasLogin" class="rounded-lg bg-warning/10 px-3 py-2 text-sm">
-              {{ branch.data.value.admin.full_name }} has no admin panel login yet.
-              <NuxtLink :to="`/employees/${branch.data.value.admin.id}`" class="link">Create one</NuxtLink> so they can manage the branch.
-            </p>
             <template v-if="owner">
-              <FormField label="Assign a new admin" for="b-admin" hint="The person becomes Branch Admin and moves to this branch; a replaced admin becomes staff.">
+              <FormField label="Assign a new admin" for="b-admin" hint="Choose a system user: they become this branch's Branch Admin. A replaced admin keeps the account without panel powers until given another role.">
                 <div class="flex gap-2">
-                  <SearchSelect id="b-admin" v-model="chosen" :options="candidateOptions" placeholder="Choose an employee…" />
+                  <SearchSelect id="b-admin" v-model="chosen" :options="candidateOptions" placeholder="Choose a system user…" class="min-w-0 flex-1" />
                   <AppButton :disabled="!chosen" :loading="busy === 'admin'" @click="assign(Number(chosen))">Assign</AppButton>
                 </div>
               </FormField>
-              <p v-if="chosenEmp?.role?.code === 'hr_admin'" class="text-xs text-warning">
-                {{ chosenEmp.full_name }} is a company-wide HR admin; assigning limits them to this branch.
+              <p v-if="chosenUser && chosenUser.scope === 'all'" class="text-xs text-warning">
+                {{ chosenUser.full_name }} is company-wide ({{ chosenUser.role_name }}); assigning limits them to this branch.
               </p>
+              <p class="text-xs text-muted">Not listed? <NuxtLink to="/access/users" class="link">Add a system user</NuxtLink> with the Branch Admin role.</p>
             </template>
           </section>
 

@@ -77,5 +77,5 @@ export const api = {
   get: <T>(path: string, query?: Query) => request<T>('GET', path, undefined, query),
   post: <T>(path: string, body?: unknown) => request<T>('POST', path, body ?? {}),
   put: <T>(path: string, body: unknown) => request<T>('PUT', path, body),
-  del: <T = void>(path: string) => request<T>('DELETE', path),
+  del: <T = void>(path: string, body?: unknown) => request<T>('DELETE', path, body),
 }

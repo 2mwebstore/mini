@@ -109,6 +109,7 @@ const preview = computed(() => {
 })
 
 const { busy, run } = useAction()
+const { confirm } = useConfirm()
 async function save() {
   if (problem.value) return
   const who = form.id ? { employee_id: Number(form.employee_id) } : { employee_ids: form.employee_ids.map(Number) }
@@ -126,7 +127,10 @@ async function save() {
   }
 }
 async function remove(o: ScheduleOverride) {
-  if (!window.confirm(`Delete the special schedule for ${o.employee?.full_name} (${formatDate(o.start_date)} – ${formatDate(o.end_date)})?`)) return
+  const ok = await confirm({ title: 'Delete this special schedule?', message: 'Their usual shift and the weekly roster apply again on these dates.',
+    details: [{ label: 'Employee', value: o.employee?.full_name ?? '' }, { label: 'Dates', value: `${formatDate(o.start_date)} – ${formatDate(o.end_date)}` },
+      { label: 'Schedule', value: kindLabel[o.kind] }] })
+  if (!ok) return
   if (await run(`d${o.id}`, () => scheduleService.deleteOverride(o.id), 'Special schedule deleted')) list.load()
 }
 </script>
@@ -187,7 +191,7 @@ async function remove(o: ScheduleOverride) {
           <SearchSelect id="sp-emp" v-model="form.employee_id" :options="employeeOptions" required disabled />
         </FormField>
         <FormField v-else label="Employees" for="sp-emps" class="sm:col-span-2" hint="Tick one or more people. Search a department or branch, then tick all matches.">
-          <MultiSelect id="sp-emps" v-model="form.employee_ids" :options="employeeOptions" noun="employee" placeholder="Choose employees…" required />
+          <MultiSelect id="sp-emps" v-model="form.employee_ids" :options="employeeOptions" noun="employee" placeholder="Choose employees…" search-placeholder="Search name, ID, department, branch…" required />
         </FormField>
         <FormField label="From" for="sp-from"><input id="sp-from" v-model="form.start_date" type="date" class="input" required /></FormField>
         <FormField label="To" for="sp-to"><input id="sp-to" v-model="form.end_date" type="date" class="input" :min="form.start_date" required /></FormField>

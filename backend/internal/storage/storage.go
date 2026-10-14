@@ -16,6 +16,7 @@ import (
 type Store interface {
 	Put(ctx context.Context, key string, data []byte, contentType string) error
 	Get(ctx context.Context, key string) (io.ReadCloser, int64, string, error)
+	Delete(ctx context.Context, key string) error
 	Ping(ctx context.Context) error
 	URI(key string) string
 }
@@ -70,6 +71,10 @@ func (s *S3) Get(ctx context.Context, key string) (io.ReadCloser, int64, string,
 		return nil, 0, "", err
 	}
 	return obj, info.Size, info.ContentType, nil
+}
+
+func (s *S3) Delete(ctx context.Context, key string) error {
+	return s.client.RemoveObject(ctx, s.bucket, key, minio.RemoveObjectOptions{})
 }
 
 func (s *S3) Ping(ctx context.Context) error {

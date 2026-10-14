@@ -10,6 +10,10 @@ const id = Number(route.params.id)
 const detail = useResource(() => attendanceService.get(id))
 const att = computed(() => detail.data.value?.attendance)
 const editOpen = ref(false)
+const deleting = useDeleteAttendance()
+async function remove() {
+  if (att.value && await deleting.remove(att.value)) navigateTo('/attendance')
+}
 </script>
 
 <template>
@@ -18,6 +22,7 @@ const editOpen = ref(false)
     <StateView :loading="detail.loading.value && !att" :error="detail.error.value" @retry="detail.load">
       <template v-if="detail.data.value && att">
         <PageHeader class="mt-3" :title="att.employee?.full_name ?? 'Attendance'" :subtitle="`${att.employee?.employee_code} · ${formatDate(att.work_date, true)}`">
+          <AppButton v-if="auth.can('attendance.edit')" variant="danger" :loading="!!deleting.busy.value" @click="remove">Delete</AppButton>
           <AppButton v-if="auth.can('attendance.edit')" variant="secondary" @click="editOpen = true">Edit</AppButton>
         </PageHeader>
         <div class="card p-4 sm:p-5">

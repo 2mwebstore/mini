@@ -20,6 +20,7 @@ const (
 	ActionReject             = "attendance.reject"
 	ActionManualCreate       = "attendance.manual_create"
 	ActionManualEdit         = "attendance.manual_edit"
+	ActionAttendanceDelete   = "attendance.delete"
 	ActionAutoAbsent         = "attendance.auto_absent"
 	ActionLeaveSubmit        = "leave.submit"
 	ActionLeaveCancel        = "leave.cancel"

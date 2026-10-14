@@ -12,6 +12,7 @@ const lookups = useLookupsStore()
 const canEdit = computed(() => auth.can('staff.manage') && auth.can('all.view'))
 const list = useResource(() => employeeService.orgList(props.kind))
 const { busy, run } = useAction()
+const { confirm } = useConfirm()
 
 const newName = ref('')
 const editing = ref<number | null>(null)
@@ -48,7 +49,7 @@ async function rename(item: OrgItem) {
   }
 }
 async function remove(item: OrgItem) {
-  if (!window.confirm(`Delete "${item.name}"?`)) return
+  if (!(await confirm({ title: `Delete “${item.name}”?`, message: 'Nobody is assigned to it.' }))) return
   if (await run(`d${item.id}`, () => employeeService.orgDelete(props.kind, item.id), `${props.noun} deleted`)) {
     list.load()
     refreshLookups()

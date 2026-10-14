@@ -79,6 +79,12 @@ async function addRecord() {
 const editing = ref<Attendance | null>(null)
 const editOpen = computed({ get: () => !!editing.value, set: v => !v && (editing.value = null) })
 
+// ---------- delete ----------
+const deleting = useDeleteAttendance()
+async function removeRecord(a: Attendance) {
+  if (await deleting.remove(a)) list.load()
+}
+
 // ---------- view one record ----------
 const viewing = ref<number | null>(null)
 function editFromView(id: number) {
@@ -169,6 +175,15 @@ const activeEmployeeOptions = computed(() => activeEmployees.value.map(e => ({ v
                       Edit
                     </AppButton>
                     <AppButton size="sm" variant="ghost" :aria-label="`View ${a.employee?.full_name} ${formatDate(a.work_date)}`" @click="viewing = a.id">View</AppButton>
+                    <AppButton
+                      v-if="auth.can('attendance.edit')"
+                      size="sm"
+                      variant="ghost"
+                      class="text-danger"
+                      :loading="deleting.busy.value === `del${a.id}`"
+                      :aria-label="`Delete ${a.employee?.full_name} ${formatDate(a.work_date)}`"
+                      @click="removeRecord(a)"
+                    >Delete</AppButton>
                   </div>
                 </td>
               </tr>
@@ -180,7 +195,7 @@ const activeEmployeeOptions = computed(() => activeEmployees.value.map(e => ({ v
     </StateView>
 
     <AttendanceEditModal v-model="editOpen" :record="editing" @saved="list.load()" />
-    <AttendanceViewModal :id="viewing" @close="viewing = null" @changed="list.load()" @edit="editFromView" />
+    <AttendanceViewModal :id="viewing" @close="viewing = null" @changed="list.load()" @edit="editFromView" @deleted="viewing = null; list.load()" />
 
     <AppModal v-model="addOpen" title="Add attendance record">
       <form id="add-form" class="grid gap-3 sm:grid-cols-2" @submit.prevent="addRecord">

@@ -151,9 +151,10 @@ func (s *Service) Update(ctx context.Context, actor *auth.Actor, id uint64, in I
 	return s.Get(ctx, actor, id)
 }
 
-// AssignAdmin makes employeeID the branch's only admin (nil = no admin). The
-// employee moves to this branch with the branch_admin role; a replaced admin
-// becomes regular staff of the branch.
+// AssignAdmin makes the system user employeeID the branch's only admin (nil = no
+// admin). They get the branch_admin role in this branch; a replaced admin keeps
+// their account but loses panel powers (Staff role) until given another role on
+// System users.
 func (s *Service) AssignAdmin(ctx context.Context, actor *auth.Actor, branchID uint64, employeeID *uint64) (*models.Branch, error) {
 	if !actor.Has(auth.PermBranchesManage) {
 		return nil, apperr.Forbidden("Only the owner can assign branch admins.")
@@ -166,8 +167,8 @@ func (s *Service) AssignAdmin(ctx context.Context, actor *auth.Actor, branchID u
 		var next *models.Employee
 		if employeeID != nil {
 			var e models.Employee
-			if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).First(&e, *employeeID).Error; err != nil || !e.IsActive() {
-				return apperr.BadRequest("INVALID_EMPLOYEE", "Choose an active employee.")
+			if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).First(&e, *employeeID).Error; err != nil || !e.IsActive() || !e.IsSystemUser() {
+				return apperr.BadRequest("INVALID_EMPLOYEE", "Choose an active system user (Administration → System users).")
 			}
 			if e.RoleID == models.RoleSuperAdmin {
 				return apperr.BadRequest("INVALID_EMPLOYEE", "The owner already manages every branch.")
@@ -288,7 +289,7 @@ func (s *Service) countStaff(ctx context.Context, bs []models.Branch) error {
 	}
 	var rows []row
 	if err := s.db.WithContext(ctx).Model(&models.Employee{}).Select("branch_id, COUNT(*) AS n").
-		Where("branch_id IS NOT NULL AND deleted_at IS NULL").Group("branch_id").Scan(&rows).Error; err != nil {
+		Where("branch_id IS NOT NULL AND deleted_at IS NULL AND kind = ?", models.KindStaff).Group("branch_id").Scan(&rows).Error; err != nil {
 		return err
 	}
 	n := map[uint64]int64{}

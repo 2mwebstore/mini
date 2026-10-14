@@ -54,7 +54,14 @@ type Actor struct {
 
 func (a *Actor) ID() uint64 { return a.Employee.ID }
 
-func (a *Actor) Has(p Permission) bool { return RoleHas(a.Employee.RoleID, p) }
+// Has: the actor's role grants p. System users are not staff: they never check in
+// or take leave, whatever their role says.
+func (a *Actor) Has(p Permission) bool {
+	if a.Employee.IsSystemUser() && (p == PermAttendanceSelf || p == PermLeaveSelf) {
+		return false
+	}
+	return RoleHas(a.Employee.RoleID, p)
+}
 
 func (a *Actor) IsAdmin() bool { return a.Has(PermAllView) }
 

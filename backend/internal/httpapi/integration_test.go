@@ -73,6 +73,12 @@ func (m *memStore) Get(_ context.Context, key string) (io.ReadCloser, int64, str
 	}
 	return io.NopCloser(bytes.NewReader(d)), int64(len(d)), "image/jpeg", nil
 }
+func (m *memStore) Delete(_ context.Context, key string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	delete(m.objs, key)
+	return nil
+}
 func (m *memStore) Ping(context.Context) error { return nil }
 func (m *memStore) URI(k string) string        { return "mem://" + k }
 
@@ -375,8 +381,22 @@ func TestIntegration(t *testing.T) {
 		}
 		return e
 	}
-	owner := mk("GT000", "Owner", "super_admin", 1000, nil)
-	hr := mk("GT010", "Hr Admin", "hr_admin", 1010, nil)
+	// The owner and HR are system users (admin accounts, not staff); their Telegram
+	// links let them review in the Mini App and get notifications.
+	accSvc := access.NewService(gdb)
+	mkSys := func(name, email, pw, role string, tg int64) *models.Employee {
+		u, err := accSvc.CreateUser(ctx, cli, access.UserInput{FullName: &name, Email: &email, Password: &pw, Role: &role, TelegramUserID: &tg})
+		if err != nil {
+			t.Fatalf("system user %s: %v", email, err)
+		}
+		var e models.Employee
+		if err := gdb.First(&e, u.PersonID).Error; err != nil || e.Kind != models.KindSystem {
+			t.Fatalf("system user %s person: %v %+v", email, err, e)
+		}
+		return &e
+	}
+	owner := mkSys("Owner", "owner@example.com", "owner-password-123", "super_admin", 1000)
+	hr := mkSys("Hr Admin", "hr@example.com", "correct-horse-battery", "hr_admin", 1010)
 	mgr := mk("GT020", "Mona Manager", "manager", 1020, nil)
 	dara := mk("GT001", "Dara Sok", "staff", 1001, &mgr.ID)
 	sokha := mk("GT002", "Sokha Chan", "staff", 1002, nil)
@@ -387,9 +407,6 @@ func TestIntegration(t *testing.T) {
 	const daraTG, sokhaTG, mgrTG, hrTG, ownerTG = 1001, 1002, 1020, 1010, 1000
 
 	// ---------- Telegram is configured in Settings (no environment variables) ----------
-	if _, err := empSvc.CreateUser(ctx, cli, owner.ID, "owner@example.com", "owner-password-123"); err != nil {
-		t.Fatal(err)
-	}
 	ownerJWT, _ := h.login("owner@example.com", "owner-password-123")
 	if code, body, _ := h.app("GET", "/me", daraTG, nil); code != 503 || errCode(body) != "TELEGRAM_NOT_CONFIGURED" {
 		t.Fatalf("before a bot token is set the Mini App must say it isn't configured: %d %v", code, body)
@@ -745,8 +762,8 @@ func TestIntegration(t *testing.T) {
 	}
 	var absent int
 	h.db.QueryRow("SELECT COUNT(*) FROM attendance WHERE status='ABSENT' AND work_date='2026-10-08'").Scan(&absent)
-	if absent != 4 { // owner, hr, manager, sokha — dara checked in
-		t.Fatalf("expected 4 absent on 08 Oct, got %d", absent)
+	if absent != 2 { // manager, sokha — dara checked in; the owner and HR are not staff
+		t.Fatalf("expected 2 absent on 08 Oct, got %d", absent)
 	}
 	h.set("2026-10-10 12:00") // Saturday
 	if err := sch.CloseDay(ctx, time.Date(2026, 10, 10, 0, 0, 0, 0, time.UTC), nil); err != nil {
@@ -761,9 +778,6 @@ func TestIntegration(t *testing.T) {
 	}
 
 	// ---------- admin panel: login, session cookie, CSRF ----------
-	if _, err := empSvc.CreateUser(ctx, cli, hr.ID, "hr@example.com", "correct-horse-battery"); err != nil {
-		t.Fatal(err)
-	}
 	if w, _ := h.do("POST", "/api/v1/auth/login", map[string]any{"email": "hr@example.com", "password": "wrong-password"}); w.Code != 401 {
 		t.Fatalf("bad password must be 401: %d", w.Code)
 	}
@@ -802,7 +816,7 @@ func TestIntegration(t *testing.T) {
 	if items, _ := body["items"].([]any); code != 201 || len(items) != 2 {
 		t.Fatalf("special schedule for two people: %d %v", code, body)
 	}
-	batch["employee_ids"] = []uint64{sokha.ID, hr.ID}
+	batch["employee_ids"] = []uint64{sokha.ID, mgr.ID}
 	if code, body, _ := h.admin("POST", "/schedule-overrides", jwt, batch); code != 409 || errCode(body) != "OVERLAP" || !strings.Contains(fmt.Sprint(body), "Sokha Chan") {
 		t.Fatalf("a batch with someone already on a special schedule must be refused, naming them: %d %v", code, body)
 	}
@@ -852,12 +866,36 @@ func TestIntegration(t *testing.T) {
 		t.Fatalf("logout must clear the session cookie: %d %+v", w.Code, cleared)
 	}
 
-	// super admin: panel login for an employee, audit log access
-	if code, body, _ := h.admin("POST", fmt.Sprintf("/employees/%d/user", mgr.ID), jwt, map[string]any{"email": "mona@example.com", "password": "manager-pass-123"}); code != 403 {
-		t.Fatalf("only a super admin may create logins: %d %v", code, body)
+	// ---------- system users are admin accounts, separate from employees ----------
+	viewer := map[string]any{"full_name": "Mona Viewer", "email": "mona@example.com", "password": "manager-pass-123", "role": "viewer"}
+	if code, body, _ := h.admin("POST", "/system-users", jwt, viewer); code != 403 {
+		t.Fatalf("only the owner creates system users: %d %v", code, body)
 	}
-	if code, body, _ := h.admin("POST", fmt.Sprintf("/employees/%d/user", mgr.ID), ownerJWT, map[string]any{"email": "mona@example.com", "password": "manager-pass-123"}); code != 201 {
-		t.Fatalf("super admin creates a login: %d %v", code, body)
+	if code, body, _ := h.admin("POST", "/roles", ownerJWT, map[string]any{"name": "Viewer", "permissions": []string{"all.view", "report.export"}}); code != 201 {
+		t.Fatalf("read-only admin role: %d %v", code, body)
+	}
+	viewer["role"] = "manager"
+	if code, body, _ := h.admin("POST", "/system-users", ownerJWT, viewer); code != 400 || errCode(body) != "STAFF_ROLE" {
+		t.Fatalf("managers are employees (Mini App), not system users: %d %v", code, body)
+	}
+	viewer["role"] = "viewer"
+	if code, body, _ := h.admin("POST", "/system-users", ownerJWT, viewer); code != 201 || body["role"] != "viewer" || body["scope"] != "all" {
+		t.Fatalf("owner creates a system user: %d %v", code, body)
+	}
+	if code, body, _ := h.admin("POST", "/employees", ownerJWT, map[string]any{"employee_code": "GT011", "full_name": "X", "role": "hr_admin"}); code != 400 || errCode(body) != "ADMIN_ROLE" {
+		t.Fatalf("employees cannot get admin roles: %d %v", code, body)
+	}
+	if _, body, _ := h.admin("GET", "/employees", ownerJWT, nil); strings.Contains(fmt.Sprint(body), "Mona Viewer") || strings.Contains(fmt.Sprint(body), "Hr Admin") {
+		t.Fatalf("system users are not listed as employees: %v", body)
+	}
+	if code, _, _ := h.admin("GET", fmt.Sprintf("/employees/%d", hr.ID), ownerJWT, nil); code != 404 {
+		t.Fatalf("a system user is not an employee record, got %d", code)
+	}
+	if code, body, _ := h.app("POST", "/attendance/check-in", hrTG, map[string]string{}); code != 403 {
+		t.Fatalf("system users do not check in: %d %v", code, body)
+	}
+	if code, body, _ := h.app("GET", "/me", hrTG, nil); code != 200 || body["me"].(map[string]any)["is_system_user"] != true {
+		t.Fatalf("the Mini App knows a system user: %d %v", code, body)
 	}
 	if code, body, _ := h.admin("GET", "/audit-logs?limit=5", ownerJWT, nil); code != 200 || len(body["items"].([]any)) != 5 {
 		t.Fatalf("super admin reads audit logs: %d %v", code, body)
@@ -865,7 +903,7 @@ func TestIntegration(t *testing.T) {
 	_ = ownerTG
 
 	// ---------- branches: the owner assigns one admin per branch ----------
-	const vuthyTG, bophaTG = 1030, 1040
+	const vuthyTG, bophaTG, bophaStaffTG = 1030, 1040, 1041 // Bopha: her admin account's Telegram, and her own as staff
 	if code, _, _ := h.admin("POST", "/branches", jwt, map[string]any{"code": "SR", "name": "Siem Reap"}); code != 403 {
 		t.Fatal("only the owner creates branches (HR cannot)")
 	}
@@ -889,13 +927,13 @@ func TestIntegration(t *testing.T) {
 		t.Fatalf("create SR staff: %d %v", code, body)
 	}
 	vuthyID := uint64(num(body, "id"))
-	code, body = mkAPI(jwt, map[string]any{"employee_code": "GT040", "full_name": "Bopha Keo", "telegram_user_id": bophaTG, "branch_id": srID})
+	code, body = mkAPI(jwt, map[string]any{"employee_code": "GT040", "full_name": "Bopha Keo", "telegram_user_id": bophaStaffTG, "branch_id": srID})
 	if code != 201 {
 		t.Fatalf("create SR staff 2: %d %v", code, body)
 	}
 	bophaID := uint64(num(body, "id"))
-	if code, body := mkAPI(jwt, map[string]any{"employee_code": "GT041", "full_name": "X", "role": "branch_admin", "branch_id": srID}); code != 400 || errCode(body) != "BRANCH_ADMIN_ROLE" {
-		t.Fatalf("branch_admin is only granted via the branch: %d %v", code, body)
+	if code, body := mkAPI(jwt, map[string]any{"employee_code": "GT041", "full_name": "X", "role": "branch_admin", "branch_id": srID}); code != 400 || errCode(body) != "ADMIN_ROLE" {
+		t.Fatalf("an employee cannot be a branch admin (that is a system user): %d %v", code, body)
 	}
 	assign := func(jwtTok string, branchID uint64, empID any) (int, map[string]any) {
 		code, body, _ := h.admin("PUT", fmt.Sprintf("/branches/%d/admin", branchID), jwtTok, map[string]any{"employee_id": empID})
@@ -907,19 +945,31 @@ func TestIntegration(t *testing.T) {
 	if code, body := assign(ownerJWT, srID, owner.ID); code != 400 {
 		t.Fatalf("the owner cannot be a branch admin: %d %v", code, body)
 	}
-	if code, body := assign(ownerJWT, srID, bophaID); code != 200 || num(body, "admin_employee_id") != float64(bophaID) {
-		t.Fatalf("assign branch admin: %d %v", code, body)
+	if code, body := assign(ownerJWT, srID, bophaID); code != 400 || errCode(body) != "INVALID_EMPLOYEE" {
+		t.Fatalf("a branch admin is a system user, not an employee: %d %v", code, body)
 	}
-	if code, body := assign(ownerJWT, mainBranch, bophaID); code != 409 || errCode(body) != "ALREADY_BRANCH_ADMIN" {
+	// Bopha also runs the branch: her admin account is a separate system user, with
+	// its own Telegram for reviewing in the Mini App.
+	code, body, _ = h.admin("POST", "/system-users", ownerJWT, map[string]any{"full_name": "Bopha Keo", "email": "bopha@example.com",
+		"password": "bopha-password-123", "role": "branch_admin", "branch_id": srID, "telegram_user_id": bophaTG})
+	if code != 201 || num(body, "branch_id") != float64(srID) || num(body, "telegram_user_id") != bophaTG {
+		t.Fatalf("branch admin system user: %d %v", code, body)
+	}
+	bophaAdmin := uint64(num(body, "person_id"))
+	if _, body, _ := h.admin("GET", fmt.Sprintf("/branches/%d", srID), ownerJWT, nil); num(body, "admin_employee_id") != float64(bophaAdmin) {
+		t.Fatalf("a Branch Admin system user takes the branch: %v", body)
+	}
+	if code, body, _ := h.admin("POST", "/system-users", ownerJWT, map[string]any{"full_name": "Y", "email": "y@example.com",
+		"password": "y-password-1234", "role": "branch_admin", "branch_id": srID}); code != 409 || errCode(body) != "BRANCH_HAS_ADMIN" {
+		t.Fatalf("one admin per branch: %d %v", code, body)
+	}
+	if code, body := assign(ownerJWT, mainBranch, bophaAdmin); code != 409 || errCode(body) != "ALREADY_BRANCH_ADMIN" {
 		t.Fatalf("one person admins one branch: %d %v", code, body)
 	}
 	var bophaRole uint8
-	h.db.QueryRow("SELECT role_id FROM employees WHERE id = ?", bophaID).Scan(&bophaRole)
+	h.db.QueryRow("SELECT role_id FROM employees WHERE id = ?", bophaAdmin).Scan(&bophaRole)
 	if bophaRole != models.RoleBranchAdmin {
-		t.Fatalf("assigned admin gets the branch_admin role, got %d", bophaRole)
-	}
-	if code, body, _ := h.admin("POST", fmt.Sprintf("/employees/%d/user", bophaID), ownerJWT, map[string]any{"email": "bopha@example.com", "password": "bopha-password-123"}); code != 201 {
-		t.Fatalf("panel login for branch admin: %d %v", code, body)
+		t.Fatalf("the branch admin has the branch_admin role, got %d", bophaRole)
 	}
 	bophaJWT, _ := h.login("bopha@example.com", "bopha-password-123")
 
@@ -944,8 +994,8 @@ func TestIntegration(t *testing.T) {
 	if code, body := mkAPI(bophaJWT, map[string]any{"employee_code": "GT042", "full_name": "Srey Mom", "branch_id": mainBranch}); code != 403 {
 		t.Fatalf("branch admin cannot add staff to another branch: %d %v", code, body)
 	}
-	if code, body := mkAPI(bophaJWT, map[string]any{"employee_code": "GT043", "full_name": "Dina Ros", "role": "hr_admin"}); code != 403 {
-		t.Fatalf("branch admin cannot grant admin roles: %d %v", code, body)
+	if code, body := mkAPI(bophaJWT, map[string]any{"employee_code": "GT043", "full_name": "Dina Ros", "role": "hr_admin"}); code != 400 || errCode(body) != "ADMIN_ROLE" {
+		t.Fatalf("staff never get admin roles: %d %v", code, body)
 	}
 	code, body = mkAPI(bophaJWT, map[string]any{"employee_code": "GT042", "full_name": "Srey Mom", "telegram_user_id": 1042})
 	if code != 201 || num(body, "branch_id") != float64(srID) {
@@ -1032,24 +1082,33 @@ func TestIntegration(t *testing.T) {
 		t.Fatalf("each branch's group gets only that branch's daily report: %v", m)
 	}
 
-	// replacing the admin demotes the previous one; deactivating an admin frees the branch
-	if code, body := assign(ownerJWT, srID, vuthyID); code != 200 || num(body, "admin_employee_id") != float64(vuthyID) {
+	// replacing the admin takes the previous one's panel powers; deleting an admin frees the branch
+	code, body, _ = h.admin("POST", "/system-users", ownerJWT, map[string]any{"full_name": "Kosal Admin", "email": "kosal@example.com",
+		"password": "kosal-password-12", "role": "hr_admin"})
+	if code != 201 {
+		t.Fatalf("second system user: %d %v", code, body)
+	}
+	kosalAdmin, kosalUser := uint64(num(body, "person_id")), uint64(num(body, "id"))
+	if code, body := assign(ownerJWT, srID, kosalAdmin); code != 200 || num(body, "admin_employee_id") != float64(kosalAdmin) {
 		t.Fatalf("reassign: %d %v", code, body)
 	}
-	h.db.QueryRow("SELECT role_id FROM employees WHERE id = ?", bophaID).Scan(&bophaRole)
+	h.db.QueryRow("SELECT role_id FROM employees WHERE id = ?", bophaAdmin).Scan(&bophaRole)
 	if bophaRole != models.RoleStaff {
-		t.Fatalf("the previous branch admin becomes staff, got role %d", bophaRole)
+		t.Fatalf("the previous branch admin keeps the account without panel powers, got role %d", bophaRole)
 	}
 	if code, _, _ := h.admin("GET", "/employees", bophaJWT, nil); code != 401 {
 		t.Fatalf("a demoted admin's panel session ends immediately, got %d", code)
 	}
-	if err := empSvc.Deactivate(ctx, &auth.Actor{Employee: *owner, Channel: auth.ChannelDashboard}, vuthyID); err != nil {
-		t.Fatal(err)
+	if code, _, _ := h.admin("DELETE", fmt.Sprintf("/system-users/%d", kosalUser), ownerJWT, nil); code != 204 {
+		t.Fatalf("delete system user: %d", code)
 	}
 	var adminLeft sql.NullInt64
 	h.db.QueryRow("SELECT admin_employee_id FROM branches WHERE id = ?", srID).Scan(&adminLeft)
 	if adminLeft.Valid {
-		t.Fatal("deactivating a branch admin must leave the branch without an admin")
+		t.Fatal("deleting a branch admin must leave the branch without an admin")
+	}
+	if err := empSvc.Deactivate(ctx, &auth.Actor{Employee: *owner, Channel: auth.ChannelDashboard}, vuthyID); err != nil {
+		t.Fatal(err)
 	}
 
 	// ---------- shifts: normal and cross-day (night) ----------
@@ -1084,9 +1143,9 @@ func TestIntegration(t *testing.T) {
 		t.Fatalf("HR creates a shift: %d %v", code, body)
 	}
 	morningID := uint64(num(body, "id"))
-	mgrJWT, _ := h.login("mona@example.com", "manager-pass-123") // the manager's panel login from above
+	mgrJWT, _ := h.login("mona@example.com", "manager-pass-123") // the read-only admin (Viewer) from above
 	if code, _, _ := h.admin("POST", "/work-schedules", mgrJWT, shiftIn("Late", "12:00", "20:00", "NORMAL")); code != 403 {
-		t.Fatalf("managers cannot define shifts, got %d", code)
+		t.Fatalf("a read-only admin cannot define shifts, got %d", code)
 	}
 	if code, body, _ := h.admin("PUT", fmt.Sprintf("/employees/%d", sokha.ID), jwt, map[string]any{"work_schedule_id": nightID}); code != 200 {
 		t.Fatalf("give Sokha the night shift: %d %v", code, body)
@@ -1303,7 +1362,7 @@ func TestIntegration(t *testing.T) {
 		t.Fatalf("built-in roles cannot be deleted: %d %v", code, body)
 	}
 	code, body, _ = h.admin("GET", "/roles", jwt, nil)
-	if code != 200 || len(body["items"].([]any)) != 6 {
+	if code != 200 || len(body["items"].([]any)) != 7 { // 5 built-in + Viewer + Regional Supervisor
 		t.Fatalf("roles list: %d %v", code, body)
 	}
 
@@ -1312,10 +1371,10 @@ func TestIntegration(t *testing.T) {
 	if code != 200 || len(body["items"].([]any)) < 3 {
 		t.Fatalf("system users: %d %v", code, body)
 	}
-	if code, body, _ := h.admin("POST", "/system-users", ownerJWT, map[string]any{"employee_id": sokha.ID, "email": "sokha@example.com", "password": "sokha-password-123"}); code != 400 || errCode(body) != "NO_PANEL_ROLE" {
-		t.Fatalf("staff need a panel role before a login: %d %v", code, body)
+	if code, body, _ := h.admin("POST", "/system-users", ownerJWT, map[string]any{"email": "sokha@example.com", "password": "sokha-password-123"}); code != 400 || errCode(body) != "USER_INCOMPLETE" {
+		t.Fatalf("a system user needs a name and a role: %d %v", code, body)
 	}
-	code, body, _ = h.admin("POST", "/system-users", ownerJWT, map[string]any{"employee_id": sokha.ID, "email": "sokha@example.com", "password": "sokha-password-123", "role": "regional_supervisor"})
+	code, body, _ = h.admin("POST", "/system-users", ownerJWT, map[string]any{"full_name": "Sokha Regional", "email": "sokha@example.com", "password": "sokha-password-123", "role": "regional_supervisor"})
 	if code != 201 || body["role"] != "regional_supervisor" || body["scope"] != "all" {
 		t.Fatalf("create system user with a role: %d %v", code, body)
 	}
@@ -1482,10 +1541,10 @@ func TestIntegration(t *testing.T) {
 	if code, body, _ := h.admin("PUT", fmt.Sprintf("/branches/%d", srID), ownerJWT, map[string]any{"gps": map[string]any{"enabled": true, "required": true}}); code != 200 || body["gps_required"] != true {
 		t.Fatalf("branch GPS rules: %d %v", code, body)
 	}
-	if code, body, _ := h.app("GET", "/attendance/today", bophaTG, nil); code != 200 || body["check_in"].(map[string]any)["gps_required"] != true {
+	if code, body, _ := h.app("GET", "/attendance/today", bophaStaffTG, nil); code != 200 || body["check_in"].(map[string]any)["gps_required"] != true {
 		t.Fatalf("Siem Reap staff must share their location: %d %v", code, body)
 	}
-	if code, body, _ := h.app("POST", "/attendance/check-in", bophaTG, map[string]string{"photo": photo("bopha-gps")}); code != 400 || errCode(body) != "LOCATION_REQUIRED" {
+	if code, body, _ := h.app("POST", "/attendance/check-in", bophaStaffTG, map[string]string{"photo": photo("bopha-gps")}); code != 400 || errCode(body) != "LOCATION_REQUIRED" {
 		t.Fatalf("no location in a GPS-required branch: %d %v", code, body)
 	}
 	if _, body, _ := h.app("GET", "/attendance/today", daraTG, nil); body["check_in"].(map[string]any)["need_gps"] != false {
@@ -1493,6 +1552,35 @@ func TestIntegration(t *testing.T) {
 	}
 	if code, body, _ := h.admin("PUT", fmt.Sprintf("/branches/%d", srID), ownerJWT, map[string]any{"gps": map[string]any{"inherit": true}}); code != 200 || body["gps_enabled"] != nil {
 		t.Fatalf("back to the company setting: %d %v", code, body)
+	}
+
+	// ---------- deleting an attendance record (reason required, audited, photos removed) ----------
+	var delID uint64
+	var delPhotos int
+	h.db.QueryRow("SELECT a.id, (SELECT COUNT(*) FROM attendance_photos p WHERE p.attendance_id = a.id) FROM attendance a WHERE a.employee_id = ? AND a.check_in_at IS NOT NULL ORDER BY a.id LIMIT 1", dara.ID).Scan(&delID, &delPhotos)
+	objects := len(store.objs)
+	if code, body, _ := h.admin("DELETE", fmt.Sprintf("/attendance/%d", delID), mgrJWT, map[string]any{"reason": "x"}); code != 403 {
+		t.Fatalf("deleting needs attendance.edit: %d %v", code, body)
+	}
+	if code, body, _ := h.admin("DELETE", fmt.Sprintf("/attendance/%d", delID), jwt, map[string]any{"reason": " "}); code != 400 {
+		t.Fatalf("a reason is required to delete: %d %v", code, body)
+	}
+	if code, body, _ := h.admin("DELETE", fmt.Sprintf("/attendance/%d", delID), jwt, map[string]any{"reason": "Duplicate test record"}); code != 204 {
+		t.Fatalf("delete attendance: %d %v", code, body)
+	}
+	var left, children int
+	h.db.QueryRow("SELECT COUNT(*) FROM attendance WHERE id = ?", delID).Scan(&left)
+	h.db.QueryRow("SELECT (SELECT COUNT(*) FROM attendance_confirmations WHERE attendance_id = ?) + (SELECT COUNT(*) FROM attendance_locations WHERE attendance_id = ?) + (SELECT COUNT(*) FROM attendance_photos WHERE attendance_id = ?)", delID, delID, delID).Scan(&children)
+	if left != 0 || children != 0 || len(store.objs) != objects-delPhotos {
+		t.Fatalf("delete removes the record, its reviews/locations/photos and the photo files: left=%d children=%d objects %d→%d (photos %d)", left, children, objects, len(store.objs), delPhotos)
+	}
+	var delAudit string
+	h.db.QueryRow("SELECT JSON_UNQUOTE(JSON_EXTRACT(details, '$.reason')) FROM audit_logs WHERE action = 'attendance.delete' AND entity_id = ?", delID).Scan(&delAudit)
+	if delAudit != "Duplicate test record" {
+		t.Fatalf("delete is audited with the reason: %q", delAudit)
+	}
+	if code, _, _ := h.admin("DELETE", fmt.Sprintf("/attendance/%d", delID), jwt, map[string]any{"reason": "again"}); code != 404 {
+		t.Fatalf("deleting twice: %d", code)
 	}
 
 	// ---------- deactivation keeps history and blocks the Mini App ----------

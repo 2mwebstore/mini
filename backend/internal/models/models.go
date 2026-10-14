@@ -191,6 +191,7 @@ func (b *Branch) HasOffice() bool {
 
 type Employee struct {
 	ID             uint64     `gorm:"primaryKey" json:"id"`
+	Kind           string     `gorm:"default:STAFF" json:"kind"` // KindStaff | KindSystem
 	EmployeeCode   string     `json:"employee_code"`
 	FullName       string     `json:"full_name"`
 	DepartmentID   *uint64    `json:"department_id"`
@@ -213,7 +214,6 @@ type Employee struct {
 	WorkSchedule    *WorkSchedule    `gorm:"foreignKey:WorkScheduleID" json:"work_schedule,omitempty"`
 	Role            *Role            `gorm:"foreignKey:RoleID" json:"role,omitempty"`
 	TelegramAccount *TelegramAccount `gorm:"foreignKey:EmployeeID" json:"telegram_account,omitempty"`
-	HasLogin        bool             `gorm:"-" json:"has_login"` // has an admin panel login
 }
 
 // Roles and their permissions are configured in the database; package auth reads
@@ -229,6 +229,16 @@ var (
 )
 
 func (e *Employee) IsActive() bool { return e.Status == EmployeeActive && e.DeletedAt == nil }
+
+// Kinds of people: employees check in (Mini App); system users run the admin panel.
+// They are separate records — someone who does both has one of each.
+const (
+	KindStaff  = "STAFF"
+	KindSystem = "SYSTEM"
+)
+
+// IsSystemUser: an admin panel account, not a member of staff (no attendance or leave).
+func (e *Employee) IsSystemUser() bool { return e.Kind == KindSystem }
 
 type TelegramAccount struct {
 	ID             uint64    `gorm:"primaryKey" json:"id"`

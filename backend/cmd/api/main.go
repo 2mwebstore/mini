@@ -168,17 +168,22 @@ func serve() error {
 	return srv.Shutdown(shutdownCtx)
 }
 
-// createAdmin bootstraps a super admin. The password is read from ADMIN_PASSWORD
-// (not a flag) so it does not end up in shell history or `ps` output.
+// createAdmin bootstraps the owner: a system user (admin panel account) with the
+// super admin role. The password is read from ADMIN_PASSWORD (not a flag) so it
+// does not end up in shell history or `ps` output.
 func createAdmin(args []string) error {
 	fs := flag.NewFlagSet("create-admin", flag.ExitOnError)
-	code := fs.String("code", "", "employee ID, e.g. GT000")
+	_ = fs.String("code", "", "ignored (system users get an SU-… code)")
 	name := fs.String("name", "", "full name")
-	tgID := fs.Int64("telegram-id", 0, "Telegram user ID for the Mini App (shown when an unregistered user opens it); optional")
+	tgID := fs.Int64("telegram-id", 0, "Telegram user ID, to get review notifications and use the Mini App's Team tab; optional")
 	email := fs.String("email", "", "admin panel login email (password from ADMIN_PASSWORD)")
 	_ = fs.Parse(args)
-	if *code == "" || *name == "" || (*tgID == 0 && strings.TrimSpace(*email) == "") {
-		return errors.New("usage: api create-admin -code GT000 -name \"Owner Name\" [-email you@company.com] [-telegram-id 123456789] (at least one of -email / -telegram-id)")
+	if *name == "" || strings.TrimSpace(*email) == "" {
+		return errors.New("usage: ADMIN_PASSWORD=… api create-admin -name \"Owner Name\" -email you@company.com [-telegram-id 123456789]")
+	}
+	pw := os.Getenv("ADMIN_PASSWORD")
+	if pw == "" {
+		return errors.New("set ADMIN_PASSWORD to the owner's admin panel password")
 	}
 	cfg, err := config.Load()
 	if err != nil {
@@ -193,26 +198,16 @@ func createAdmin(args []string) error {
 		return err
 	}
 	cli := &auth.Actor{Employee: models.Employee{RoleID: models.RoleSuperAdmin, FullName: "CLI"}, Channel: auth.ChannelCLI}
-	svc := employee.NewService(db)
-	in := employee.Input{EmployeeCode: *code, FullName: *name, Role: "super_admin"}
+	role := "super_admin"
+	in := access.UserInput{FullName: name, Email: email, Password: &pw, Role: &role}
 	if *tgID != 0 {
 		in.TelegramUserID = tgID
 	}
-	emp, err := svc.Create(ctx, cli, in)
+	u, err := access.NewService(db).CreateUser(ctx, cli, in)
 	if err != nil {
 		return err
 	}
-	fmt.Printf("created super admin %s (%s), employee id %d\n", emp.EmployeeCode, emp.FullName, emp.ID)
-	if strings.TrimSpace(*email) != "" {
-		pw := os.Getenv("ADMIN_PASSWORD")
-		if pw == "" {
-			return errors.New("set ADMIN_PASSWORD to create the admin panel login")
-		}
-		if _, err := svc.CreateUser(ctx, cli, emp.ID, *email, pw); err != nil {
-			return err
-		}
-		fmt.Printf("admin panel login created for %s\n", *email)
-	}
+	fmt.Printf("created owner %s <%s> (system user %d)\n", u.FullName, u.Email, u.ID)
 	return nil
 }
 
@@ -257,7 +252,7 @@ func seedDemo(args []string) error {
 		"%d extra shifts (incl. a night shift), %d roster entries, %d special schedules.\n\n",
 		len(sum.Branches), strings.Join(sum.Branches, ", "), sum.Employees, sum.AttendanceDays, sum.LeaveRequests, sum.Holidays,
 		sum.Shifts, sum.RosterEntries, sum.SpecialSchedules)
-	fmt.Println("Admin panel logins:")
+	fmt.Println("System users (admin panel logins):")
 	for _, l := range sum.Logins {
 		p := pw
 		if l.Existing {

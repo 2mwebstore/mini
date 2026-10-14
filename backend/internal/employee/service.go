@@ -1,4 +1,5 @@
-// Package employee manages staff records, their Telegram identity and admin panel logins.
+// Package employee manages staff records (the people who check in and out) and their
+// Telegram identity. Admin panel accounts are system users (package access).
 package employee
 
 import (
@@ -61,7 +62,7 @@ func (s *Service) Create(ctx context.Context, actor *auth.Actor, in Input) (*mod
 	if err != nil {
 		return nil, err
 	}
-	emp := models.Employee{EmployeeCode: in.EmployeeCode, FullName: in.FullName, RoleID: roleID, Status: models.EmployeeActive}
+	emp := models.Employee{Kind: models.KindStaff, EmployeeCode: in.EmployeeCode, FullName: in.FullName, RoleID: roleID, Status: models.EmployeeActive}
 	if err := s.resolveBranch(ctx, actor, &emp, in.BranchID); err != nil {
 		return nil, err
 	}
@@ -85,7 +86,7 @@ func (s *Service) Create(ctx context.Context, actor *auth.Actor, in Input) (*mod
 			return err
 		}
 		if in.TelegramUserID != nil && *in.TelegramUserID != 0 {
-			if err := linkTelegram(tx, emp.ID, *in.TelegramUserID, in.TelegramUsername); err != nil {
+			if err := LinkTelegram(tx, emp.ID, *in.TelegramUserID, in.TelegramUsername); err != nil {
 				return err
 			}
 		}
@@ -167,7 +168,7 @@ func (s *Service) Update(ctx context.Context, actor *auth.Actor, id uint64, in I
 			return err
 		}
 		if in.TelegramUserID != nil {
-			if err := linkTelegram(tx, emp.ID, *in.TelegramUserID, in.TelegramUsername); err != nil {
+			if err := LinkTelegram(tx, emp.ID, *in.TelegramUserID, in.TelegramUsername); err != nil {
 				return err
 			}
 		}
@@ -202,18 +203,7 @@ func (s *Service) Deactivate(ctx context.Context, actor *auth.Actor, id uint64) 
 	}
 	now := time.Now().UTC()
 	return s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
-		changes := map[string]any{"status": models.EmployeeInactive, "deleted_at": now}
-		if emp.RoleID == models.RoleBranchAdmin {
-			// The branch no longer has an admin; the owner assigns a new one.
-			if err := tx.Model(&models.Branch{}).Where("admin_employee_id = ?", id).Update("admin_employee_id", nil).Error; err != nil {
-				return err
-			}
-			changes["role_id"] = models.RoleStaff
-		}
-		if err := tx.Model(&models.Employee{}).Where("id = ?", id).Updates(changes).Error; err != nil {
-			return err
-		}
-		if err := tx.Model(&models.User{}).Where("employee_id = ?", id).Update("status", models.EmployeeInactive).Error; err != nil {
+		if err := tx.Model(&models.Employee{}).Where("id = ?", id).Updates(map[string]any{"status": models.EmployeeInactive, "deleted_at": now}).Error; err != nil {
 			return err
 		}
 		return audit.Write(ctx, tx, actor, audit.Entry{Action: audit.ActionEmployeeDeactivate, EntityType: "employee", EntityID: id, TargetEmployeeID: id})
@@ -329,11 +319,9 @@ func (s *Service) resolveRole(actor *auth.Actor, code string, def uint8) (uint8,
 	if !ok {
 		return 0, apperr.BadRequest("INVALID_ROLE", "Unknown role.")
 	}
-	if id == models.RoleBranchAdmin {
-		return 0, apperr.BadRequest("BRANCH_ADMIN_ROLE", "Branch admins are assigned on the Branches page.")
-	}
-	if models.IsAdminRole(id) && !actor.Has(auth.PermAssignAdminRoles) {
-		return 0, apperr.Forbidden("Only a super admin can grant admin roles.")
+	if models.IsAdminRole(id) {
+		// Admin roles belong to system users (Administration → System users), not staff.
+		return 0, apperr.BadRequest("ADMIN_ROLE", "Admin roles are for system users. Add an admin account under Administration → System users.")
 	}
 	return id, nil
 }
@@ -367,33 +355,33 @@ func (s *Service) resolveBranch(ctx context.Context, actor *auth.Actor, emp *mod
 	return nil
 }
 
-func linkTelegram(tx *gorm.DB, employeeID uint64, tgID int64, username string) error {
+// LinkTelegram links a Telegram account to a person (an employee, or a system user
+// who reviews in the Mini App). A Telegram account belongs to one person only.
+func LinkTelegram(tx *gorm.DB, employeeID uint64, tgID int64, username string) error {
 	if tgID <= 0 {
 		return apperr.BadRequest("INVALID_TELEGRAM_ID", "Telegram User ID must be a positive number.")
 	}
 	var other models.TelegramAccount
 	if err := tx.Where("telegram_user_id = ? AND employee_id <> ?", tgID, employeeID).First(&other).Error; err == nil {
-		return apperr.Conflict("TELEGRAM_IN_USE", "This Telegram account is already linked to another employee.")
+		return apperr.Conflict("TELEGRAM_IN_USE", "This Telegram account is already linked to someone else.")
 	}
 	acc := models.TelegramAccount{EmployeeID: employeeID, TelegramUserID: tgID, Username: strings.TrimPrefix(strings.TrimSpace(username), "@"), LinkedAt: time.Now().UTC()}
 	return tx.Clauses(clause.OnConflict{Columns: []clause.Column{{Name: "employee_id"}},
 		DoUpdates: clause.AssignmentColumns([]string{"telegram_user_id", "username"})}).Create(&acc).Error
 }
 
+// get loads an employee (staff); system users are not employees and are not found here.
 func (s *Service) get(ctx context.Context, id uint64) (*models.Employee, error) {
 	var e models.Employee
-	err := s.db.WithContext(ctx).Preload("Department").Preload("Branch").Preload("WorkSchedule").Preload("Role").Preload("TelegramAccount").First(&e, id).Error
+	err := s.db.WithContext(ctx).Preload("Department").Preload("Branch").Preload("WorkSchedule").Preload("Role").Preload("TelegramAccount").
+		Where("kind = ?", models.KindStaff).First(&e, id).Error
 	if errors.Is(err, gorm.ErrRecordNotFound) {
 		return nil, apperr.NotFound("EMPLOYEE_NOT_FOUND", "Employee not found.")
 	}
 	if err != nil {
 		return nil, err
 	}
-	list := []models.Employee{e}
-	if err := s.markLogins(ctx, list); err != nil {
-		return nil, err
-	}
-	return &list[0], nil
+	return &e, nil
 }
 
 func (s *Service) Get(ctx context.Context, actor *auth.Actor, id uint64) (*models.Employee, error) {
@@ -421,7 +409,8 @@ func (s *Service) List(ctx context.Context, actor *auth.Actor, f ListFilter) ([]
 	if err != nil {
 		return nil, err
 	}
-	q := s.db.WithContext(ctx).Preload("Department").Preload("Branch").Preload("Role").Preload("TelegramAccount").Order("employee_code")
+	q := s.db.WithContext(ctx).Preload("Department").Preload("Branch").Preload("Role").Preload("TelegramAccount").
+		Where("kind = ?", models.KindStaff).Order("employee_code")
 	if scope != nil {
 		q = q.Where("id IN ?", scope)
 	}
@@ -448,31 +437,7 @@ func (s *Service) List(ctx context.Context, actor *auth.Actor, f ListFilter) ([]
 	if err := q.Limit(1000).Find(&out).Error; err != nil {
 		return nil, err
 	}
-	return out, s.markLogins(ctx, out)
-}
-
-// markLogins sets HasLogin for employees with an active admin panel account.
-func (s *Service) markLogins(ctx context.Context, emps []models.Employee) error {
-	if len(emps) == 0 {
-		return nil
-	}
-	ids := make([]uint64, len(emps))
-	for i := range emps {
-		ids[i] = emps[i].ID
-	}
-	var with []uint64
-	if err := s.db.WithContext(ctx).Model(&models.User{}).Where("employee_id IN ? AND status = ?", ids, models.EmployeeActive).
-		Pluck("employee_id", &with).Error; err != nil {
-		return err
-	}
-	has := map[uint64]bool{}
-	for _, id := range with {
-		has[id] = true
-	}
-	for i := range emps {
-		emps[i].HasLogin = has[emps[i].ID]
-	}
-	return nil
+	return out, nil
 }
 
 // Find resolves "/report Dara" or "/report GT001": exact code first, then name match.
@@ -491,36 +456,6 @@ func (s *Service) Find(ctx context.Context, actor *auth.Actor, query string) ([]
 		}
 	}
 	return all, nil
-}
-
-// CreateUser gives an employee an admin panel login.
-func (s *Service) CreateUser(ctx context.Context, actor *auth.Actor, employeeID uint64, email, password string) (*models.User, error) {
-	if !actor.Has(auth.PermAssignAdminRoles) {
-		return nil, apperr.Forbidden("Only a super admin can create admin panel logins.")
-	}
-	email = strings.ToLower(strings.TrimSpace(email))
-	if !emailRe.MatchString(email) {
-		return nil, apperr.BadRequest("INVALID_EMAIL", "Invalid email address.")
-	}
-	hash, err := auth.HashPassword(password)
-	if err != nil {
-		return nil, err
-	}
-	if _, err := s.get(ctx, employeeID); err != nil {
-		return nil, err
-	}
-	u := models.User{EmployeeID: employeeID, Email: email, PasswordHash: hash, Status: models.EmployeeActive}
-	err = s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
-		if err := tx.Create(&u).Error; err != nil {
-			if isDuplicate(err) {
-				return apperr.Conflict("USER_EXISTS", "A login already exists for this employee or email.")
-			}
-			return err
-		}
-		return audit.Write(ctx, tx, actor, audit.Entry{Action: audit.ActionUserCreate, EntityType: "user", EntityID: u.ID, TargetEmployeeID: employeeID,
-			Details: map[string]any{"email": email}})
-	})
-	return &u, err
 }
 
 func (s *Service) Departments(ctx context.Context) ([]models.Department, error) {

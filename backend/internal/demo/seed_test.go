@@ -76,7 +76,7 @@ func TestSeed(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(sum.Branches) != 3 || sum.Employees != len(people) || len(sum.Logins) != 8 || sum.AttendanceDays < 250 || sum.LeaveRequests != 10 {
+	if len(sum.Branches) != 3 || sum.Employees != len(people) || len(sum.Logins) != 6 || sum.AttendanceDays < 250 || sum.LeaveRequests != 10 {
 		t.Fatalf("summary: %+v", sum)
 	}
 	if _, err := Seed(ctx, Deps{DB: db, Settings: st}, Options{Password: pw, Now: now}); !errors.Is(err, ErrAlreadySeeded) {
@@ -85,17 +85,24 @@ func TestSeed(t *testing.T) {
 
 	// Every login works and carries the intended role; branch admins own their branch.
 	authSvc := auth.NewService(db, strings.Repeat("j", 40), time.Hour)
-	wantRole := map[string]string{"owner@demo.local": "super_admin", "hr@demo.local": "hr_admin", "dara.manager@demo.local": "manager",
-		"rithy.manager@demo.local": "manager", "main.admin@demo.local": "branch_admin", "siemreap.admin@demo.local": "branch_admin",
-		"battambang.admin@demo.local": "branch_admin", "regional@demo.local": "regional_supervisor"}
+	wantRole := map[string]string{"owner@demo.local": "super_admin", "hr@demo.local": "hr_admin", "main.admin@demo.local": "branch_admin",
+		"siemreap.admin@demo.local": "branch_admin", "battambang.admin@demo.local": "branch_admin", "regional@demo.local": "regional_supervisor"}
 	for _, l := range sum.Logins {
 		res, err := authSvc.Login(ctx, l.Email, pw)
 		if err != nil {
 			t.Fatalf("login %s: %v", l.Email, err)
 		}
-		if res.Role != wantRole[l.Email] {
-			t.Errorf("%s: role %s, want %s", l.Email, res.Role, wantRole[l.Email])
+		if res.Role != wantRole[l.Email] || res.Employee.Kind != models.KindSystem {
+			t.Errorf("%s: role %s kind %s, want %s / SYSTEM", l.Email, res.Role, res.Employee.Kind, wantRole[l.Email])
 		}
+	}
+	// Staff are employees only: no panel logins, no admin roles.
+	var staffLogins int64
+	db.Model(&models.User{}).Joins("JOIN employees e ON e.id = users.employee_id").Where("e.kind = ?", models.KindStaff).Count(&staffLogins)
+	var staffAdmins int64
+	db.Model(&models.Employee{}).Where("kind = ? AND role_id NOT IN ?", models.KindStaff, []int{int(models.RoleStaff), int(models.RoleManager)}).Count(&staffAdmins)
+	if staffLogins != 0 || staffAdmins != 0 {
+		t.Errorf("employees with panel logins %d, with admin roles %d", staffLogins, staffAdmins)
 	}
 	var branches []models.Branch
 	db.Find(&branches)
@@ -106,7 +113,7 @@ func TestSeed(t *testing.T) {
 		}
 		var a models.Employee
 		db.First(&a, *b.AdminEmployeeID)
-		if a.RoleID != models.RoleBranchAdmin || a.BranchID == nil || *a.BranchID != b.ID {
+		if a.RoleID != models.RoleBranchAdmin || a.BranchID == nil || *a.BranchID != b.ID || !a.IsSystemUser() {
 			t.Errorf("branch %s admin %s: role %d branch %v", b.Code, a.EmployeeCode, a.RoleID, a.BranchID)
 		}
 	}
@@ -120,7 +127,7 @@ func TestSeed(t *testing.T) {
 	var rows []models.Attendance
 	db.Preload("Confirmations").Preload("Photos").Preload("Locations").Find(&rows)
 	var staff []models.Employee
-	db.Find(&staff)
+	db.Where("kind = ?", models.KindStaff).Find(&staff)
 	byID := map[uint64]*models.Employee{}
 	ids := []uint64{}
 	for i := range staff {
@@ -234,11 +241,11 @@ func TestSeed(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if all.StaffCount != len(people)+1 || all.Totals.PresentDays == 0 || all.Totals.AbsentDays == 0 || all.Totals.LeaveDays == 0 {
+	if all.StaffCount != len(people) || all.Totals.PresentDays == 0 || all.Totals.AbsentDays == 0 || all.Totals.LeaveDays == 0 {
 		t.Errorf("owner report: staff %d totals %+v", all.StaffCount, all.Totals)
 	}
 	for _, s := range all.Summaries {
-		if s.EmployeeCode != "D-OWNER" && s.WorkingDays < 18 { // the owner is new; staff are backdated
+		if s.WorkingDays < 18 { // staff are backdated
 			t.Errorf("%s: only %d working days in the report (backdating failed?)", s.EmployeeCode, s.WorkingDays)
 		}
 	}
@@ -259,11 +266,11 @@ func TestSeed(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, s := range reg.Summaries {
-		if s.Branch != "Siem Reap" && s.Branch != "Battambang" && s.EmployeeCode != "D-RG01" {
+		if s.Branch != "Siem Reap" && s.Branch != "Battambang" {
 			t.Errorf("regional supervisor (SR + BB) sees %s (%s)", s.EmployeeCode, s.Branch)
 		}
 	}
-	if reg.StaffCount != 10 { // 5 Siem Reap + 4 Battambang + herself
+	if reg.StaffCount != 9 { // 5 Siem Reap + 4 Battambang (she is a system user, not staff)
 		t.Errorf("regional supervisor staff count %d", reg.StaffCount)
 	}
 }

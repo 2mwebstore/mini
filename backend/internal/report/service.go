@@ -121,6 +121,7 @@ func (s *Service) Build(ctx context.Context, actor *auth.Actor, f Filter) (*Repo
 
 	// employees
 	q := s.db.WithContext(ctx).Preload("Department").Preload("Branch").Preload("WorkSchedule").
+		Where("kind = ?", models.KindStaff). // system users are not staff
 		Where("deleted_at IS NULL OR deleted_at >= ?", f.From).Order("full_name")
 	if scope != nil {
 		q = q.Where("id IN ?", scope)

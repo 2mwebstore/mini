@@ -3,6 +3,7 @@ package attendance
 import (
 	"context"
 	"errors"
+	"log/slog"
 	"strings"
 	"time"
 
@@ -56,7 +57,7 @@ func (s *Service) Manual(ctx context.Context, actor *auth.Actor, in ManualInput)
 	}
 
 	var emp models.Employee
-	if err := s.db.WithContext(ctx).First(&emp, in.EmployeeID).Error; err != nil {
+	if err := s.db.WithContext(ctx).First(&emp, in.EmployeeID).Error; err != nil || emp.IsSystemUser() {
 		return nil, apperr.NotFound("EMPLOYEE_NOT_FOUND", "Employee not found.")
 	}
 	if !actor.CanView(&emp) {
@@ -185,6 +186,58 @@ func snapshot(a *models.Attendance, found bool, loc *time.Location) map[string]a
 		"check_out": timeutil.FormatClock24(a.CheckOutAt, loc), "status": a.Status,
 		"confirmation": a.ConfirmationStatus, "working_minutes": a.WorkingMinutes, "late_minutes": a.LateMinutes,
 	}
+}
+
+// Delete removes one attendance day with its reviews, locations and photos. The
+// record as it was and the mandatory reason go to the audit log; photo files are
+// removed from storage once the deletion is committed.
+func (s *Service) Delete(ctx context.Context, actor *auth.Actor, id uint64, reason string) error {
+	if !actor.Has(auth.PermAttendanceEdit) {
+		return apperr.ErrForbidden
+	}
+	reason = strings.TrimSpace(reason)
+	if reason == "" {
+		return apperr.BadRequest("REASON_REQUIRED", "A reason is required to delete a record.")
+	}
+	if len([]rune(reason)) > 500 {
+		return apperr.BadRequest("REASON_TOO_LONG", "Reason must be 500 characters or fewer.")
+	}
+	st, err := s.settings.Get(ctx)
+	if err != nil {
+		return err
+	}
+	var keys []string
+	err = s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		var att models.Attendance
+		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).Preload("Employee").Preload("Photos").First(&att, id).Error; err != nil {
+			return apperr.NotFound("NOT_FOUND", "Attendance record not found.")
+		}
+		if att.Employee == nil || !actor.CanView(att.Employee) {
+			return apperr.NotFound("NOT_FOUND", "Attendance record not found.")
+		}
+		for _, p := range att.Photos {
+			keys = append(keys, p.StorageKey)
+		}
+		for _, child := range []any{&models.AttendanceConfirmation{}, &models.AttendanceLocation{}, &models.AttendancePhoto{}} {
+			if err := tx.Where("attendance_id = ?", att.ID).Delete(child).Error; err != nil {
+				return err
+			}
+		}
+		if err := tx.Delete(&models.Attendance{}, att.ID).Error; err != nil {
+			return err
+		}
+		return audit.Write(ctx, tx, actor, audit.Entry{Action: audit.ActionAttendanceDelete, EntityType: "attendance", EntityID: att.ID,
+			TargetEmployeeID: att.EmployeeID, Details: map[string]any{"reason": reason, "record": snapshot(&att, true, st.Location), "photos": keys}})
+	})
+	if err != nil {
+		return err
+	}
+	for _, k := range keys {
+		if err := s.store.Delete(ctx, k); err != nil {
+			slog.Warn("attendance delete: photo left in storage", "key", k, "err", err)
+		}
+	}
+	return nil
 }
 
 // MarkLeaveDays sets status LEAVE on working days of an approved leave that have

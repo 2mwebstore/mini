@@ -8,7 +8,6 @@ export const employeeService = {
   create: (input: EmployeeInput) => api.post<Employee>('/employees', input),
   update: (id: number, input: EmployeeInput) => api.put<Employee>(`/employees/${id}`, input),
   deactivate: (id: number) => api.del(`/employees/${id}`),
-  createLogin: (id: number, email: string, password: string) => api.post(`/employees/${id}/user`, { email, password }),
   departments: () => api.get<Items<Department>>('/departments').then(r => r.items ?? []),
   // Managed lists (company-wide): departments and positions.
   orgList: (kind: 'departments' | 'positions') => api.get<Items<OrgItem>>(`/${kind}`).then(r => r.items ?? []),

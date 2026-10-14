@@ -343,7 +343,7 @@ func (s *Service) Balances(ctx context.Context, actor *auth.Actor, f BalanceFilt
 		return nil, nil, err
 	}
 	q := s.db.WithContext(ctx).Preload("Branch").Preload("Department").
-		Where("deleted_at IS NULL AND status <> ?", models.EmployeeInactive).Order("full_name")
+		Where("kind = ? AND deleted_at IS NULL AND status <> ?", models.KindStaff, models.EmployeeInactive).Order("full_name")
 	if scope != nil {
 		q = q.Where("id IN ?", scope)
 	}
@@ -459,7 +459,7 @@ func (s *Service) balanceTarget(ctx context.Context, actor *auth.Actor, empID, t
 		return nil, apperr.BadRequest("INVALID_YEAR", "Invalid year.")
 	}
 	var emp models.Employee
-	if err := s.db.WithContext(ctx).First(&emp, empID).Error; err != nil {
+	if err := s.db.WithContext(ctx).First(&emp, empID).Error; err != nil || emp.IsSystemUser() {
 		return nil, apperr.NotFound("EMPLOYEE_NOT_FOUND", "Employee not found.")
 	}
 	if !canSetBalance(actor, &emp) {

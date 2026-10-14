@@ -11,10 +11,11 @@ const props = withDefaults(
     label?: string // accessible name when there is no <label for>
     placeholder?: string
     noun?: string // "employee" -> "3 employees"
+    searchPlaceholder?: string
     required?: boolean
     disabled?: boolean
   }>(),
-  { placeholder: 'Choose…', noun: 'item' },
+  { placeholder: 'Choose…', noun: 'item', searchPlaceholder: 'Search…' },
 )
 const model = defineModel<string[]>({ required: true })
 
@@ -39,7 +40,7 @@ const items = computed(() => {
 })
 const shownFree = computed(() => items.value.filter(o => !o.disabled))
 const allShown = computed(() => shownFree.value.length > 0 && shownFree.value.every(o => chosen.value.has(o.value)))
-const plural = (n: number) => `${n} ${props.noun}${n === 1 ? '' : 's'}`
+const plural = (n: number) => `${n} ${props.noun}${n === 1 ? '' : /(s|x|ch|sh)$/.test(props.noun) ? 'es' : 's'}`
 
 function place() {
   const r = trigger.value?.getBoundingClientRect()
@@ -175,7 +176,7 @@ onBeforeUnmount(() => {
               v-model="query"
               type="text"
               class="min-w-0 flex-1 bg-transparent text-sm text-fg outline-none placeholder:text-muted"
-              placeholder="Search name, ID, department, branch…"
+              :placeholder="searchPlaceholder"
               role="searchbox"
               aria-label="Search options"
               :aria-controls="listId"
@@ -185,7 +186,7 @@ onBeforeUnmount(() => {
           </div>
           <div class="mt-2 flex items-center justify-between gap-2 px-1 text-xs">
             <button type="button" class="font-medium text-primary hover:underline disabled:opacity-50" :disabled="!shownFree.length" @click="toggleShown">
-              {{ allShown ? 'Untick' : 'Tick' }} {{ query ? 'all matches' : 'everyone' }} ({{ shownFree.length }})
+              {{ allShown ? 'Untick' : 'Tick' }} {{ query ? 'all matches' : 'all' }} ({{ shownFree.length }})
             </button>
             <span class="text-muted">{{ plural(model.length) }} chosen</span>
             <button v-if="model.length" type="button" class="text-muted hover:text-fg" @click="model = []">Clear</button>

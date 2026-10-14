@@ -14,7 +14,7 @@ attendance-system/
 │   ├── cmd/api/             serve | migrate | create-admin | seed-demo
 │   ├── internal/
 │   │   ├── auth/            JWT sessions, Mini App initData, RBAC (permissions.go)
-│   │   ├── employee/        staff, Telegram link, admin panel logins
+│   │   ├── employee/        staff (employees) and their Telegram link
 │   │   ├── branch/          branches and their branch admins
 │   │   ├── attendance/      check-in/out, late/early/hours, review, manual edits
 │   │   ├── leave/           requests, approval → marks days as LEAVE
@@ -69,9 +69,9 @@ cp .env.example .env            # fill in secrets: openssl rand -hex 32
 docker compose up -d --build
 docker compose logs -f api
 
-# Create the first super admin (password from env, not a flag):
+# Create the owner — a system user (password from env, not a flag):
 docker compose exec -e ADMIN_PASSWORD='a-long-password' api \
-  /app/api create-admin -code GT000 -name "Owner Name" -email owner@company.com
+  /app/api create-admin -name "Owner Name" -email owner@company.com
 ```
 
 Then open `https://<your-domain>/admin/`, sign in, and:
@@ -82,16 +82,25 @@ Then open `https://<your-domain>/admin/`, sign in, and:
    the Mini App says it isn't set up and no notifications are sent. Optionally add the
    company group's chat ID for the daily report (how to find it is shown on the page).
 2. **Branches:** rename *Main branch* (all existing staff start there) and add the others.
-3. **Employees → Add employee** for each person, choosing their branch. Everyone needs
-   their numeric **Telegram user ID** for the Mini App: they open the bot, tap **Open App**,
-   and the "No access" screen shows their ID. Link your own account too.
-4. **Branches → a branch → Assign a new admin**, then create that person's panel login
-   (the page links to it).
+3. **Employees → Add employee** for each member of staff, choosing their branch. Everyone
+   needs their numeric **Telegram user ID** for the Mini App: they open the bot, tap
+   **Open App**, and the "No access" screen shows their ID.
+4. **Administration → System users → New system user** for each admin account (HR, a
+   Branch Admin per branch…). Choosing *Branch Admin* and a branch makes them that
+   branch's admin.
 
-Roles: `super_admin` (the owner), `hr_admin` (company-wide HR), `branch_admin` (one
-branch), `manager`, `staff`. Only the owner creates branches, assigns branch admins,
-grants admin roles and creates panel logins. A manager reviews the people whose
-**Manager** is set to them.
+**Employees and system users are separate.** *Employees* are staff: they check in and
+out and request leave in the Mini App, and never sign in to the panel. *System users* are
+admin panel accounts: they don't check in, don't take leave and aren't in staff lists,
+reports or schedules. Someone who does both (a branch manager who also runs the branch in
+the panel) has one of each — an employee record with their Telegram account for
+checking in, and a system user for the panel.
+
+Roles: system users have admin roles — `super_admin` (the owner), `hr_admin`
+(company-wide HR), `branch_admin` (one branch) or a custom admin role; employees have
+`staff`, `manager` or a custom role of that kind. Only the owner creates branches,
+assigns branch admins and manages system users. A manager reviews the people whose
+**Manager** is set to them, in the Mini App.
 
 ### HTTPS
 
@@ -164,7 +173,7 @@ services in one project:
 
    ```bash
    railway ssh
-   ADMIN_PASSWORD='a-long-password' /app/api create-admin -code GT000 -name "Owner Name" -email you@company.com
+   ADMIN_PASSWORD='a-long-password' /app/api create-admin -name "Owner Name" -email you@company.com
    ```
 
 6. Open `https://<domain>/admin/` and continue from step 1 after *Quick start* above
@@ -259,27 +268,30 @@ assignment, Role management) and **Settings** (General, Location (GPS), Audit lo
 Pages a role cannot use are hidden. What the built-in roles may do (change it on
 *Role management*):
 
-| Page | Owner (super admin) | HR admin | Branch admin | Manager |
-|---|---|---|---|---|
-| Dashboard — today's counts, each person's shift, who needs attention | all (branch filter) | all (branch filter) | their branch | their team |
-| Attendance › Records — check-in and check-out in their own columns (time, on time / late / early, review, inside/outside pin); **View** opens the full record (schedule, each side's status, location and reviewer, totals, review history; confirm/reject there); **Edit** on each row | ✓ | ✓ | their branch | their team |
-| ↳ add a record / edit times (reason required, audited) | ✓ | ✓ | their branch | — |
-| Leave › Requests — all statuses by default; full / half day filter (half days show which half and its hours); approve/reject | ✓ | ✓ | their branch | their team |
-| Leave › Balances — entitlement, carried over, used, pending, left per type and year | edit | edit | view their branch | view team |
-| Leave › Types — allowance per year, paid, manual/automatic approval, limits | edit | edit | view | view |
-| Schedules › Weekly roster — shift per person per day, copy last week, Excel/CSV export | edit | edit | edit their branch | view team |
-| Schedules › Special schedules — date-range overrides (another shift, custom hours, days off) for one or **several people at once** | ✓ | ✓ | their branch | view team |
-| Schedules › Shifts — hours, grace, work days, normal or cross-day (night) | edit | edit | view | view |
-| Schedules › Holidays | edit | view | view | view |
-| Employees — add, edit, link Telegram, set branch/department/position/manager/role, deactivate; filter by department and position | ✓ | ✓ (not admins) | their branch | view team |
-| Employees › Departments, Positions — add, rename, delete unused | ✓ | ✓ | view | view |
-| Administration › System users — panel logins, role, status, reset password | ✓ | — | — | — |
-| Administration › Branch assignment · Role management | ✓ | — | — | — |
-| Branches — add/edit/close branches, assign branch admins | ✓ | — | My branch: office + Telegram | — |
-| Reports — period summary per employee, Excel/CSV export | ✓ | ✓ | their branch | their team |
-| Settings › General — Telegram, company, scheduled jobs | edit | view | — | — |
-| Settings › Location (GPS) — company default + per-branch rules and office | edit | view | their branch | — |
-| Audit log | ✓ | — | — | — |
+| Page | Owner (super admin) | HR admin | Branch admin |
+|---|---|---|---|
+| Dashboard — today's counts, each person's shift, who needs attention | all (branch filter) | all (branch filter) | their branch |
+| Attendance › Records — check-in and check-out in their own columns (time, on time / late / early, review, inside/outside pin); **View** opens the full record (schedule, each side's status, location and reviewer, totals, review history; confirm/reject there); **Edit** and **Delete** (reason required, audited) on each row | ✓ | ✓ | their branch |
+| ↳ add a record / edit times (reason required, audited) | ✓ | ✓ | their branch |
+| Leave › Requests — all statuses by default; full / half day filter (half days show which half and its hours); approve/reject | ✓ | ✓ | their branch |
+| Leave › Balances — entitlement, carried over, used, pending, left per type and year | edit | edit | view their branch |
+| Leave › Types — allowance per year, paid, manual/automatic approval, limits | edit | edit | view |
+| Schedules › Weekly roster — shift per person per day, copy last week, Excel/CSV export | edit | edit | edit their branch |
+| Schedules › Special schedules — date-range overrides (another shift, custom hours, days off) for one or **several people at once** | ✓ | ✓ | their branch |
+| Schedules › Shifts — hours, grace, work days, normal or cross-day (night) | edit | edit | view |
+| Schedules › Holidays | edit | view | view |
+| Employees — add, edit, link Telegram, set branch/department/position/manager/role, deactivate; filter by department and position | ✓ | ✓ (not admins) | their branch |
+| Employees › Departments, Positions — add, rename, delete unused | ✓ | ✓ | view |
+| Administration › System users — admin accounts (separate from employees): role, branch, Telegram, status, reset password, delete | ✓ | — | — |
+| Administration › Branch assignment · Role management | ✓ | — | — |
+| Branches — add/edit/close branches, assign branch admins | ✓ | — | My branch: office + Telegram |
+| Reports — period summary per employee, Excel/CSV export | ✓ | ✓ | their branch |
+| Settings › General — Telegram, company, scheduled jobs | edit | view | — |
+| Settings › Location (GPS) — company default + per-branch rules and office | edit | view | their branch |
+| Audit log | ✓ | — | — |
+
+Managers are employees: they review their team's attendance and leave in the Mini App
+(*Team* tab), not in the panel.
 
 **Roles.** A role is a set of permissions (*Administration → Role management*). The five
 built-in roles can be edited but not deleted; the owner (Super Admin) always has every
@@ -289,9 +301,23 @@ sign in to the panel; *Grant admin roles* is needed to give someone a role with 
 powers. You cannot remove *Manage system users* from your own role, change your own role,
 or demote the last owner. Role changes apply within 30 seconds on every replica.
 
-**System users** (*Administration → System users*) are employees with a panel login:
-create one for an existing employee (email + password, and a role), change the email,
-role or status, reset the password, or remove the login (the employee stays).
+**System users** (*Administration → System users*) are admin panel accounts, separate
+from employees: name, email (sign-in), password, phone, an admin role, a branch for
+branch-level roles (a *Branch Admin* takes that branch's admin slot — one per branch) and
+an optional Telegram user ID for review notifications and the Mini App's Team tab (a
+system user who opens the Mini App sees only *Team* and *Profile*). Edit, disable, reset
+the password or delete an account; deleting keeps its past actions in the audit log.
+Managers and staff are employees, not system users.
+
+**Branch assignment** gives each system user a multi-select of branches: none chosen =
+every branch (company-wide roles); a branch admin always has their own branch, and any
+chosen add to it.
+
+**Deleting** anything in the panel (an attendance record, a special schedule, a shift, a
+leave type, a role, a department or position, a system user) asks first in one
+confirmation dialog that names what is removed. Deleting an attendance record also asks
+for a reason: the record, the reason and who did it go to the audit log, and its reviews,
+locations and photos are removed. Every select box has a search field.
 
 **Leave policy.** Each leave type has a yearly allowance (0 = not counted), paid or
 unpaid, **manual** or **automatic** approval, an optional maximum per request and minimum
@@ -356,7 +382,7 @@ go run ./cmd/api migrate                         # creates the database if neede
 go run ./cmd/api serve                           # http://127.0.0.1:8080
 
 # first owner account for the admin panel (once):
-ADMIN_PASSWORD='a-long-password' go run ./cmd/api create-admin -code GT000 -name "Owner Name" -email you@company.com
+ADMIN_PASSWORD='a-long-password' go run ./cmd/api create-admin -name "Owner Name" -email you@company.com
 ```
 
 Run from `backend/`, the API reads `backend/.env` and then the root `.env`; variables
@@ -389,17 +415,19 @@ data (from `backend/`):
 go run ./cmd/api seed-demo
 ```
 
-It adds three branches (Main branch, Siem Reap, Battambang) with a branch admin each, an
-HR admin, a *Regional Supervisor* (a custom role) assigned to Siem Reap and Battambang
-only, two managers, 17 employees and four weeks of attendance up to today — on time,
-late, early leave, absent and missing check-out days, with GPS points and reviews (some
-still pending, one rejected) — plus approved, pending, rejected and cancelled leave
-requests (two of them half days: a night shift's first half and a day shift's afternoon), Cambodia's fixed-date public holidays, a morning and a night
-(cross-day) shift, a few weekly roster days, three special schedules, leave allowances
-(one person with a custom entitlement and carried-over days). The command prints
-the admin panel logins: all of them use the password `Demo@12345` (set `DEMO_PASSWORD`
-to choose another). If the database already has a super admin, that owner is kept and
-no demo owner is created.
+It adds three branches (Main branch, Siem Reap, Battambang); 16 employees (staff and two
+managers, plus a branch manager per branch) with four weeks of attendance up to today —
+on time, late, early leave, absent and missing check-out days, with GPS points and
+reviews (some still pending, one rejected); and the system users: the owner, an HR
+admin, a Branch Admin per branch (the branch managers' admin accounts — separate records
+from their employee ones) and a *Regional Supervisor* (a custom role) limited to Siem Reap
+and Battambang. Also approved, pending, rejected and cancelled leave requests (two of
+them half days: a night shift's first half and a day shift's afternoon), Cambodia's
+fixed-date public holidays, a morning and a night (cross-day) shift, a few weekly roster
+days, three special schedules and leave allowances (one person with a custom entitlement
+and carried-over days). The command prints the system users' logins: all of them use the
+password `Demo@12345` (set `DEMO_PASSWORD` to choose another). If the database already
+has an owner, that owner is kept and no demo owner is created.
 
 Demo employees have codes starting with `D-` and placeholder Telegram IDs
 (9900000001…), so they cannot open the Mini App; link your own Telegram ID to one of
@@ -454,9 +482,8 @@ Errors look like `{"error":{"code":"ALREADY_CHECKED_IN","message":"…"}}`. Date
 | Method & path | Permission | Notes |
 |---|---|---|
 | `POST /auth/login` · `GET /auth/me` · `POST /auth/logout` | — | login: 10/min/IP; `me` includes company name + timezone |
-| `GET /employees?q=&branch_id=&department_id=&position_id=&status=&include_inactive=` · `GET /employees/:id` | scoped | `has_login` = has a panel login |
+| `GET /employees?q=&branch_id=&department_id=&position_id=&status=&include_inactive=` · `GET /employees/:id` | scoped | staff only (system users are not employees) |
 | `POST /employees` · `PUT /employees/:id` · `DELETE /employees/:id` | staff.manage | delete = deactivate |
-| `POST /employees/:id/user` | roles.assign_admin | panel login |
 | `GET /branches` · `GET /branches/:id` | scoped | company-wide users see all; others their own |
 | `POST /branches` · `PUT /branches/:id/admin {employee_id\|null}` | owner | assign / remove the branch admin |
 | `PUT /branches/:id` | owner, or that branch's admin | branch admins: office location, `gps` and Telegram chats only; `gps: {inherit}` or `{enabled, required, reject_outside}` |
@@ -464,7 +491,7 @@ Errors look like `{"error":{"code":"ALREADY_CHECKED_IN","message":"…"}}`. Date
 | `POST\|PUT /departments[/:id]` · `POST\|PUT /positions[/:id] {name}` · `DELETE …/:id` | staff.manage + all branches | in use → 409 |
 | `GET /roles` | any | roles with permissions and head counts |
 | `GET /roles/permissions` · `POST /roles` · `PUT /roles/:id` · `DELETE /roles/:id` | users.manage | `{name, description, permissions[]}`; built-in roles can't be deleted |
-| `GET /system-users` · `POST /system-users {employee_id, email, password, role}` · `PUT /system-users/:id {email?, status?, role?}` · `DELETE /system-users/:id` | users.manage | delete removes the login only |
+| `GET /system-users` · `POST /system-users {full_name, email, password, role, branch_id?, phone?, telegram_user_id?}` · `PUT /system-users/:id {…, status?}` · `DELETE /system-users/:id` | users.manage | admin accounts, separate from employees; admin roles only (a Branch Admin takes its branch); delete keeps the audit history |
 | `POST /system-users/:id/password {password}` · `PUT /system-users/:id/branches {branch_ids}` | users.manage | `branch_ids: []` = all branches |
 | `GET /work-schedules` | any | shifts, with how many staff use each |
 | `POST /work-schedules` · `PUT /work-schedules/:id` · `DELETE /work-schedules/:id` | schedules.manage (owner, HR) | `work_type` `NORMAL`\|`CROSS_DAY`; a shift in use or the default can't be deleted |
@@ -475,7 +502,7 @@ Errors look like `{"error":{"code":"ALREADY_CHECKED_IN","message":"…"}}`. Date
 | `POST /schedule-overrides` · `PUT /schedule-overrides/:id` · `DELETE /schedule-overrides/:id` | staff.manage, scoped | `kind` `SHIFT`\|`CUSTOM`\|`OFF`, `work_days`, `reason`; create takes `employee_ids: []` (≤ 300; or one `employee_id`) and returns `{items}` — all or nothing; overlaps → 409 naming who |
 | `GET /attendance?employee_id=&branch_id=&department_id=&from=&to=&status=&confirmation=&page=` | scoped | |
 | `GET /attendance/:id` · `GET /attendance/photos/:id` | scoped | `{attendance, photos, schedule, holiday, leave}`: the day's expected hours (less a half day), approved leave, each review with its reviewer, location and photo; photos (older records) streamed by the API |
-| `POST /attendance` · `PUT /attendance/:id` | attendance.edit | manual create/edit, `reason` required |
+| `POST /attendance` · `PUT /attendance/:id` · `DELETE /attendance/:id {reason}` | attendance.edit | manual create/edit/delete, `reason` required (audited); delete removes reviews, locations and photos |
 | `GET /attendance/pending` | reviewer | |
 | `POST /attendance/confirmations/:id/confirm` · `/reject {reason}` | reviewer | |
 | `GET /leave?status=&day_type=FULL\|HALF&employee_id=&branch_id=&from=&to=` · `GET /leave/:id` · `GET /leave/types[?all=1]` · `GET /leave/pending` | scoped | `all=1` includes inactive types |
@@ -557,6 +584,24 @@ company admins in Telegram if a backup failed or none ran for over a day.
 Run one now: `docker compose exec backup backup.sh now`.
 Restore: `gunzip -c backups/attendance-YYYYMMDD-HHMM.sql.gz | docker compose exec -T database mysql -uroot -p"$MYSQL_ROOT_PASSWORD" attendance`.
 Back up the photo bucket too (or rely on R2/S3 durability).
+
+## Upgrading: system users and employees become separate
+
+Migration `0007` (runs on start) sorts every existing admin panel login:
+
+- An admin (owner, HR, branch admin, custom admin role) who **never checked in** becomes a
+  system user as they are.
+- An admin who **also checked in** is split in two: a new system user takes the login,
+  role, branch access and branch-admin assignment; the employee record keeps the
+  attendance, leave and Telegram link, as *Manager* if people report to them (they keep
+  reviewing them in the Mini App), otherwise *Staff*. To get review notifications as the
+  admin, give the system user its own Telegram ID (one Telegram account belongs to one
+  record), or use the branch's review chat.
+- A **manager's or staff member's** panel login is removed: managers review in the Mini
+  App. Give them a system user if they need the panel.
+
+What happened to whom is written to the audit log (`migration.system_users`).
+`create-admin` now creates the owner as a system user (`-code` is no longer needed).
 
 ## Migrating from the chat-bot version
 

@@ -12,6 +12,7 @@ export interface Me {
   employee_id: number
   employee_code: string
   full_name: string
+  is_system_user: boolean // an admin account: no check-in or leave, only the Team tab
   role: 'super_admin' | 'hr_admin' | 'branch_admin' | 'manager' | 'staff'
   is_reviewer: boolean
   is_admin: boolean

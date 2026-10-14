@@ -7,7 +7,7 @@ import type { AttendanceDetail } from '~/types/api'
 import { formatDate } from '~/utils/format'
 
 const props = defineProps<{ id: number | null }>()
-const emit = defineEmits<{ close: []; changed: []; edit: [id: number] }>()
+const emit = defineEmits<{ close: []; changed: []; edit: [id: number]; deleted: [] }>()
 
 const auth = useAuthStore()
 const open = computed({ get: () => props.id !== null, set: v => !v && emit('close') })
@@ -39,6 +39,10 @@ function changed() {
   load()
   emit('changed')
 }
+const deleting = useDeleteAttendance()
+async function remove() {
+  if (detail.value && await deleting.remove(detail.value.attendance)) emit('deleted')
+}
 </script>
 
 <template>
@@ -48,6 +52,7 @@ function changed() {
     </StateView>
     <template #footer>
       <NuxtLink v-if="id !== null" :to="`/attendance/${id}`" class="mr-auto self-center text-sm text-primary hover:underline">Open full page</NuxtLink>
+      <AppButton v-if="auth.can('attendance.edit') && detail" variant="danger" :loading="!!deleting.busy.value" @click="remove">Delete</AppButton>
       <AppButton v-if="auth.can('attendance.edit') && detail" variant="secondary" @click="emit('edit', id!)">Edit</AppButton>
       <AppButton @click="open = false">Close</AppButton>
     </template>

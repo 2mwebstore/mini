@@ -76,7 +76,7 @@ func (s *Service) Shifts(ctx context.Context) ([]ShiftView, error) {
 		N              int64
 	}
 	if err := s.db.WithContext(ctx).Model(&models.Employee{}).Select("work_schedule_id, COUNT(*) AS n").
-		Where("deleted_at IS NULL AND work_schedule_id IS NOT NULL").Group("work_schedule_id").Scan(&counts).Error; err != nil {
+		Where("kind = ? AND deleted_at IS NULL AND work_schedule_id IS NOT NULL", models.KindStaff).Group("work_schedule_id").Scan(&counts).Error; err != nil {
 		return nil, err
 	}
 	byID := map[uint64]int64{}
@@ -84,7 +84,7 @@ func (s *Service) Shifts(ctx context.Context) ([]ShiftView, error) {
 		byID[c.WorkScheduleID] = c.N
 	}
 	var unassigned int64 // staff without a shift work the default one
-	if err := s.db.WithContext(ctx).Model(&models.Employee{}).Where("deleted_at IS NULL AND work_schedule_id IS NULL").Count(&unassigned).Error; err != nil {
+	if err := s.db.WithContext(ctx).Model(&models.Employee{}).Where("kind = ? AND deleted_at IS NULL AND work_schedule_id IS NULL", models.KindStaff).Count(&unassigned).Error; err != nil {
 		return nil, err
 	}
 	out := make([]ShiftView, len(shifts))
@@ -312,7 +312,7 @@ func (s *Service) staff(ctx context.Context, actor *auth.Actor, f StaffFilter) (
 		return nil, err
 	}
 	q := s.db.WithContext(ctx).Preload("Branch").Preload("Department").
-		Where("deleted_at IS NULL AND status <> ?", models.EmployeeInactive).Order("full_name")
+		Where("kind = ? AND deleted_at IS NULL AND status <> ?", models.KindStaff, models.EmployeeInactive).Order("full_name")
 	if scope != nil {
 		q = q.Where("id IN ?", scope)
 	}
@@ -464,7 +464,7 @@ func (s *Service) SetRoster(ctx context.Context, actor *auth.Actor, items []Rost
 		emp, ok := emps[it.EmployeeID]
 		if !ok {
 			var e models.Employee
-			if err := s.db.WithContext(ctx).First(&e, it.EmployeeID).Error; err != nil {
+			if err := s.db.WithContext(ctx).First(&e, it.EmployeeID).Error; err != nil || e.IsSystemUser() {
 				return 0, apperr.NotFound("EMPLOYEE_NOT_FOUND", "Employee not found.")
 			}
 			emp, emps[it.EmployeeID] = &e, &e
@@ -781,7 +781,7 @@ func (s *Service) override(ctx context.Context, id uint64) (*models.ScheduleOver
 
 func (s *Service) canManage(ctx context.Context, actor *auth.Actor, empID uint64) error {
 	var e models.Employee
-	if err := s.db.WithContext(ctx).First(&e, empID).Error; err != nil {
+	if err := s.db.WithContext(ctx).First(&e, empID).Error; err != nil || e.IsSystemUser() { // system users have no schedule
 		return apperr.NotFound("EMPLOYEE_NOT_FOUND", "Employee not found.")
 	}
 	if !actor.CanManage(&e) {

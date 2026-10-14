@@ -54,6 +54,7 @@ type identifyResp struct {
 	EmployeeID   uint64   `json:"employee_id"`
 	EmployeeCode string   `json:"employee_code"`
 	FullName     string   `json:"full_name"`
+	IsSystemUser bool     `json:"is_system_user"` // an admin account: no check-in or leave, the Team tab only
 	Role         string   `json:"role"`
 	IsReviewer   bool     `json:"is_reviewer"`
 	IsAdmin      bool     `json:"is_admin"`
@@ -67,9 +68,11 @@ type identifyResp struct {
 func identify(a *auth.Actor) identifyResp {
 	perms := []string{}
 	for _, p := range auth.PermissionsFor(a.Employee.RoleID) {
-		perms = append(perms, string(p))
+		if a.Has(p) {
+			perms = append(perms, string(p))
+		}
 	}
-	out := identifyResp{EmployeeID: a.ID(), EmployeeCode: a.Employee.EmployeeCode, FullName: a.Employee.FullName,
+	out := identifyResp{EmployeeID: a.ID(), EmployeeCode: a.Employee.EmployeeCode, FullName: a.Employee.FullName, IsSystemUser: a.Employee.IsSystemUser(),
 		Role: auth.RoleCode(a.Employee.RoleID), IsReviewer: a.IsReviewer(), IsAdmin: a.IsAdmin(),
 		CanExport: a.Has(auth.PermReportExport), CanManage: a.Has(auth.PermStaffManage), BranchID: a.Employee.BranchID, Permissions: perms}
 	if a.Employee.Branch != nil {

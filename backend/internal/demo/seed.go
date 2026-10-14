@@ -75,37 +75,49 @@ var branchDefs = []branchDef{
 	{"BB", "Battambang", "Street 1, Battambang", 13.0957, 103.2022, 200},
 }
 
+// person is a member of staff (an employee who checks in with the Mini App).
 type person struct {
 	code, name, role, dept, position string
-	branch                           string // branch code; "" = company-wide
-	email                            string // admin panel login; "" = none
-	branchAdmin                      bool
+	branch                           string // branch code
 }
 
 var people = []person{
-	{"D-HR01", "Chenda Lim", "hr_admin", "Human Resources", "HR Manager", "", "hr@demo.local", false},
+	{"D-PP01", "Sophea Chan", "staff", "Operations", "Branch Manager", "MAIN"},
+	{"D-PP02", "Dara Sok", "manager", "Sales", "Sales Supervisor", "MAIN"},
+	{"D-PP03", "Bopha Keo", "staff", "Sales", "Sales Executive", "MAIN"},
+	{"D-PP04", "Vuthy Ly", "staff", "Sales", "Sales Executive", "MAIN"},
+	{"D-PP05", "Sreymom Phan", "staff", "Finance", "Accountant", "MAIN"},
+	{"D-PP06", "Piseth Long", "staff", "Development", "Software Developer", "MAIN"},
+	{"D-PP07", "Kanha Mao", "staff", "Customer Service", "Customer Support", "MAIN"},
 
-	{"D-PP01", "Sophea Chan", "staff", "Operations", "Branch Manager", "MAIN", "main.admin@demo.local", true},
-	{"D-PP02", "Dara Sok", "manager", "Sales", "Sales Supervisor", "MAIN", "dara.manager@demo.local", false},
-	{"D-PP03", "Bopha Keo", "staff", "Sales", "Sales Executive", "MAIN", "", false},
-	{"D-PP04", "Vuthy Ly", "staff", "Sales", "Sales Executive", "MAIN", "", false},
-	{"D-PP05", "Sreymom Phan", "staff", "Finance", "Accountant", "MAIN", "", false},
-	{"D-PP06", "Piseth Long", "staff", "Development", "Software Developer", "MAIN", "", false},
-	{"D-PP07", "Kanha Mao", "staff", "Customer Service", "Customer Support", "MAIN", "", false},
+	{"D-SR01", "Vanna Kim", "staff", "Operations", "Branch Manager", "SR"},
+	{"D-SR02", "Rithy Heng", "manager", "Operations", "Front Office Supervisor", "SR"},
+	{"D-SR03", "Sothea Nhem", "staff", "Customer Service", "Receptionist", "SR"},
+	{"D-SR04", "Kosal Pen", "staff", "Operations", "Driver", "SR"},
+	{"D-SR05", "Nita Ros", "staff", "Sales", "Sales Executive", "SR"},
 
-	{"D-SR01", "Vanna Kim", "staff", "Operations", "Branch Manager", "SR", "siemreap.admin@demo.local", true},
-	{"D-SR02", "Rithy Heng", "manager", "Operations", "Front Office Supervisor", "SR", "rithy.manager@demo.local", false},
-	{"D-SR03", "Sothea Nhem", "staff", "Customer Service", "Receptionist", "SR", "", false},
-	{"D-SR04", "Kosal Pen", "staff", "Operations", "Driver", "SR", "", false},
-	{"D-SR05", "Nita Ros", "staff", "Sales", "Sales Executive", "SR", "", false},
+	{"D-BB01", "Malis Ouk", "staff", "Operations", "Branch Manager", "BB"},
+	{"D-BB02", "Narin Seng", "staff", "Sales", "Sales Executive", "BB"},
+	{"D-BB03", "Phalla Touch", "staff", "Finance", "Cashier", "BB"},
+	{"D-BB04", "Ratha Chhim", "staff", "Operations", "Warehouse Officer", "BB"},
+}
 
-	{"D-BB01", "Malis Ouk", "staff", "Operations", "Branch Manager", "BB", "battambang.admin@demo.local", true},
-	{"D-BB02", "Narin Seng", "staff", "Sales", "Sales Executive", "BB", "", false},
-	{"D-BB03", "Phalla Touch", "staff", "Finance", "Cashier", "BB", "", false},
-	{"D-BB04", "Ratha Chhim", "staff", "Operations", "Warehouse Officer", "BB", "", false},
+// sysUser is an admin panel account (Administration → System users), separate
+// from staff. The branch managers above also have one, as each branch's admin:
+// one person, two records — they check in as staff and run the panel as admins.
+type sysUser struct {
+	key, name, role string
+	branch          string // branch code for branch-level roles
+	email, label    string
+}
 
+var sysUsers = []sysUser{
+	{"A-HR", "Chenda Lim", "hr_admin", "", "hr@demo.local", "HR admin (all branches)"},
+	{"A-MAIN", "Sophea Chan", "branch_admin", "MAIN", "main.admin@demo.local", "Branch admin"},
+	{"A-SR", "Vanna Kim", "branch_admin", "SR", "siemreap.admin@demo.local", "Branch admin"},
+	{"A-BB", "Malis Ouk", "branch_admin", "BB", "battambang.admin@demo.local", "Branch admin"},
 	// A custom role, limited to two branches on Branch assignment.
-	{"D-RG01", "Sokunthea Ly", "regional_supervisor", "Operations", "Regional Supervisor", "", "regional@demo.local", false},
+	{"A-RG", "Sokunthea Ly", "regional_supervisor", "", "regional@demo.local", "Regional supervisor (Siem Reap + Battambang)"},
 }
 
 // Fixed-date public holidays in Cambodia (lunar-calendar ones vary by year).
@@ -130,7 +142,8 @@ type seeder struct {
 	loc    *time.Location
 	today  time.Time
 	rng    *rand.Rand
-	emps   map[string]*models.Employee // by code
+	emps   map[string]*models.Employee // staff by code
+	admins map[string]*models.Employee // system users by key (A-…)
 	branch map[string]*models.Branch   // by code
 	owner  *models.Employee
 	isHol  func(time.Time) bool
@@ -163,9 +176,9 @@ func Seed(ctx context.Context, d Deps, o Options) (*Summary, error) {
 		ctx: ctx, d: d, o: o, loc: st.Location, today: timeutil.DateOf(o.Now, st.Location),
 		cli:  &auth.Actor{Employee: models.Employee{RoleID: models.RoleSuperAdmin, FullName: "Demo seed"}, Channel: auth.ChannelCLI},
 		rng:  rand.New(rand.NewPCG(2026, 10)), // fixed: the same demo every time
-		emps: map[string]*models.Employee{}, branch: map[string]*models.Branch{}, sum: &Summary{},
+		emps: map[string]*models.Employee{}, admins: map[string]*models.Employee{}, branch: map[string]*models.Branch{}, sum: &Summary{},
 	}
-	steps := []func() error{s.ensureOwner, s.branches, s.roles, s.staff, s.access, s.backdate, s.holidays, s.schedules, s.leave, s.attendance, s.audit}
+	steps := []func() error{s.ensureOwner, s.branches, s.roles, s.systemUsers, s.staff, s.access, s.backdate, s.holidays, s.schedules, s.leave, s.attendance, s.audit}
 	for _, step := range steps {
 		if err := step(); err != nil {
 			return nil, err
@@ -192,16 +205,45 @@ func (s *seeder) ensureOwner() error {
 	if !errors.Is(err, gorm.ErrRecordNotFound) {
 		return err
 	}
-	svc := employee.NewService(s.d.DB)
-	e, err := svc.Create(s.ctx, s.cli, employee.Input{EmployeeCode: "D-OWNER", FullName: "Demo Owner", Role: "super_admin"})
+	name, email, role := "Demo Owner", "owner@demo.local", "super_admin"
+	u, err := access.NewService(s.d.DB).CreateUser(s.ctx, s.cli, access.UserInput{FullName: &name, Email: &email, Password: &s.o.Password, Role: &role})
 	if err != nil {
 		return fmt.Errorf("create owner: %w", err)
 	}
-	if _, err := svc.CreateUser(s.ctx, s.cli, e.ID, "owner@demo.local", s.o.Password); err != nil {
-		return fmt.Errorf("owner login: %w", err)
+	var e models.Employee
+	if err := s.d.DB.WithContext(s.ctx).First(&e, u.PersonID).Error; err != nil {
+		return err
 	}
-	s.owner = e
-	s.sum.Logins = append(s.sum.Logins, Login{Email: "owner@demo.local", Name: e.FullName, Role: "Owner (super admin)"})
+	s.owner = &e
+	s.sum.Logins = append(s.sum.Logins, Login{Email: email, Name: name, Role: "Owner (super admin)"})
+	return nil
+}
+
+// systemUsers adds the admin panel accounts: HR, a branch admin per branch and a
+// regional supervisor (a custom role).
+func (s *seeder) systemUsers() error {
+	svc := access.NewService(s.d.DB)
+	for _, a := range sysUsers {
+		name, email, role := a.name, a.email, a.role
+		in := access.UserInput{FullName: &name, Email: &email, Password: &s.o.Password, Role: &role}
+		if b := s.branch[a.branch]; b != nil {
+			in.BranchID = &b.ID
+		}
+		u, err := svc.CreateUser(s.ctx, s.cli, in)
+		if err != nil {
+			return fmt.Errorf("system user %s: %w", a.email, err)
+		}
+		var e models.Employee
+		if err := s.d.DB.WithContext(s.ctx).First(&e, u.PersonID).Error; err != nil {
+			return err
+		}
+		s.admins[a.key] = &e
+		label := a.label
+		if b := s.branch[a.branch]; b != nil {
+			label += " — " + b.Name
+		}
+		s.sum.Logins = append(s.sum.Logins, Login{Email: a.email, Name: a.name, Role: label})
+	}
 	return nil
 }
 
@@ -237,17 +279,16 @@ func (s *seeder) branches() error {
 
 func (s *seeder) staff() error {
 	empSvc := employee.NewService(s.d.DB)
-	brSvc := branch.NewService(s.d.DB)
 	managers := map[string]uint64{} // branch code -> manager employee id
 	for i, p := range people {
 		in := employee.Input{EmployeeCode: p.code, FullName: p.name, Role: p.role, Department: p.dept, Position: ptr(p.position),
-			Email: ptr(p.email), Phone: ptr(fmt.Sprintf("+855 12 %03d %03d", 100+i*7, 200+i*13))}
+			Phone: ptr(fmt.Sprintf("+855 12 %03d %03d", 100+i*7, 200+i*13))}
 		tg := int64(9_900_000_001 + i) // placeholder Telegram IDs (link real ones in the panel)
 		in.TelegramUserID = &tg
 		if b := s.branch[p.branch]; b != nil {
 			in.BranchID = &b.ID
 		}
-		if m, ok := managers[p.branch]; ok && p.role == "staff" && !p.branchAdmin {
+		if m, ok := managers[p.branch]; ok && p.role == "staff" && p.position != "Branch Manager" {
 			in.ManagerID = &m
 		}
 		e, err := empSvc.Create(s.ctx, s.cli, in)
@@ -256,25 +297,6 @@ func (s *seeder) staff() error {
 		}
 		if p.role == "manager" {
 			managers[p.branch] = e.ID
-		}
-		if p.branchAdmin {
-			if _, err := brSvc.AssignAdmin(s.ctx, s.cli, s.branch[p.branch].ID, &e.ID); err != nil {
-				return fmt.Errorf("assign %s: %w", p.code, err)
-			}
-		}
-		if p.email != "" {
-			if _, err := empSvc.CreateUser(s.ctx, s.cli, e.ID, p.email, s.o.Password); err != nil {
-				return fmt.Errorf("login %s: %w", p.code, err)
-			}
-			role := map[string]string{"hr_admin": "HR admin (all branches)", "manager": "Manager",
-				"regional_supervisor": "Regional supervisor (Siem Reap + Battambang)"}[p.role]
-			if p.branchAdmin {
-				role = "Branch admin"
-			}
-			if b := s.branch[p.branch]; b != nil {
-				role += " — " + b.Name
-			}
-			s.sum.Logins = append(s.sum.Logins, Login{Email: p.email, Name: p.name, Role: role})
 		}
 		s.sum.Employees++
 	}
@@ -321,7 +343,7 @@ func (s *seeder) holidays() error {
 // ---------- roles, branch access, leave balances ----------
 
 // roles adds a custom role (view and review everyone, edit attendance, export) —
-// D-RG01 has it, limited to two branches by access().
+// the A-RG system user has it, limited to two branches by access().
 func (s *seeder) roles() error {
 	name, desc := "Regional Supervisor", "Oversees the branches assigned to them"
 	_, err := access.NewService(s.d.DB).CreateRole(s.ctx, s.cli, access.RoleInput{Name: &name, Description: &desc, Permissions: []auth.Permission{
@@ -337,7 +359,7 @@ func (s *seeder) roles() error {
 // one person a longer annual leave entitlement with a carry-over.
 func (s *seeder) access() error {
 	var u models.User
-	if err := s.d.DB.WithContext(s.ctx).Where("employee_id = ?", s.emps["D-RG01"].ID).First(&u).Error; err != nil {
+	if err := s.d.DB.WithContext(s.ctx).Where("employee_id = ?", s.admins["A-RG"].ID).First(&u).Error; err != nil {
 		return err
 	}
 	if _, err := access.NewService(s.d.DB).SetBranches(s.ctx, s.cli, u.ID, []uint64{s.branch["SR"].ID, s.branch["BB"].ID}); err != nil {
@@ -466,10 +488,10 @@ func (s *seeder) leave() error {
 		status, reviewer string
 		reason, note     string
 	}{
-		{"D-PP04", "ANNUAL", -12, 3, models.LeaveApproved, "D-PP01", "Family trip to Kampot", ""},
-		{"D-SR03", "SICK", -6, 1, models.LeaveApproved, "D-SR01", "Fever, doctor's note attached", "Get well soon"},
-		{"D-PP06", "ANNUAL", -15, 1, models.LeaveRejected, "D-PP01", "Personal errands", "Month-end closing — please choose another day."},
-		{"D-BB02", "ANNUAL", 10, 2, models.LeaveApproved, "D-BB01", "Brother's wedding", ""},
+		{"D-PP04", "ANNUAL", -12, 3, models.LeaveApproved, "A-MAIN", "Family trip to Kampot", ""},
+		{"D-SR03", "SICK", -6, 1, models.LeaveApproved, "A-SR", "Fever, doctor's note attached", "Get well soon"},
+		{"D-PP06", "ANNUAL", -15, 1, models.LeaveRejected, "A-MAIN", "Personal errands", "Month-end closing — please choose another day."},
+		{"D-BB02", "ANNUAL", 10, 2, models.LeaveApproved, "A-BB", "Brother's wedding", ""},
 		{"D-PP05", "PERSONAL", 4, 2, models.LeavePending, "", "Moving to a new apartment", ""},
 		{"D-SR04", "ANNUAL", 7, 1, models.LeavePending, "", "Visiting family in Kampong Cham", ""},
 		{"D-BB03", "EMERGENCY", 2, 1, models.LeavePending, "", "Child's school appointment", ""},
@@ -490,7 +512,7 @@ func (s *seeder) leave() error {
 			lr := models.LeaveRequest{EmployeeID: emp.ID, LeaveTypeID: typeID[p.typ], StartDate: start, EndDate: end, DayType: models.LeaveFullDay,
 				Days: float64(s.plan.WorkingDays(emp, start, end, s.isHol)), Reason: p.reason, Status: p.status, ReviewNote: p.note,
 				CreatedAt: requested.UTC(), UpdatedAt: requested.UTC()}
-			if r := s.emps[p.reviewer]; r != nil {
+			if r := s.admins[p.reviewer]; r != nil {
 				at := requested.Add(20 * time.Hour).UTC()
 				lr.ReviewedBy, lr.ReviewedAt = &r.ID, &at
 			}
@@ -512,7 +534,7 @@ func (s *seeder) leave() error {
 			start                                     int
 		}{
 			{"D-BB04", "PERSONAL", models.LeaveFirstHalf, models.LeavePending, "", "Clinic appointment in the evening", 5},
-			{"D-SR03", "ANNUAL", models.LeaveSecondHalf, models.LeaveApproved, "D-SR01", "Picking up documents at the ministry", 8},
+			{"D-SR03", "ANNUAL", models.LeaveSecondHalf, models.LeaveApproved, "A-SR", "Picking up documents at the ministry", 8},
 		}
 		for _, h := range halves {
 			emp, date := s.emps[h.code], s.workday(h.start)
@@ -528,7 +550,7 @@ func (s *seeder) leave() error {
 			requested := s.o.Now.Add(-30 * time.Hour).UTC()
 			lr := models.LeaveRequest{EmployeeID: emp.ID, LeaveTypeID: typeID[h.typ], StartDate: date, EndDate: date, DayType: h.half,
 				HalfFrom: &hours[0], HalfTo: &hours[1], Days: 0.5, Reason: h.reason, Status: h.status, CreatedAt: requested, UpdatedAt: requested}
-			if r := s.emps[h.reviewer]; r != nil {
+			if r := s.admins[h.reviewer]; r != nil {
 				at := requested.Add(4 * time.Hour)
 				lr.ReviewedBy, lr.ReviewedAt = &r.ID, &at
 			}
@@ -552,12 +574,10 @@ func (s *seeder) nextWorkday(d time.Time) time.Time {
 
 // ---------- attendance ----------
 
+// reviewerOf: the employee's manager, else their branch admin (a system user), else the owner.
 func (s *seeder) reviewerOf(code string) *models.Employee {
 	e := s.emps[code]
-	switch {
-	case e.RoleID == models.RoleHRAdmin || e.RoleID == models.RoleBranchAdmin:
-		return s.owner
-	case e.ManagerID != nil:
+	if e.ManagerID != nil {
 		for _, m := range s.emps {
 			if m.ID == *e.ManagerID {
 				return m
@@ -565,7 +585,7 @@ func (s *seeder) reviewerOf(code string) *models.Employee {
 		}
 	}
 	if e.Branch != nil && e.Branch.AdminEmployeeID != nil {
-		for _, m := range s.emps {
+		for _, m := range s.admins {
 			if m.ID == *e.Branch.AdminEmployeeID {
 				return m
 			}
@@ -635,7 +655,7 @@ func (s *seeder) attendance() error {
 				}
 				pendingIn := isToday && i%4 != 0
 				pendingOut := isToday || (isYesterday && i%3 == 0)
-				rejectOut := isYesterday && !rejectedDone && p.branch == "SR" && p.role == "staff" && !p.branchAdmin && out != nil
+				rejectOut := isYesterday && !rejectedDone && p.branch == "SR" && p.role == "staff" && p.position != "Branch Manager" && out != nil
 				if rejectOut {
 					rejectedDone = true
 				}

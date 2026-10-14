@@ -10,6 +10,7 @@ const lookups = useLookupsStore()
 const canEdit = computed(() => auth.can('schedules.manage'))
 const shifts = useResource(() => scheduleService.shifts())
 const { busy, run } = useAction()
+const { confirm } = useConfirm()
 
 const palette = ['#2563eb', '#0891b2', '#059669', '#ca8a04', '#ea580c', '#dc2626', '#db2777', '#7c3aed', '#4f46e5', '#475569']
 const typeOptions = [
@@ -67,7 +68,7 @@ async function save() {
 }
 
 async function remove(s: WorkSchedule) {
-  if (!window.confirm(`Delete the shift "${s.name}"?`)) return
+  if (!(await confirm({ title: `Delete the shift “${s.name}”?`, message: 'Nobody works this shift any more; past attendance is not changed.' }))) return
   if (await run(`d${s.id}`, () => scheduleService.deleteShift(s.id), 'Shift deleted')) {
     shifts.load()
     lookups.loadSchedules(true).catch(() => {})

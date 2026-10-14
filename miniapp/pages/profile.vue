@@ -8,6 +8,14 @@ const dayNames = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun']
 const rows = computed(() => {
   const p = auth.profile
   if (!p) return []
+  if (auth.isSystemUser) {
+    return [
+      { label: 'Account', value: 'System user (admin)' },
+      { label: 'Role', value: p.role_name || auth.me?.role },
+      { label: 'Branch', value: p.branch || 'All branches' },
+      { label: 'Telegram ID', value: telegramId ? String(telegramId) : '—' },
+    ]
+  }
   return [
     { label: 'Employee ID', value: p.employee_code },
     { label: 'Branch', value: p.branch || 'All branches' },

@@ -92,12 +92,14 @@ export interface RoleInput {
   permissions?: Permission[]
 }
 
+/** An admin panel account. System users are not employees: they don't check in. */
 export interface SystemUser {
-  id: number
-  employee_id: number
-  employee_code: string
+  id: number // the login
+  person_id: number // used for branch admin assignment and reviews
   full_name: string
   email: string
+  phone: string
+  telegram_user_id: number | null // optional: review notifications and the Mini App Team tab
   status: 'ACTIVE' | 'INACTIVE'
   last_login_at: string | null
   created_at: string
@@ -113,11 +115,14 @@ export interface SystemUser {
 }
 
 export interface SystemUserInput {
-  employee_id?: number
+  full_name?: string
   email?: string
-  password?: string
+  password?: string // create only
+  phone?: string
   status?: 'ACTIVE' | 'INACTIVE'
   role?: RoleCode
+  branch_id?: number // home branch for branch-level roles (0 = none)
+  telegram_user_id?: number // 0 unlinks
 }
 
 /** NORMAL ends the same day; CROSS_DAY is a night shift ending the next day (22:00–06:00). */
@@ -259,7 +264,7 @@ export interface Employee {
   deleted_at?: string | null
   department?: Department
   branch?: Branch
-  has_login: boolean
+  kind?: 'STAFF' | 'SYSTEM'
   work_schedule?: WorkSchedule
   role?: { id: number; code: RoleCode; name: string }
   telegram_account?: { telegram_user_id: number; username: string; first_name: string; last_name: string }

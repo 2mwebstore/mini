@@ -37,12 +37,9 @@ const form = reactive({
   status: (e?.status ?? 'ACTIVE') as EmployeeStatus,
 })
 
-// Roles with admin powers need "Grant admin roles"; branch admins are assigned on
-// the Branches page (the API enforces both rules).
-const isBranchAdmin = computed(() => form.role === 'branch_admin')
-const roles = computed(() =>
-  (lookups.roles ?? []).filter(r => r.code === form.role || (r.code !== 'branch_admin' && (auth.can('roles.assign_admin') || !isAdminRole(r)))),
-)
+// Employees are staff: Staff, Manager (reviews their team in the Mini App) or a custom
+// role of that kind. Admin roles belong to system users (the API enforces this).
+const roles = computed(() => (lookups.roles ?? []).filter(r => r.code === form.role || !isAdminRole(r)))
 // Roles that see every branch belong to no branch; everyone else belongs to one.
 const companyWide = computed(() => !!lookups.roles?.find(r => r.code === form.role)?.permissions.includes('all.view'))
 const branchFixed = computed(() => !auth.can('all.view')) // a branch admin adds staff to their own branch
@@ -98,8 +95,8 @@ function submit() {
       <p v-if="!tgValid" class="mt-1 text-xs text-danger">Numbers only.</p>
     </FormField>
 
-    <FormField v-if="!companyWide" label="Branch" for="emp-branch" :hint="isBranchAdmin ? 'Branch admins move by being assigned on the Branches page.' : undefined">
-      <SearchSelect v-if="!branchFixed" id="emp-branch" v-model="form.branch_id" :options="branchOptions" placeholder="Choose a branch…" required :disabled="isBranchAdmin" />
+    <FormField v-if="!companyWide" label="Branch" for="emp-branch">
+      <SearchSelect v-if="!branchFixed" id="emp-branch" v-model="form.branch_id" :options="branchOptions" placeholder="Choose a branch…" required />
       <input v-else id="emp-branch" class="input" disabled :value="e?.branch?.name ?? auth.employee?.branch?.name ?? ''" />
     </FormField>
     <FormField label="Department" for="emp-dept">
@@ -119,8 +116,8 @@ function submit() {
     <FormField label="Manager" for="emp-mgr" hint="The manager reviews this person's attendance and leave.">
       <SearchSelect id="emp-mgr" v-model="form.manager_id" :options="managerOptions" empty-label="No manager" />
     </FormField>
-    <FormField label="Role" for="emp-role" :hint="isBranchAdmin ? 'Set on the Branches page.' : companyWide ? 'Works across all branches.' : undefined">
-      <SearchSelect id="emp-role" v-model="form.role" :options="roleOptions" :disabled="isBranchAdmin" />
+    <FormField label="Role" for="emp-role" hint="Admin panel accounts are system users (Administration → System users).">
+      <SearchSelect id="emp-role" v-model="form.role" :options="roleOptions" />
     </FormField>
     <FormField v-if="e" label="Status" for="emp-status">
       <SearchSelect id="emp-status" v-model="form.status" :options="statusOptions" />

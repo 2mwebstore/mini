@@ -4,9 +4,11 @@ import { useAuthStore } from '~/stores/auth'
 const auth = useAuthStore()
 
 const tabs = computed(() => [
-  { to: '/', label: 'Home', icon: 'home' as const },
-  { to: '/history', label: 'History', icon: 'history' as const },
-  { to: '/leave', label: 'Leave', icon: 'leave' as const },
+  ...(auth.isSystemUser ? [] : [
+    { to: '/', label: 'Home', icon: 'home' as const },
+    { to: '/history', label: 'History', icon: 'history' as const },
+    { to: '/leave', label: 'Leave', icon: 'leave' as const },
+  ]),
   ...(auth.isReviewer ? [{ to: '/team', label: 'Team', icon: 'team' as const }] : []),
   { to: '/profile', label: 'Profile', icon: 'user' as const },
 ])

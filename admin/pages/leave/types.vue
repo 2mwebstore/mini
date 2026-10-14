@@ -7,6 +7,7 @@ const auth = useAuthStore()
 const canEdit = computed(() => auth.can('leave.manage'))
 const types = useResource(() => leaveService.allTypes())
 const { busy, run } = useAction()
+const { confirm } = useConfirm()
 
 const palette = ['#16a34a', '#dc2626', '#7c3aed', '#ea580c', '#0891b2', '#db2777', '#ca8a04', '#2563eb', '#64748b']
 const approvalOptions = [
@@ -44,7 +45,7 @@ async function toggle(t: LeaveType) {
   if (await run(`a${t.id}`, () => leaveService.updateType(t.id, { active: !t.active }), t.active ? `${t.name} turned off` : `${t.name} turned on`)) types.load()
 }
 async function remove(t: LeaveType) {
-  if (!window.confirm(`Delete the leave type "${t.name}"?`)) return
+  if (!(await confirm({ title: `Delete the leave type “${t.name}”?`, message: 'It has never been used. A type that has been used can only be turned off.' }))) return
   if (await run(`d${t.id}`, () => leaveService.deleteType(t.id), 'Leave type deleted')) types.load()
 }
 const days = (n: number) => `${n % 1 ? n.toFixed(1) : n} day${n === 1 ? '' : 's'}`

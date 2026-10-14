@@ -15,6 +15,8 @@ export const useAuthStore = defineStore('auth', {
   }),
   getters: {
     isReviewer: s => !!s.me?.is_reviewer,
+    // System users (admin accounts) don't check in or take leave: they only review.
+    isSystemUser: s => !!s.me?.is_system_user,
     timezone: s => s.settings?.timezone || 'Asia/Phnom_Penh',
   },
   actions: {
