@@ -174,7 +174,7 @@ async function signOut() {
     </aside>
 
     <main class="min-w-0 px-4 py-6 sm:px-8">
-      <div class="mx-auto max-w-7xl"><slot /></div>
+      <div class="mx-auto max-w-8xl"><slot /></div>
     </main>
   </div>
 </template>
