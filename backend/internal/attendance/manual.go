@@ -123,7 +123,7 @@ func (s *Service) Manual(ctx context.Context, actor *auth.Actor, in ManualInput)
 				att.CheckOutAt = &out
 			}
 			if att.CheckInAt == nil {
-				return apperr.BadRequest("CHECK_IN_REQUIRED", "Check-in time is required (or set a status such as ABSENT).")
+				return apperr.BadRequest("CHECK_IN_REQUIRED", "Check-in time is required.")
 			}
 			if att.CheckOutAt != nil && !att.CheckOutAt.After(*att.CheckInAt) {
 				return apperr.BadRequest("INVALID_RANGE", "Check-out must be after check-in.")

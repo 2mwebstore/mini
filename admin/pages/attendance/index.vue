@@ -7,7 +7,6 @@ import { dayStatus, formatClock, formatDate, formatMinutes, latestReview, monthS
 import { optionsFrom } from '~/utils/options'
 
 const dayStatusOptions = optionsFrom(dayStatus, ['PRESENT', 'LATE', 'EARLY_LEAVE', 'ABSENT', 'LEAVE'])
-const manualStatusOptions = optionsFrom(dayStatus, ['PRESENT', 'LATE', 'EARLY_LEAVE', 'ABSENT', 'LEAVE', 'HOLIDAY'])
 
 const auth = useAuthStore()
 const lookups = useLookupsStore()
@@ -62,8 +61,9 @@ onMounted(() => {
 // ---------- manual record ----------
 const { busy, run } = useAction()
 const addOpen = ref(false)
-const manual = reactive({ employee_id: '', date: todayISO(tz), check_in: '', check_out: '', status: '', reason: '' })
-watch(addOpen, v => v && Object.assign(manual, { employee_id: '', date: todayISO(tz), check_in: '', check_out: '', status: '', reason: '' }))
+// The status is worked out from the times and the day's shift (late, early leave).
+const manual = reactive({ employee_id: '', date: todayISO(tz), check_in: '', check_out: '', reason: '' })
+watch(addOpen, v => v && Object.assign(manual, { employee_id: '', date: todayISO(tz), check_in: '', check_out: '', reason: '' }))
 async function addRecord() {
   const ok = await run('add', () =>
     attendanceService.create({
@@ -71,7 +71,6 @@ async function addRecord() {
       date: manual.date,
       check_in: manual.check_in || undefined,
       check_out: manual.check_out || undefined,
-      status: manual.status || undefined,
       reason: manual.reason.trim(),
     }), 'Attendance recorded')
   if (ok) {
@@ -203,16 +202,14 @@ const activeEmployeeOptions = computed(() => activeEmployees.value.map(e => ({ v
         <FormField label="Employee" for="m-emp" class="sm:col-span-2">
           <SearchSelect id="m-emp" v-model="manual.employee_id" :options="activeEmployeeOptions" placeholder="Choose an employee…" required />
         </FormField>
-        <FormField label="Date" for="m-date"><input id="m-date" v-model="manual.date" type="date" class="input" required /></FormField>
-        <FormField label="Status" for="m-status" hint="Leave on Automatic to derive it from the times.">
-          <SearchSelect id="m-status" v-model="manual.status" :options="manualStatusOptions" empty-label="Automatic" />
-        </FormField>
-        <FormField label="Check in" for="m-in" :hint="`Company time (${tz})`"><input id="m-in" v-model="manual.check_in" type="time" class="input" /></FormField>
+        <FormField label="Date" for="m-date" class="sm:col-span-2"><input id="m-date" v-model="manual.date" type="date" class="input" required /></FormField>
+        <FormField label="Check in" for="m-in" :hint="`Company time (${tz})`"><input id="m-in" v-model="manual.check_in" type="time" class="input" required /></FormField>
         <FormField label="Check out" for="m-out"><input id="m-out" v-model="manual.check_out" type="time" class="input" /></FormField>
         <FormField label="Reason (audited)" for="m-reason" class="sm:col-span-2">
           <textarea id="m-reason" v-model="manual.reason" class="input" rows="2" maxlength="500" required />
         </FormField>
       </form>
+      <p class="mt-3 text-xs text-muted">Late and early leave are worked out from the times and the day's shift.</p>
       <template #footer>
         <AppButton variant="secondary" @click="addOpen = false">Cancel</AppButton>
         <AppButton type="submit" form="add-form" :loading="busy === 'add'">Save record</AppButton>
