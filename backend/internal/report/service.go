@@ -69,6 +69,8 @@ type DayRow struct {
 	ConfirmedBy            string     `json:"confirmed_by"`
 	LeaveType              string     `json:"leave_type"`
 	LeaveHalf              string     `json:"leave_half,omitempty"` // FIRST_HALF | SECOND_HALF: half the day was leave
+	LeaveCode              string     `json:"-"`                    // the leave type's code (ANNUAL = annual leave)
+	AfterShiftMinutes      int        `json:"-"`                    // checked out this long after the shift's end
 	// The day's scheduled shift (empty on days off).
 	Shift      string `json:"shift,omitempty"`
 	ShiftStart string `json:"shift_start,omitempty"`
@@ -87,8 +89,8 @@ type Summary struct {
 	PresentDays     int     `json:"present_days"`
 	LateDays        int     `json:"late_days"`
 	EarlyLeaveDays  int     `json:"early_leave_days"`
-	AbsentDays      int     `json:"absent_days"`
-	LeaveDays       float64 `json:"leave_days"` // half days count 0.5
+	AbsentDays      float64 `json:"absent_days"` // absent for half a day (the other half leave) counts 0.5
+	LeaveDays       float64 `json:"leave_days"`  // half days count 0.5
 	PendingDays     int     `json:"pending_days"`
 	RejectedDays    int     `json:"rejected_days"`
 	MissingCheckout int     `json:"missing_checkout"`
@@ -102,6 +104,7 @@ type Summary struct {
 
 // OvertimeRow is one overtime request in the period (pending or approved), for exports.
 type OvertimeRow struct {
+	EmployeeID                                 uint64
 	EmployeeCode, FullName, Branch, Department string
 	Date                                       time.Time
 	StartAt, EndAt                             time.Time
@@ -125,6 +128,9 @@ type Report struct {
 	GeneratedAt time.Time     `json:"-"`
 	Scope       string        `json:"-"` // "Branch: Main branch · Department: Sales"
 	Overtime    []OvertimeRow `json:"-"`
+	// Each person's days off and holidays in the period, worked or not: key(employee,
+	// date) → the holiday's name, or "" for a day off. For the payroll grid.
+	OffDays map[string]string `json:"-"`
 }
 
 type Filter struct {
@@ -173,7 +179,7 @@ func (s *Service) Build(ctx context.Context, actor *auth.Actor, f Filter) (*Repo
 		return nil, err
 	}
 	// Empty slices, not nil: clients get [] rather than null when nothing matches.
-	rep := &Report{From: f.From, To: f.To, Today: today, Loc: st.Location, Company: st.CompanyName, Rows: []DayRow{}, Summaries: []Summary{},
+	rep := &Report{From: f.From, To: f.To, Today: today, Loc: st.Location, Company: st.CompanyName, Rows: []DayRow{}, Summaries: []Summary{}, OffDays: map[string]string{},
 		GeneratedBy: actor.Employee.FullName, GeneratedAt: s.Now(), Scope: s.scopeText(ctx, f)}
 	if len(emps) == 0 {
 		return rep, nil
@@ -235,7 +241,7 @@ func (s *Service) Build(ctx context.Context, actor *auth.Actor, f Filter) (*Repo
 		return nil, err
 	}
 	for _, o := range otReqs {
-		row := OvertimeRow{Date: o.WorkDate, StartAt: o.StartAt, EndAt: o.EndAt, Minutes: o.Minutes, Reason: o.Reason, Status: o.Status, ReviewedAt: o.ReviewedAt}
+		row := OvertimeRow{EmployeeID: o.EmployeeID, Date: o.WorkDate, StartAt: o.StartAt, EndAt: o.EndAt, Minutes: o.Minutes, Reason: o.Reason, Status: o.Status, ReviewedAt: o.ReviewedAt}
 		if e := o.Employee; e != nil {
 			row.EmployeeCode, row.FullName = e.EmployeeCode, e.FullName
 			if e.Branch != nil {
@@ -275,26 +281,32 @@ func (s *Service) Build(ctx context.Context, actor *auth.Actor, f Filter) (*Repo
 		}
 		return "Leave"
 	}
-	// leaveOn: a full day's leave; halfOn: a half day's ("Annual Leave (first half)").
-	leaveOn := func(empID uint64, d time.Time) string {
-		for i := range leaves {
-			if l := &leaves[i]; l.EmployeeID == empID && !l.IsHalfDay() && !d.Before(l.StartDate) && !d.After(l.EndDate) {
-				return leaveName(l)
-			}
+	leaveCode := func(l *models.LeaveRequest) string {
+		if l.LeaveType != nil {
+			return l.LeaveType.Code
 		}
 		return ""
 	}
-	halfOn := func(empID uint64, d time.Time) (string, string) {
+	// leaveOn: a full day's leave (name, code); halfOn: a half day's ("Annual Leave (first half)", half, code).
+	leaveOn := func(empID uint64, d time.Time) (string, string) {
+		for i := range leaves {
+			if l := &leaves[i]; l.EmployeeID == empID && !l.IsHalfDay() && !d.Before(l.StartDate) && !d.After(l.EndDate) {
+				return leaveName(l), leaveCode(l)
+			}
+		}
+		return "", ""
+	}
+	halfOn := func(empID uint64, d time.Time) (string, string, string) {
 		for i := range leaves {
 			if l := &leaves[i]; l.EmployeeID == empID && l.IsHalfDay() && d.Equal(l.StartDate) {
 				part := "first half"
 				if l.DayType == models.LeaveSecondHalf {
 					part = "second half"
 				}
-				return fmt.Sprintf("%s (%s)", leaveName(l), part), l.DayType
+				return fmt.Sprintf("%s (%s)", leaveName(l), part), l.DayType, leaveCode(l)
 			}
 		}
-		return "", ""
+		return "", "", ""
 	}
 	// Each branch has its own holidays.
 	branchSet := map[uint64]bool{}
@@ -342,6 +354,9 @@ func (s *Service) Build(ctx context.Context, actor *auth.Actor, f Filter) (*Repo
 			row := DayRow{EmployeeID: e.ID, EmployeeCode: e.EmployeeCode, FullName: e.FullName, Department: dept, BranchID: branchID, Branch: branch, Date: d}
 			day := plan.Day(e, d)
 			expected := day.Work && !isHol(d)
+			if !expected && !d.Before(startDate) {
+				rep.OffDays[key(e.ID, d)] = holidays[branchID][d.Format("2006-01-02")]
+			}
 			if day.Work {
 				row.Shift, row.ShiftStart, row.ShiftEnd, row.CrossDay, row.ShiftGrace = day.ShiftName, day.Start, day.End, day.CrossDay, day.Grace
 			}
@@ -356,14 +371,19 @@ func (s *Service) Build(ctx context.Context, actor *auth.Actor, f Filter) (*Repo
 				row.WorkingMinutes, row.LateMinutes, row.EarlyMinutes = a.WorkingMinutes, a.LateMinutes, a.EarlyLeaveMinutes
 				row.Status, row.Confirmation, row.ConfirmedBy = a.Status, a.ConfirmationStatus, a.ConfirmerName
 				if a.Status == models.StatusLeave {
-					row.LeaveType = leaveOn(e.ID, d)
+					row.LeaveType, row.LeaveCode = leaveOn(e.ID, d)
+				}
+				if a.CheckOutAt != nil && expected {
+					if end, err := day.EndAt(d, st.Location); err == nil && a.CheckOutAt.After(end) {
+						row.AfterShiftMinutes = int(a.CheckOutAt.Sub(end) / time.Minute)
+					}
 				}
 			} else {
 				if !expected || d.After(today) || d.Before(startDate) {
 					continue // weekends, holidays and future days are never "absent"
 				}
-				if lt := leaveOn(e.ID, d); lt != "" {
-					row.Status, row.LeaveType, row.Confirmation = models.StatusLeave, lt, models.ConfConfirmed
+				if lt, code := leaveOn(e.ID, d); lt != "" {
+					row.Status, row.LeaveType, row.LeaveCode, row.Confirmation = models.StatusLeave, lt, code, models.ConfConfirmed
 				} else if d.Equal(today) {
 					row.Status = DayNotYet
 				} else {
@@ -371,7 +391,7 @@ func (s *Service) Build(ctx context.Context, actor *auth.Actor, f Filter) (*Repo
 				}
 			}
 			if row.LeaveType == "" && expected {
-				row.LeaveType, row.LeaveHalf = halfOn(e.ID, d)
+				row.LeaveType, row.LeaveHalf, row.LeaveCode = halfOn(e.ID, d)
 			}
 			if expected && !d.After(today) && !d.Before(startDate) {
 				sum.WorkingDays++
@@ -446,7 +466,11 @@ func accumulate(s *Summary, r DayRow) {
 	}
 	switch r.Status {
 	case models.StatusAbsent:
-		s.AbsentDays++
+		if r.LeaveHalf != "" {
+			s.AbsentDays += 0.5 // the other half was leave
+		} else {
+			s.AbsentDays++
+		}
 	case models.StatusLeave:
 		s.LeaveDays++
 	}

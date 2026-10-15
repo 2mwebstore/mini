@@ -279,19 +279,34 @@ a Telegram message. The employee can **cancel** a request while it is pending, o
 approved until it starts.
 
 **Reports** count overtime by the date it is for: per person *OT approved* and *OT
-pending* (and totals) on the Reports page, and in the Excel/CSV export (daily sheet:
-*Overtime Approved / Pending (min)*; summary sheet: *Overtime Approved / Pending*). The
-dashboard's "waiting for review" includes overtime.
+pending* (and totals) on the Reports page, and in the Excel/CSV export (Payroll sheet:
+*OT Hours* / *OT Hours x2*, approved only; daily sheet: *OT approved / pending (min)*;
+Overtime sheet: every approved and pending request). The dashboard's "waiting for
+review" includes overtime.
 
 ## Excel report
 
-*Reports → Export Excel* downloads a report laid out like a CRM's:
+*Reports → Export Payroll XLSX* downloads `payroll_<from>_<to>.xlsx`, laid out like the
+CRM's payroll export:
 
-- **Summary** (opens first) — a title block (company, period, filters, who made it and
-  when), **KPI cards** (staff, working / present / late / absent / leave days, hours
-  worked, overtime approved and pending) and one row per person with a **totals** row:
-  days, late minutes, waiting-review and rejected days, hours worked, average per day,
-  overtime approved and pending (as h:mm and as decimal hours, for payroll).
+- **Payroll** (opens first) — a blue title bar (*Detail Report Payroll October 2026*),
+  then one row per person: ID, name, **one column per day** with *check in - check out*
+  (`07:55 - 17:02`; absent pink, leave amber with *AL* or the leave type, *OFF* grey,
+  *Holiday* blue, a day off worked green, a late check-in in red), then the payroll
+  totals:
+
+  | Group | Columns |
+  |---|---|
+  | Day Work · Attendance | scheduled working days so far · days checked in |
+  | Work Time | minutes worked (*Q-mn* = minutes; zero shows —) |
+  | Checkin Late · Checkout Early | minutes and number of days |
+  | Checkout Overtime | minutes checked out after the shift's end, and days |
+  | Absent | days (absent half a day, the other half leave, counts 0.5) |
+  | Other | *Leave* (other leave types) and *AL* (annual leave) days; *OT Day* = days worked on a day off, *OT Day x2* = on a public holiday |
+  | Overtime | approved overtime hours: *OT Hours* on working days, *OT Hours x2* on days off and public holidays |
+
+  A colour legend and these notes sit under the grid. Names and the headers stay put
+  while you scroll; it prints on A3 landscape, one page wide.
 - **Daily attendance** — every person-day: shift, check-in/out, worked, late / early
   minutes, a **coloured status** (present green, late / early amber, absent red, leave
   blue), leave type, review and reviewer, the check-in/out reasons and the day's
@@ -299,9 +314,10 @@ dashboard's "waiting for review" includes overtime.
 - **Overtime** — each approved and pending request (date, from–to, length, reason,
   status, reviewer) with APPROVED / PENDING / TOTAL lines.
 
-Every sheet is an Excel table (filter buttons, banded rows) with frozen headers and
-names, and prints landscape one page wide. The CSV export stays one plain row per
-person-day.
+The two detail sheets are Excel tables (filter buttons, banded rows) with a title block,
+frozen headers and names, and print landscape one page wide. Pending overtime is not in
+the payroll totals, only on the Overtime and Daily sheets. The CSV export stays one plain
+row per person-day.
 
 ## Branches
 
@@ -389,7 +405,7 @@ Pages a role cannot use are hidden. What the built-in roles may do (change it on
 | Administration › Branch assignment | ✓ | — | their branches' accounts | their branch's accounts |
 | Administration › Role management — company roles and each branch's own roles | ✓ (all) | — | their branches' roles | their branch's roles |
 | Branches — add/edit/close branches; each branch's page has its details, admin, **Location (GPS)** and **Telegram** (own bot) | ✓ (+ assign admins) | — | add, and edit their own | My branch: GPS + Telegram |
-| Reports — period summary per employee; **Excel report** (CRM-style: Summary, Daily attendance, Overtime sheets) and CSV | ✓ | ✓ | their branches | their branch |
+| Reports — period summary per employee; **Payroll XLSX** (CRM layout: Payroll grid, Daily attendance, Overtime sheets) and CSV | ✓ | ✓ | their branches | their branch |
 | Settings › General — company name, timezone, confirmations, scheduled jobs | edit | view | — | — |
 | Audit log | ✓ | — | — | — |
 
@@ -655,7 +671,7 @@ asked. Attendance records page at most 200 at a time; the audit log at most 500.
 | `GET /overtime?status=&employee_id=&branch_id=&from=&to=&page=&page_size=` · `GET /overtime/:id` · `GET /overtime/pending` | scoped / reviewer | overtime requests, newest date first |
 | `POST /overtime/:id/approve` · `/reject {note}` | reviewer | the person's reviewers only; both sides get a Telegram message |
 | `GET /reports/summary?from=&to=&employee_id=&branch_id=&department_id=&status=` | scoped | rows + per-staff summaries + totals |
-| `GET /reports/export?format=xlsx\|csv&from=&to=&employee_id=&branch_id=&department_id=` | report.export | xlsx: Summary / Daily attendance / Overtime sheets (see *Excel report*); csv: the daily rows |
+| `GET /reports/export?format=xlsx\|csv&from=&to=&employee_id=&branch_id=&department_id=` | report.export | xlsx: Payroll / Daily attendance / Overtime sheets (see *Excel report*); csv: the daily rows |
 | `GET /settings` · `PUT /settings {key: value}` | settings.view / owner | `{settings, backup}`: company name, timezone, confirmations, job times (Telegram and GPS are per branch) |
 | `GET /holidays?year=&branch_id=` · `POST /holidays {date, name, branch_ids}` · `DELETE /holidays/:id` | schedules.manage to change, in branches they reach | one holiday to several branches at once; a branch that already has one that day is skipped |
 | `GET /audit-logs?action=&employee_id=&page=&page_size=` | super admin | newest first |

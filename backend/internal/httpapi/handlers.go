@@ -484,7 +484,7 @@ func (s *Server) buildExport(c *gin.Context, a *auth.Actor, f report.Filter, for
 		filename, ctype = base+".csv", "text/csv; charset=utf-8"
 	case "xlsx", "excel":
 		data, err = report.XLSX(rep)
-		filename, ctype = base+".xlsx", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+		filename, ctype = "payroll"+strings.TrimPrefix(base, "attendance")+".xlsx", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
 	default:
 		return nil, "", "", apperr.BadRequest("INVALID_FORMAT", "Format must be xlsx or csv.")
 	}

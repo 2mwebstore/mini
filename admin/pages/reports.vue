@@ -66,7 +66,7 @@ const totals = computed(() => {
   <div>
     <PageHeader title="Reports" :subtitle="report.data.value ? `${formatDate(report.data.value.from)} – ${formatDate(report.data.value.to)}` : undefined">
       <template v-if="auth.can('report.export')">
-        <a :href="reportService.exportUrl(query, 'xlsx')" class="inline-flex items-center rounded-lg bg-primary px-3.5 py-2 text-sm font-medium text-primary-fg hover:brightness-110" download>Export Excel</a>
+        <a :href="reportService.exportUrl(query, 'xlsx')" class="inline-flex items-center rounded-lg bg-primary px-3.5 py-2 text-sm font-medium text-primary-fg hover:brightness-110" download>Export Payroll XLSX</a>
         <a :href="reportService.exportUrl(query, 'csv')" class="inline-flex items-center rounded-lg border border-border bg-surface px-3.5 py-2 text-sm font-medium hover:bg-surface-2" download>CSV</a>
       </template>
     </PageHeader>
