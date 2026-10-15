@@ -6,6 +6,7 @@ import (
 	"context"
 	"fmt"
 	"sort"
+	"strings"
 	"time"
 
 	"attendance/backend/internal/apperr"
@@ -99,6 +100,16 @@ type Summary struct {
 	OvertimePendingMinutes int `json:"overtime_pending_minutes"`
 }
 
+// OvertimeRow is one overtime request in the period (pending or approved), for exports.
+type OvertimeRow struct {
+	EmployeeCode, FullName, Branch, Department string
+	Date                                       time.Time
+	StartAt, EndAt                             time.Time
+	Minutes                                    int
+	Reason, Status, ReviewedBy                 string
+	ReviewedAt                                 *time.Time
+}
+
 type Report struct {
 	From       time.Time      `json:"from"`
 	To         time.Time      `json:"to"`
@@ -109,6 +120,11 @@ type Report struct {
 	StaffCount int            `json:"staff_count"`
 	Loc        *time.Location `json:"-"`
 	Company    string         `json:"company"`
+	// For exports: who made it and when, the filters in words, and the overtime requests.
+	GeneratedBy string        `json:"-"`
+	GeneratedAt time.Time     `json:"-"`
+	Scope       string        `json:"-"` // "Branch: Main branch · Department: Sales"
+	Overtime    []OvertimeRow `json:"-"`
 }
 
 type Filter struct {
@@ -157,7 +173,8 @@ func (s *Service) Build(ctx context.Context, actor *auth.Actor, f Filter) (*Repo
 		return nil, err
 	}
 	// Empty slices, not nil: clients get [] rather than null when nothing matches.
-	rep := &Report{From: f.From, To: f.To, Today: today, Loc: st.Location, Company: st.CompanyName, Rows: []DayRow{}, Summaries: []Summary{}}
+	rep := &Report{From: f.From, To: f.To, Today: today, Loc: st.Location, Company: st.CompanyName, Rows: []DayRow{}, Summaries: []Summary{},
+		GeneratedBy: actor.Employee.FullName, GeneratedAt: s.Now(), Scope: s.scopeText(ctx, f)}
 	if len(emps) == 0 {
 		return rep, nil
 	}
@@ -210,6 +227,28 @@ func (s *Service) Build(ctx context.Context, actor *auth.Actor, f Filter) (*Repo
 		Where("employee_id IN ? AND work_date BETWEEN ? AND ? AND status IN ?", ids, f.From, f.To, []string{models.LeaveApproved, models.LeavePending}).
 		Group("employee_id, work_date, status").Scan(&ots).Error; err != nil {
 		return nil, err
+	}
+	var otReqs []models.OvertimeRequest
+	if err := s.db.WithContext(ctx).Preload("Employee").Preload("Employee.Branch").Preload("Employee.Department").Preload("Reviewer").
+		Where("employee_id IN ? AND work_date BETWEEN ? AND ? AND status IN ?", ids, f.From, f.To, []string{models.LeaveApproved, models.LeavePending}).
+		Order("work_date, start_at").Find(&otReqs).Error; err != nil {
+		return nil, err
+	}
+	for _, o := range otReqs {
+		row := OvertimeRow{Date: o.WorkDate, StartAt: o.StartAt, EndAt: o.EndAt, Minutes: o.Minutes, Reason: o.Reason, Status: o.Status, ReviewedAt: o.ReviewedAt}
+		if e := o.Employee; e != nil {
+			row.EmployeeCode, row.FullName = e.EmployeeCode, e.FullName
+			if e.Branch != nil {
+				row.Branch = e.Branch.Name
+			}
+			if e.Department != nil {
+				row.Department = e.Department.Name
+			}
+		}
+		if o.Reviewer != nil {
+			row.ReviewedBy = o.Reviewer.FullName
+		}
+		rep.Overtime = append(rep.Overtime, row)
 	}
 	otApproved, otPending := map[string]int{}, map[string]int{}
 	otEmpApproved, otEmpPending := map[uint64]int{}, map[uint64]int{}
@@ -363,6 +402,31 @@ func (s *Service) Build(ctx context.Context, actor *auth.Actor, f Filter) (*Repo
 		rep.Totals.AvgMinutes = rep.Totals.WorkingMinutes / (rep.Totals.PresentDays - rep.Totals.MissingCheckout)
 	}
 	return rep, nil
+}
+
+// scopeText: the report's filters in words ("All branches", "Branch: Main branch · Department: Sales").
+func (s *Service) scopeText(ctx context.Context, f Filter) string {
+	var parts []string
+	name := func(table string, id uint64) string {
+		var n string
+		s.db.WithContext(ctx).Table(table).Select("name").Where("id = ?", id).Scan(&n)
+		return n
+	}
+	if f.BranchID != 0 {
+		parts = append(parts, "Branch: "+name("branches", f.BranchID))
+	}
+	if f.DepartmentID != 0 {
+		parts = append(parts, "Department: "+name("departments", f.DepartmentID))
+	}
+	if len(f.EmployeeIDs) == 1 {
+		var n string
+		s.db.WithContext(ctx).Table("employees").Select("full_name").Where("id = ?", f.EmployeeIDs[0]).Scan(&n)
+		parts = append(parts, "Employee: "+n)
+	}
+	if len(parts) == 0 {
+		return "Everyone you can see"
+	}
+	return strings.Join(parts, " · ")
 }
 
 func accumulate(s *Summary, r DayRow) {

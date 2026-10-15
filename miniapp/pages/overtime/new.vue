@@ -52,7 +52,6 @@ const lengthProblem = computed(() => {
   if (l.mins > 12 * 60) return 'At most 12 hours.'
   return ''
 })
-const presets = ['Urgent work to finish', 'Month-end closing', 'Customer request', 'Covering for a colleague', 'Event or delivery']
 
 const submitting = ref(false)
 const submitError = ref('')
@@ -97,7 +96,7 @@ const { native } = useMainButton({
         </p>
         <p v-else-if="planError" class="mt-3 text-sm text-danger">{{ planError }}</p>
         <div class="mt-3 grid grid-cols-2 gap-2.5">
-          <TimeField v-model="form.from" label="From" :note="plan && form.from === plan.default_from ? 'shift end' : undefined" required />
+          <TimeField v-model="form.from" label="From" required />
           <TimeField v-model="form.to" label="To" :note="length?.nextDay ? 'next day' : undefined" required />
         </div>
         <p class="mt-3 text-sm" :class="lengthProblem ? 'text-danger' : 'text-hint'" aria-live="polite">
@@ -107,15 +106,6 @@ const { native } = useMainButton({
       </AppCard>
 
       <AppCard title="Reason">
-        <div class="mb-2 flex flex-wrap gap-1.5" role="group" aria-label="Common reasons">
-          <button
-            v-for="p in presets" :key="p" type="button"
-            class="rounded-full border px-3 py-1.5 text-[13px] transition"
-            :class="form.reason === p ? 'border-primary bg-primary/10 text-accent' : 'border-separator text-hint'"
-            :aria-pressed="form.reason === p"
-            @click="form.reason = form.reason === p ? '' : p"
-          >{{ p }}</button>
-        </div>
         <textarea
           v-model="form.reason"
           rows="3"

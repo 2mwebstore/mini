@@ -1108,6 +1108,11 @@ func TestIntegration(t *testing.T) {
 	if code != 200 || len(body["summaries"].([]any)) != 3 {
 		t.Fatalf("branch report: %d %v", code, body)
 	}
+	// Staff added through the API joined "today" (the real date): date them before the
+	// simulated month, so the report doesn't leave them out as not yet employed.
+	if _, err := rawDB.Exec("UPDATE employees SET created_at = '2026-01-01' WHERE created_at > '2026-01-01'"); err != nil {
+		t.Fatal(err)
+	}
 	code, body, _ = h.admin("GET", fmt.Sprintf("/reports/daily?date=2026-10-14&branch_id=%d", srID), ownerJWT, nil)
 	if code != 200 || len(body["rows"].([]any)) != 3 {
 		t.Fatalf("owner filters the daily report by branch: %d %v", code, body)

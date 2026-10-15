@@ -1,48 +1,106 @@
 <script setup lang="ts">
-// A date field that looks the same on every phone: our own box with the date written
-// out ("14 Oct 2026", "Wednesday"), over the phone's own date input, which opens its
-// picker when tapped. (Native date inputs are sized and drawn differently by iOS,
-// Android and Telegram Desktop, and get cut off in narrow columns.)
+// A date field with our own calendar (a bottom sheet). Phones' native date inputs
+// behave differently inside Telegram — some don't open at all — so the app draws
+// the picker itself: a month grid, today marked, earlier than `min` greyed out.
 const model = defineModel<string>({ required: true }) // YYYY-MM-DD
-defineProps<{ label: string; min?: string; required?: boolean }>()
-const uid = useId()
+const props = defineProps<{ label: string; min?: string; required?: boolean }>()
 
+const iso = (y: number, m: number, d: number) => `${y}-${String(m + 1).padStart(2, '0')}-${String(d).padStart(2, '0')}`
+const parse = (v?: string) => {
+  const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(v ?? '')
+  return m ? new Date(Number(m[1]), Number(m[2]) - 1, Number(m[3])) : null
+}
 const shown = computed(() => {
-  const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(model.value ?? '')
-  if (!m) return null
-  const d = new Date(Number(m[1]), Number(m[2]) - 1, Number(m[3]))
-  return {
+  const d = parse(model.value)
+  return d && {
     date: d.toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric' }),
     weekday: d.toLocaleDateString('en-GB', { weekday: 'long' }),
   }
 })
-// Some browsers (Telegram Desktop) open the picker only from its icon: ask for it.
-function openPicker(e: MouseEvent) {
-  try {
-    (e.target as HTMLInputElement).showPicker?.()
-  } catch { /* not allowed here: the browser opens its own */ }
+
+// ---------- the calendar ----------
+const open = ref(false)
+const today = (() => { const n = new Date(); return iso(n.getFullYear(), n.getMonth(), n.getDate()) })()
+const view = reactive({ y: 0, m: 0 }) // the month on screen
+function show() {
+  const d = parse(model.value) ?? parse(props.min) ?? new Date()
+  Object.assign(view, { y: d.getFullYear(), m: d.getMonth() })
+  open.value = true
 }
+function move(delta: number) {
+  const d = new Date(view.y, view.m + delta, 1)
+  Object.assign(view, { y: d.getFullYear(), m: d.getMonth() })
+}
+const monthName = computed(() => new Date(view.y, view.m, 1).toLocaleDateString('en-GB', { month: 'long', year: 'numeric' }))
+const weekdays = ['Mo', 'Tu', 'We', 'Th', 'Fr', 'Sa', 'Su']
+// The month's days, Monday first, padded with blanks before the 1st.
+const cells = computed(() => {
+  const first = new Date(view.y, view.m, 1)
+  const blanks = (first.getDay() + 6) % 7
+  const days = new Date(view.y, view.m + 1, 0).getDate()
+  const out: ({ day: number; value: string; disabled: boolean } | null)[] = Array(blanks).fill(null)
+  for (let d = 1; d <= days; d++) {
+    const value = iso(view.y, view.m, d)
+    out.push({ day: d, value, disabled: !!props.min && value < props.min })
+  }
+  return out
+})
+function pick(value: string) {
+  model.value = value
+  webApp()?.HapticFeedback?.selectionChanged()
+  open.value = false
+}
+const canToday = computed(() => !props.min || today >= props.min)
 </script>
 
 <template>
   <div class="min-w-0">
-    <label :for="uid" class="block text-[13px] text-hint">{{ label }}</label>
-    <div class="relative mt-1">
-      <input
-        :id="uid" v-model="model" type="date" :min="min" :required="required"
-        class="peer absolute inset-0 z-10 h-full w-full cursor-pointer opacity-0"
-        @click="openPicker"
-      />
-      <div
-        class="flex min-h-[52px] items-center gap-2 rounded-xl border border-separator bg-surface px-3 py-1.5 transition peer-focus-visible:border-primary peer-active:bg-page"
-        aria-hidden="true"
-      >
-        <AppIcon name="calendar" class="hidden size-5 shrink-0 text-hint min-[420px]:block" />
-        <span class="min-w-0">
-          <span class="block truncate text-[15px] font-medium tabular-nums" :class="!shown && 'text-hint'">{{ shown?.date ?? 'Choose a date' }}</span>
-          <span v-if="shown" class="block truncate text-[12px] text-hint">{{ shown.weekday }}</span>
-        </span>
+    <span class="block text-[13px] text-hint">{{ label }}</span>
+    <button
+      type="button"
+      class="mt-1 flex min-h-[52px] w-full items-center gap-2 rounded-xl border border-separator bg-surface px-3 py-1.5 text-left transition active:bg-page"
+      :aria-label="`${label}: ${shown ? `${shown.weekday} ${shown.date}` : 'choose a date'}`"
+      aria-haspopup="dialog"
+      @click="show"
+    >
+      <AppIcon name="calendar" class="hidden size-5 shrink-0 text-hint min-[420px]:block" />
+      <span class="min-w-0 flex-1">
+        <span class="block truncate text-[15px] font-medium tabular-nums" :class="!shown && 'text-hint'">{{ shown?.date ?? 'Choose a date' }}</span>
+        <span v-if="shown" class="block truncate text-[12px] text-hint">{{ shown.weekday }}</span>
+      </span>
+    </button>
+
+    <BottomSheet v-model="open" :title="label">
+      <div class="mb-3 flex items-center justify-between">
+        <button type="button" class="flex size-10 items-center justify-center rounded-full active:bg-page" aria-label="Previous month" @click="move(-1)">
+          <AppIcon name="chevron" class="size-5 rotate-180" />
+        </button>
+        <p class="text-[16px] font-semibold" aria-live="polite">{{ monthName }}</p>
+        <button type="button" class="flex size-10 items-center justify-center rounded-full active:bg-page" aria-label="Next month" @click="move(1)">
+          <AppIcon name="chevron" class="size-5" />
+        </button>
       </div>
-    </div>
+      <div class="grid grid-cols-7 gap-1 text-center" role="grid" :aria-label="monthName">
+        <span v-for="w in weekdays" :key="w" class="pb-1 text-[12px] font-medium text-hint">{{ w }}</span>
+        <template v-for="(c, i) in cells" :key="i">
+          <span v-if="!c" aria-hidden="true" />
+          <button
+            v-else
+            type="button"
+            class="flex aspect-square items-center justify-center rounded-full text-[15px] tabular-nums transition disabled:opacity-30"
+            :class="c.value === model ? 'bg-primary font-semibold text-primary-fg'
+              : c.value === today ? 'font-semibold text-accent ring-1 ring-inset ring-primary/50' : 'active:bg-page'"
+            :disabled="c.disabled"
+            :aria-pressed="c.value === model"
+            :aria-label="new Date(view.y, view.m, c.day).toLocaleDateString('en-GB', { weekday: 'long', day: 'numeric', month: 'long' })"
+            @click="pick(c.value)"
+          >{{ c.day }}</button>
+        </template>
+      </div>
+      <div class="mt-4 grid grid-cols-2 gap-2">
+        <AppButton variant="secondary" :disabled="!canToday" @click="pick(today)">Today</AppButton>
+        <AppButton variant="secondary" @click="open = false">Close</AppButton>
+      </div>
+    </BottomSheet>
   </div>
 </template>

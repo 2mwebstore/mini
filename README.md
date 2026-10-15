@@ -283,6 +283,26 @@ pending* (and totals) on the Reports page, and in the Excel/CSV export (daily sh
 *Overtime Approved / Pending (min)*; summary sheet: *Overtime Approved / Pending*). The
 dashboard's "waiting for review" includes overtime.
 
+## Excel report
+
+*Reports → Export Excel* downloads a report laid out like a CRM's:
+
+- **Summary** (opens first) — a title block (company, period, filters, who made it and
+  when), **KPI cards** (staff, working / present / late / absent / leave days, hours
+  worked, overtime approved and pending) and one row per person with a **totals** row:
+  days, late minutes, waiting-review and rejected days, hours worked, average per day,
+  overtime approved and pending (as h:mm and as decimal hours, for payroll).
+- **Daily attendance** — every person-day: shift, check-in/out, worked, late / early
+  minutes, a **coloured status** (present green, late / early amber, absent red, leave
+  blue), leave type, review and reviewer, the check-in/out reasons and the day's
+  overtime.
+- **Overtime** — each approved and pending request (date, from–to, length, reason,
+  status, reviewer) with APPROVED / PENDING / TOTAL lines.
+
+Every sheet is an Excel table (filter buttons, banded rows) with frozen headers and
+names, and prints landscape one page wide. The CSV export stays one plain row per
+person-day.
+
 ## Branches
 
 Every staff member, manager and branch admin belongs to one branch; the owner and HR
@@ -369,7 +389,7 @@ Pages a role cannot use are hidden. What the built-in roles may do (change it on
 | Administration › Branch assignment | ✓ | — | their branches' accounts | their branch's accounts |
 | Administration › Role management — company roles and each branch's own roles | ✓ (all) | — | their branches' roles | their branch's roles |
 | Branches — add/edit/close branches; each branch's page has its details, admin, **Location (GPS)** and **Telegram** (own bot) | ✓ (+ assign admins) | — | add, and edit their own | My branch: GPS + Telegram |
-| Reports — period summary per employee, Excel/CSV export (with check-in/out reasons) | ✓ | ✓ | their branches | their branch |
+| Reports — period summary per employee; **Excel report** (CRM-style: Summary, Daily attendance, Overtime sheets) and CSV | ✓ | ✓ | their branches | their branch |
 | Settings › General — company name, timezone, confirmations, scheduled jobs | edit | view | — | — |
 | Audit log | ✓ | — | — | — |
 
@@ -635,7 +655,7 @@ asked. Attendance records page at most 200 at a time; the audit log at most 500.
 | `GET /overtime?status=&employee_id=&branch_id=&from=&to=&page=&page_size=` · `GET /overtime/:id` · `GET /overtime/pending` | scoped / reviewer | overtime requests, newest date first |
 | `POST /overtime/:id/approve` · `/reject {note}` | reviewer | the person's reviewers only; both sides get a Telegram message |
 | `GET /reports/summary?from=&to=&employee_id=&branch_id=&department_id=&status=` | scoped | rows + per-staff summaries + totals |
-| `GET /reports/export?format=xlsx\|csv&from=&to=&employee_id=&branch_id=&department_id=` | report.export | includes Branch, Shift, Check-In Reason and Check-Out Reason columns |
+| `GET /reports/export?format=xlsx\|csv&from=&to=&employee_id=&branch_id=&department_id=` | report.export | xlsx: Summary / Daily attendance / Overtime sheets (see *Excel report*); csv: the daily rows |
 | `GET /settings` · `PUT /settings {key: value}` | settings.view / owner | `{settings, backup}`: company name, timezone, confirmations, job times (Telegram and GPS are per branch) |
 | `GET /holidays?year=&branch_id=` · `POST /holidays {date, name, branch_ids}` · `DELETE /holidays/:id` | schedules.manage to change, in branches they reach | one holiday to several branches at once; a branch that already has one that day is skipped |
 | `GET /audit-logs?action=&employee_id=&page=&page_size=` | super admin | newest first |

@@ -7,8 +7,6 @@ import (
 	"strings"
 
 	"attendance/backend/internal/timeutil"
-
-	"github.com/xuri/excelize/v2"
 )
 
 var exportHeader = []string{"Employee ID", "Employee Name", "Branch", "Department", "Date", "Shift", "Check-In", "Check-Out",
@@ -78,78 +76,4 @@ func CSV(rep *Report) ([]byte, error) {
 	}
 	w.Flush()
 	return buf.Bytes(), w.Error()
-}
-
-func XLSX(rep *Report) ([]byte, error) {
-	f := excelize.NewFile()
-	defer f.Close()
-
-	const daily = "Attendance"
-	f.SetSheetName("Sheet1", daily)
-	sw, err := f.NewStreamWriter(daily)
-	if err != nil {
-		return nil, err
-	}
-	bold, _ := f.NewStyle(&excelize.Style{Font: &excelize.Font{Bold: true}, Fill: excelize.Fill{Type: "pattern", Color: []string{"#E2E8F0"}, Pattern: 1}})
-	_ = sw.SetColWidth(1, 1, 12)
-	_ = sw.SetColWidth(2, 2, 24)
-	_ = sw.SetColWidth(3, 4, 18)
-	_ = sw.SetColWidth(5, len(exportHeader), 14)
-	iWork, iLate, iEarly := exportCol("Working Minutes"), exportCol("Late Minutes"), exportCol("Early Leave Minutes")
-	iOT, iOTPending := exportCol("Overtime Approved (min)"), exportCol("Overtime Pending (min)")
-	head := make([]any, len(exportHeader))
-	for i, h := range exportHeader {
-		head[i] = excelize.Cell{Value: h, StyleID: bold}
-	}
-	if err := sw.SetRow("A1", head); err != nil {
-		return nil, err
-	}
-	for i, r := range rep.Rows {
-		vals := exportRow(rep, r)
-		row := make([]any, len(vals))
-		for j, v := range vals {
-			row[j] = safeCell(v)
-		}
-		// numeric columns as numbers
-		row[iWork], row[iLate], row[iEarly] = r.WorkingMinutes, r.LateMinutes, r.EarlyMinutes
-		row[iOT], row[iOTPending] = r.OvertimeMinutes, r.OvertimePendingMinutes
-		cell, _ := excelize.CoordinatesToCellName(1, i+2)
-		if err := sw.SetRow(cell, row); err != nil {
-			return nil, err
-		}
-	}
-	if err := sw.Flush(); err != nil {
-		return nil, err
-	}
-
-	const summary = "Summary"
-	if _, err := f.NewSheet(summary); err != nil {
-		return nil, err
-	}
-	sh := []string{"Employee ID", "Employee Name", "Branch", "Department", "Working Days", "Present", "Late Days", "Late Minutes",
-		"Early Leave Days", "Absent", "Leave", "Pending", "Rejected", "Missing Check-Out", "Working Hours", "Working Minutes", "Avg / Day",
-		"Overtime Approved", "Overtime Pending"}
-	for i, h := range sh {
-		c, _ := excelize.CoordinatesToCellName(i+1, 1)
-		_ = f.SetCellValue(summary, c, h)
-	}
-	last, _ := excelize.CoordinatesToCellName(len(sh), 1)
-	_ = f.SetCellStyle(summary, "A1", last, bold)
-	_ = f.SetColWidth(summary, "B", "B", 24)
-	_ = f.SetColWidth(summary, "C", "D", 18)
-	for i, s := range rep.Summaries {
-		vals := []any{safeCell(s.EmployeeCode), safeCell(s.FullName), safeCell(s.Branch), safeCell(s.Department), s.WorkingDays, s.PresentDays, s.LateDays, s.LateMinutes,
-			s.EarlyLeaveDays, s.AbsentDays, s.LeaveDays, s.PendingDays, s.RejectedDays, s.MissingCheckout,
-			timeutil.FormatMinutes(s.WorkingMinutes), s.WorkingMinutes, timeutil.FormatMinutes(s.AvgMinutes),
-			timeutil.FormatMinutes(s.OvertimeMinutes), timeutil.FormatMinutes(s.OvertimePendingMinutes)}
-		for j, v := range vals {
-			c, _ := excelize.CoordinatesToCellName(j+1, i+2)
-			_ = f.SetCellValue(summary, c, v)
-		}
-	}
-	buf, err := f.WriteToBuffer()
-	if err != nil {
-		return nil, err
-	}
-	return buf.Bytes(), nil
 }
